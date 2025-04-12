@@ -1,124 +1,238 @@
 """
-Binance service for trading operations.
+Service for interacting with Binance exchange.
 """
 
 import logging
-from typing import Dict, Optional, List
-import ccxt
-from cachetools import TTLCache
+from typing import Dict, Optional
+import ccxt.async_support as ccxt
+from datetime import datetime, timedelta
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
 class BinanceService:
+    """Service for interacting with Binance exchange."""
+    
     def __init__(self, config: Dict):
-        self.config = config
-        self.exchange = None
-        self.price_cache = TTLCache(maxsize=100, ttl=60)  # Cache giá trong 60 giây
+        """Initialize the service.
         
-    def initialize(self) -> None:
-        """Initialize Binance client."""
+        Args:
+            config: Configuration dictionary
+        """
+        self.config = config
+        self._is_initialized = False
+        self._is_closed = False
+        self.exchange = None
+        self.order_cache = {}
+        self.balance_cache = {}
+        self.position_cache = {}
+        self.cache_expiry = timedelta(minutes=5)
+        self.last_update = {}
+        
+    def initialize(self) -> bool:
+        """Initialize the Binance service.
+        
+        Returns:
+            bool: True if initialization successful, False otherwise
+        """
         try:
+            if self._is_initialized:
+                logger.warning("Binance service already initialized")
+                return True
+                
+            # Initialize exchange
             self.exchange = ccxt.binance({
                 'apiKey': self.config['api']['binance']['api_key'],
                 'secret': self.config['api']['binance']['api_secret'],
                 'enableRateLimit': True,
                 'options': {
-                    'defaultType': 'future'  # Enable futures trading
+                    'defaultType': 'future',
+                    'adjustForTimeDifference': True
                 }
             })
-            # Test connection
-            self.exchange.fetch_balance()
+            
+            self._is_initialized = True
             logger.info("Binance service initialized successfully")
-        except Exception as e:
-            logger.error(f"Error initializing Binance service: {e}")
-            raise
-            
-    def fetch_ohlcv(self, symbol: str, timeframe: str = '1h', limit: int = 100) -> List:
-        """Fetch OHLCV data."""
-        try:
-            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-            return ohlcv
-        except Exception as e:
-            logger.error(f"Error fetching OHLCV data: {e}")
-            return []
-            
-    def get_account_balance(self) -> Optional[float]:
-        """Get account balance in USDT."""
-        try:
-            balance = self.exchange.fetch_balance()
-            usdt_balance = float(balance['total']['USDT'])
-            return usdt_balance
-        except Exception as e:
-            logger.error(f"Error fetching account balance: {e}")
-            return None
-            
-    def place_order(self, signal: Dict) -> bool:
-        """Place an order based on signal."""
-        try:
-            order = self.exchange.create_order(
-                symbol=signal['symbol'],
-                type=signal['type'],
-                side=signal['side'],
-                amount=signal['amount'],
-                price=signal.get('price'),
-                params={'reduceOnly': signal.get('reduce_only', False)}
-            )
-            logger.info(f"Order placed: {order}")
             return True
+            
         except Exception as e:
-            logger.error(f"Error placing order: {e}")
+            logger.error(f"Failed to initialize Binance service: {str(e)}")
             return False
             
-    def get_position_info(self, symbol: str) -> Optional[Dict]:
-        """Get position information."""
-        try:
-            positions = self.exchange.fetch_positions([symbol])
-            if positions:
-                return positions[0]
-            return None
-        except Exception as e:
-            logger.error(f"Error getting position info: {e}")
-            return None
+    async def place_order(self, order_params: Dict) -> Optional[Dict]:
+        """Place an order on Binance.
+        
+        Args:
+            order_params: Order parameters
             
-    def close_position(self, symbol: str) -> bool:
-        """Close position for a symbol."""
+        Returns:
+            Optional[Dict]: Order details if successful, None otherwise
+        """
         try:
-            position = self.get_position_info(symbol)
-            if position and float(position['contracts']) > 0:
-                side = 'sell' if position['side'] == 'long' else 'buy'
-                order = self.exchange.create_order(
-                    symbol=symbol,
-                    type='market',
-                    side=side,
-                    amount=float(position['contracts']),
-                    params={'reduceOnly': True}
-                )
-                logger.info(f"Position closed: {order}")
-                return True
-            return False
-        except Exception as e:
-            logger.error(f"Error closing position: {e}")
-            return False
-            
-    def get_realtime_price(self, symbol: str) -> Optional[float]:
-        """Get realtime price for a symbol."""
-        try:
-            if symbol in self.price_cache:
-                return self.price_cache[symbol]
+            if not self._is_initialized:
+                logger.error("Binance service not initialized")
+                return None
                 
-            ticker = self.exchange.fetch_ticker(symbol)
-            price = float(ticker['last'])
-            self.price_cache[symbol] = price
-            return price
+            if self._is_closed:
+                logger.error("Binance service is closed")
+                return None
+                
+            # Check for duplicate orders
+            order_key = f"{order_params['symbol']}_{order_params['side']}_{order_params['type']}"
+            if order_key in self.order_cache:
+                cached_order, timestamp = self.order_cache[order_key]
+                if datetime.now() - timestamp < self.cache_expiry:
+                    logger.warning("Duplicate order detected")
+                    return None
+                    
+            # Place order
+            order = await self.exchange.create_order(
+                symbol=order_params['symbol'],
+                type=order_params['type'],
+                side=order_params['side'],
+                amount=order_params['amount'],
+                price=order_params.get('price'),
+                params=order_params.get('params', {})
+            )
+            
+            # Cache order
+            self.order_cache[order_key] = (order, datetime.now())
+            
+            return order
+            
         except Exception as e:
-            logger.error(f"Error getting realtime price: {e}")
+            logger.error(f"Error placing order: {str(e)}")
             return None
             
-    def close(self) -> None:
-        """Close the exchange connection."""
+    async def get_account_balance(self) -> Optional[Dict]:
+        """Get account balance.
+        
+        Returns:
+            Optional[Dict]: Account balance if successful, None otherwise
+        """
         try:
-            # Clear the price cache
-            self.price_cache.clear()
-            logger.info("Binance service closed")
+            if not self._is_initialized:
+                logger.error("Binance service not initialized")
+                return None
+                
+            if self._is_closed:
+                logger.error("Binance service is closed")
+                return None
+                
+            # Check cache
+            current_time = datetime.now()
+            if 'balance' in self.balance_cache:
+                cached_balance, timestamp = self.balance_cache['balance']
+                if current_time - timestamp < self.cache_expiry:
+                    return cached_balance
+                    
+            # Fetch balance
+            balance = await self.exchange.fetch_balance()
+            
+            # Cache balance
+            self.balance_cache['balance'] = (balance, current_time)
+            
+            return balance
+            
         except Exception as e:
-            logger.error(f"Error closing Binance service: {e}") 
+            logger.error(f"Error getting account balance: {str(e)}")
+            return None
+            
+    async def get_positions(self) -> Optional[Dict]:
+        """Get open positions.
+        
+        Returns:
+            Optional[Dict]: Open positions if successful, None otherwise
+        """
+        try:
+            if not self._is_initialized:
+                logger.error("Binance service not initialized")
+                return None
+                
+            if self._is_closed:
+                logger.error("Binance service is closed")
+                return None
+                
+            # Check cache
+            current_time = datetime.now()
+            if 'positions' in self.position_cache:
+                cached_positions, timestamp = self.position_cache['positions']
+                if current_time - timestamp < self.cache_expiry:
+                    return cached_positions
+                    
+            # Fetch positions
+            positions = await self.exchange.fetch_positions()
+            
+            # Cache positions
+            self.position_cache['positions'] = (positions, current_time)
+            
+            return positions
+            
+        except Exception as e:
+            logger.error(f"Error getting positions: {str(e)}")
+            return None
+            
+    async def fetch_ohlcv(self, symbol: str, timeframe: str = "5m", limit: int = 100) -> Optional[pd.DataFrame]:
+        """Fetch OHLCV data.
+        
+        Args:
+            symbol: Trading pair symbol
+            timeframe: Timeframe for data
+            limit: Number of candles to fetch
+            
+        Returns:
+            Optional[pd.DataFrame]: OHLCV data if successful, None otherwise
+        """
+        try:
+            if not self._is_initialized:
+                logger.error("Binance service not initialized")
+                return None
+                
+            if self._is_closed:
+                logger.error("Binance service is closed")
+                return None
+                
+            # Fetch data
+            ohlcv = await self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+            
+            # Convert to DataFrame
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('timestamp', inplace=True)
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error fetching OHLCV data: {str(e)}")
+            return None
+            
+    def clear_cache(self):
+        """Clear all cached data."""
+        self.order_cache.clear()
+        self.balance_cache.clear()
+        self.position_cache.clear()
+        self.last_update.clear()
+        
+    async def close(self):
+        """Close the Binance service."""
+        try:
+            if not self._is_initialized:
+                logger.warning("Binance service was not initialized")
+                return
+                
+            if self._is_closed:
+                logger.warning("Binance service already closed")
+                return
+                
+            # Clear cache
+            self.clear_cache()
+            
+            # Close exchange
+            if self.exchange:
+                await self.exchange.close()
+                
+            self._is_closed = True
+            logger.info("Binance service closed")
+            
+        except Exception as e:
+            logger.error(f"Error closing Binance service: {str(e)}") 

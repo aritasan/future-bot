@@ -5,6 +5,7 @@ import logging
 from typing import Dict, Optional
 import numpy as np
 import ccxt
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,8 @@ class RiskManager:
         self.initial_balance = None
         self.position_history = {}
         self.price_history = {}
+        self.last_update = {}
+        self.cache_expiry = timedelta(minutes=5)
         
     async def check_risk(self, symbol: str, position_size: float) -> bool:
         """
@@ -47,6 +50,11 @@ class RiskManager:
             if not await self.check_volatility(symbol):
                 return False
                 
+            # Check drawdown
+            if await self.check_drawdown():
+                logger.warning("Drawdown limit reached, stopping trading")
+                return False
+                
             return True
             
         except Exception as e:
@@ -70,7 +78,11 @@ class RiskManager:
                 return False
                 
             # Calculate position size
-            calculated_position_size = await self.calculate_position_size(balance, self.config['trading']['order_risk_percent'], position_size)
+            calculated_position_size = await self.calculate_position_size(
+                balance,
+                self.config['trading']['order_risk_percent'],
+                position_size
+            )
             
             # Check against maximum position size
             max_position_size = balance * self.config['risk_management']['max_position_size']
@@ -155,6 +167,10 @@ class RiskManager:
             float: Calculated position size
         """
         try:
+            if stop_loss_distance <= 0:
+                logger.warning("Invalid stop loss distance")
+                return 0.0
+                
             # Calculate risk amount
             risk_amount = account_balance * risk_per_trade
             
@@ -275,19 +291,28 @@ class RiskManager:
                 
             # Get price history for all symbols
             symbols = list(positions.keys()) + [symbol]
+            current_time = datetime.now()
             
             for sym in symbols:
-                if sym not in self.price_history:
-                    # Fetch historical prices
-                    client = ccxt.binance()
-                    ohlcv = await client.fetch_ohlcv(sym, timeframe='1h', limit=100)
-                    prices = [candle[4] for candle in ohlcv]  # Close prices
-                    self.price_history[sym] = prices
+                # Check cache
+                if sym in self.price_history and sym in self.last_update:
+                    if current_time - self.last_update[sym] < self.cache_expiry:
+                        continue
+                
+                # Fetch historical prices
+                client = ccxt.binance()
+                ohlcv = await client.fetch_ohlcv(sym, timeframe='1h', limit=100)
+                prices = [candle[4] for candle in ohlcv]  # Close prices
+                self.price_history[sym] = prices
+                self.last_update[sym] = current_time
                     
             # Calculate returns
             returns = {}
             for sym, prices in self.price_history.items():
-                returns[sym] = np.diff(prices) / prices[:-1]
+                if len(prices) > 1:
+                    returns[sym] = np.diff(prices) / prices[:-1]
+                else:
+                    returns[sym] = np.array([0.0])
                 
             # Calculate correlation matrix
             correlation_matrix = np.corrcoef([returns[sym] for sym in symbols])
@@ -314,18 +339,33 @@ class RiskManager:
             float: Volatility value (standard deviation of returns)
         """
         try:
-            if symbol not in self.price_history:
-                # Fetch historical prices
+            current_time = datetime.now()
+            
+            # Check cache
+            if symbol in self.price_history and symbol in self.last_update:
+                if current_time - self.last_update[symbol] < self.cache_expiry:
+                    prices = self.price_history[symbol]
+                else:
+                    # Fetch new data
+                    client = ccxt.binance()
+                    ohlcv = await client.fetch_ohlcv(symbol, timeframe='1h', limit=100)
+                    prices = [candle[4] for candle in ohlcv]  # Close prices
+                    self.price_history[symbol] = prices
+                    self.last_update[symbol] = current_time
+            else:
+                # Fetch data for the first time
                 client = ccxt.binance()
                 ohlcv = await client.fetch_ohlcv(symbol, timeframe='1h', limit=100)
                 prices = [candle[4] for candle in ohlcv]  # Close prices
                 self.price_history[symbol] = prices
+                self.last_update[symbol] = current_time
                 
             # Calculate returns
-            returns = np.diff(self.price_history[symbol]) / self.price_history[symbol][:-1]
-            
-            # Calculate volatility (standard deviation of returns)
-            volatility = np.std(returns)
+            if len(prices) > 1:
+                returns = np.diff(prices) / prices[:-1]
+                volatility = np.std(returns)
+            else:
+                volatility = 0.0
             
             return float(volatility)
             

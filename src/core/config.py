@@ -23,6 +23,13 @@ BINANCE_API_SECRET = os.getenv("BINANCE_MAINNET_API_SECRET")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+TWITTER_API_KEY = os.getenv("TWITTER_API_KEY")
+TWITTER_API_SECRET = os.getenv("TWITTER_API_SECRET")
+TWITTER_ACCESS_TOKEN = os.getenv("TWITTER_ACCESS_TOKEN")
+TWITTER_ACCESS_TOKEN_SECRET = os.getenv("TWITTER_ACCESS_SECRET")
+
+NEWS_API_KEY = os.getenv("NEWS_API_KEY")
+
 # Cache settings
 PRICE_CACHE_TTL = 60  # seconds
 POSITION_CACHE_TTL = 300  # seconds
@@ -100,6 +107,15 @@ def load_config() -> Dict[str, Any]:
             "telegram": {
                 "bot_token": TELEGRAM_BOT_TOKEN,
                 "chat_id": TELEGRAM_CHAT_ID
+            },
+            "twitter": {
+                "api_key": TWITTER_API_KEY,
+                "api_secret": TWITTER_API_SECRET,
+                "access_token": TWITTER_ACCESS_TOKEN,
+                "access_token_secret": TWITTER_ACCESS_TOKEN_SECRET
+            },
+            "news": {
+                "api_key": NEWS_API_KEY
             }
         },
         "cache": {
