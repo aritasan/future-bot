@@ -31,6 +31,7 @@ class TelegramService:
         self.polling_task = None
         self.status_task = None
         self._shutdown_event = asyncio.Event()
+        self._pause_event = asyncio.Event()
         self._event_loop = None
         self._subscribed_users = set()
         
@@ -45,12 +46,9 @@ class TelegramService:
             self.application.add_handler(CommandHandler("start", self._handle_start_command))
             self.application.add_handler(CommandHandler("help", self._handle_help_command))
             self.application.add_handler(CommandHandler("status", self._handle_status_command))
-            self.application.add_handler(CommandHandler("subscribe", self._handle_subscribe_command))
-            self.application.add_handler(CommandHandler("unsubscribe", self._handle_unsubscribe_command))
-            self.application.add_handler(CommandHandler("settings", self._handle_settings_command))
-            self.application.add_handler(CommandHandler("trades", self._handle_trades_command))
-            self.application.add_handler(CommandHandler("risk", self._handle_risk_command))
-            self.application.add_handler(CommandHandler("alerts", self._handle_alerts_command))
+            self.application.add_handler(CommandHandler("pause", self._handle_pause_command))
+            self.application.add_handler(CommandHandler("unpause", self._handle_unpause_command))
+            self.application.add_handler(CommandHandler("report", self._handle_report_command))
             
             # Initialize application
             await self.application.initialize()
@@ -205,12 +203,9 @@ class TelegramService:
                 "/start - Start the bot and subscribe to updates\n"
                 "/help - Show this help message\n"
                 "/status - Show current bot status\n"
-                "/subscribe - Subscribe to updates\n"
-                "/unsubscribe - Unsubscribe from updates\n"
-                "/settings - Show current settings\n"
-                "/trades - Show active trades\n"
-                "/risk - Show current risk level\n"
-                "/alerts - Show recent alerts"
+                "/pause - Pause the bot\n"
+                "/unpause - Unpause the bot\n"
+                "/report - Show detailed report"
             )
             await update.message.reply_text(help_text, parse_mode='HTML')
         except Exception as e:
@@ -226,158 +221,162 @@ class TelegramService:
             logger.error(f"Error handling status command: {str(e)}")
             await update.message.reply_text("An error occurred. Please try again later.")
 
-    async def _handle_subscribe_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle the /subscribe command."""
+    async def _handle_pause_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle the /pause command."""
         try:
-            user_id = update.effective_user.id
-            self._subscribed_users.add(user_id)
-            await update.message.reply_text("You are now subscribed to updates! ✅")
+            if not self._is_initialized:
+                await update.message.reply_text("Bot is not initialized. Please try again later.")
+                return
+            
+            if self._is_paused:
+                await update.message.reply_text("Bot is already paused")
+                return
+            
+            self._is_paused = True
+            self._pause_event.set()  # Set the pause event
+            await update.message.reply_text("⏸ Bot trading paused successfully")
+            logger.info("Bot trading paused via Telegram command")
         except Exception as e:
-            logger.error(f"Error handling subscribe command: {str(e)}")
-            await update.message.reply_text("An error occurred. Please try again later.")
+            logger.error(f"Error handling pause command: {str(e)}")
+            await update.message.reply_text("An error occurred while pausing the bot.")
 
-    async def _handle_unsubscribe_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle the /unsubscribe command."""
+    async def _handle_unpause_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle the /unpause command."""
         try:
-            user_id = update.effective_user.id
-            self._subscribed_users.discard(user_id)
-            await update.message.reply_text("You are now unsubscribed from updates. ❌")
+            if not self._is_initialized:
+                await update.message.reply_text("Bot is not initialized. Please try again later.")
+                return
+            
+            if not self._is_paused:
+                await update.message.reply_text("Bot is not paused")
+                return
+            
+            self._is_paused = False
+            self._pause_event.clear()  # Clear the pause event
+            await update.message.reply_text("▶️ Bot trading resumed successfully")
+            logger.info("Bot trading resumed via Telegram command")
         except Exception as e:
-            logger.error(f"Error handling unsubscribe command: {str(e)}")
-            await update.message.reply_text("An error occurred. Please try again later.")
+            logger.error(f"Error handling unpause command: {str(e)}")
+            await update.message.reply_text("An error occurred while unpausing the bot.")
 
-    async def _handle_settings_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle the /settings command."""
+    async def _handle_report_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle the /report command."""
         try:
-            settings_message = self._get_settings_message()
-            await update.message.reply_text(settings_message, parse_mode='HTML')
+            if not self._is_initialized:
+                await update.message.reply_text("Bot is not initialized. Please try again later.")
+                return
+            
+            if not self.binance_service:
+                await update.message.reply_text("Binance service not available")
+                return
+            
+            # Get account balance
+            balance = await self.binance_service.get_account_balance()
+            if not balance:
+                await update.message.reply_text("Failed to get account balance")
+                return
+            
+            # Get positions
+            positions = await self.binance_service.get_positions()
+            if positions is None:
+                await update.message.reply_text("Failed to get positions")
+                return
+            
+            # Calculate total PnL
+            total_pnl = 0.0
+            active_positions = 0
+            for pos in positions:
+                if pos and isinstance(pos, dict):
+                    unrealized_pnl = pos.get('unrealized_pnl')
+                    if unrealized_pnl is not None:
+                        try:
+                            total_pnl += float(unrealized_pnl)
+                            if float(pos.get('size', 0)) > 0:
+                                active_positions += 1
+                        except (ValueError, TypeError):
+                            pass
+                        
+            # Format message
+            message = (
+                "📊 <b>Detailed Report</b>\n\n"
+                f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"Paused: {'Yes' if self._is_paused else 'No'}\n\n"
+                "💰 <b>Balance</b>\n"
+            )
+            
+            # Add balance information
+            for asset, data in balance.items():
+                if isinstance(data, dict):
+                    amount = data.get('total')
+                else:
+                    amount = data
+                    
+                if amount is not None:
+                    try:
+                        amount_float = float(amount)
+                        if amount_float > 0:
+                            message += f"{asset}: {amount_float}\n"
+                    except (ValueError, TypeError):
+                        continue
+                    
+            # Add positions information
+            message += f"\n📈 Active Positions: {active_positions}\n"
+            message += f"💵 Total Unrealized PnL: {total_pnl:.2f} USDT"
+            
+            await update.message.reply_text(message, parse_mode='HTML')
+            
         except Exception as e:
-            logger.error(f"Error handling settings command: {str(e)}")
-            await update.message.reply_text("An error occurred. Please try again later.")
+            logger.error(f"Error handling report command: {str(e)}")
+            await update.message.reply_text("An error occurred while generating the report.")
 
-    async def _handle_trades_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle the /trades command."""
+    async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle incoming Telegram commands."""
         try:
-            trades_message = self._get_active_trades_message()
-            await update.message.reply_text(trades_message, parse_mode='HTML')
+            if not self._is_initialized:
+                await update.message.reply_text("Bot is not initialized. Please try again later.")
+                return
+            
+            command = update.message.text.lower()
+            
+            if command == '/start':
+                await self._handle_start_command(update, context)
+            elif command == '/help':
+                await self._handle_help_command(update, context)
+            elif command == '/status':
+                await self._handle_status_command(update, context)
+            elif command == '/pause':
+                await self._handle_pause_command(update, context)
+            elif command == '/unpause':
+                await self._handle_unpause_command(update, context)
+            elif command == '/report':
+                await self._handle_report_command(update, context)
+            else:
+                await update.message.reply_text(
+                    "Unknown command. Use /help to see available commands."
+                )
+            
         except Exception as e:
-            logger.error(f"Error handling trades command: {str(e)}")
-            await update.message.reply_text("An error occurred. Please try again later.")
-
-    async def _handle_risk_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle the /risk command."""
-        try:
-            risk_message = self._get_risk_message()
-            await update.message.reply_text(risk_message, parse_mode='HTML')
-        except Exception as e:
-            logger.error(f"Error handling risk command: {str(e)}")
-            await update.message.reply_text("An error occurred. Please try again later.")
-
-    async def _handle_alerts_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle the /alerts command."""
-        try:
-            alerts_message = self._get_alerts_message()
-            await update.message.reply_text(alerts_message, parse_mode='HTML')
-        except Exception as e:
-            logger.error(f"Error handling alerts command: {str(e)}")
-            await update.message.reply_text("An error occurred. Please try again later.")
+            logger.error(f"Error handling command: {str(e)}")
+            await update.message.reply_text(
+                "An error occurred while processing your command. Please try again later."
+            )
 
     async def _get_status_message(self) -> str:
         """Get the current bot status message."""
         try:
-            status = "🟢 Running" if self._is_running else "🔴 Stopped"
+            status = "🟢 Running" if not self._is_paused else "🔴 Stopped"
             uptime = str(datetime.now() - self._start_time).split('.')[0] if self._start_time else "N/A"
             
             message = (
                 f"🤖 <b>Bot Status</b>\n\n"
                 f"Status: {status}\n"
                 f"Uptime: {uptime}\n"
-                f"Subscribed Users: {len(self._subscribed_users)}\n"
                 f"Last Update: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             )
             return message
         except Exception as e:
             logger.error(f"Error getting status message: {str(e)}")
             return "Error getting status information."
-
-    def _get_settings_message(self) -> str:
-        """Get the current settings message."""
-        try:
-            message = (
-                "⚙️ <b>Current Settings</b>\n\n"
-                f"Risk Level: {self.risk_manager.risk_level}\n"
-                f"Max Position Size: {self.risk_manager.max_position_size}\n"
-                f"Max Open Trades: {self.risk_manager.max_open_trades}\n"
-                f"Stop Loss: {self.risk_manager.stop_loss_percentage}%\n"
-                f"Take Profit: {self.risk_manager.take_profit_percentage}%"
-            )
-            return message
-        except Exception as e:
-            logger.error(f"Error getting settings message: {str(e)}")
-            return "Error getting settings information."
-
-    def _get_active_trades_message(self) -> str:
-        """Get the active trades message."""
-        try:
-            active_trades = self.risk_manager.get_active_trades()
-            if not active_trades:
-                return "No active trades at the moment."
-            
-            message = "📊 <b>Active Trades</b>\n\n"
-            for trade in active_trades:
-                message += (
-                    f"Symbol: {trade['symbol']}\n"
-                    f"Side: {trade['side']}\n"
-                    f"Entry Price: {trade['entry_price']}\n"
-                    f"Current Price: {trade['current_price']}\n"
-                    f"P&L: {trade['pnl']}%\n"
-                    f"Stop Loss: {trade['stop_loss']}\n"
-                    f"Take Profit: {trade['take_profit']}\n\n"
-                )
-            return message
-        except Exception as e:
-            logger.error(f"Error getting active trades message: {str(e)}")
-            return "Error getting active trades information."
-
-    def _get_risk_message(self) -> str:
-        """Get the current risk level message."""
-        try:
-            risk_level = self.risk_manager.risk_level
-            position_size = self.risk_manager.max_position_size
-            open_trades = self.risk_manager.get_active_trades_count()
-            max_trades = self.risk_manager.max_open_trades
-            
-            message = (
-                "⚠️ <b>Risk Information</b>\n\n"
-                f"Current Risk Level: {risk_level}\n"
-                f"Max Position Size: {position_size}\n"
-                f"Open Trades: {open_trades}/{max_trades}\n"
-                f"Available Margin: {self.risk_manager.get_available_margin()}\n"
-                f"Total Exposure: {self.risk_manager.get_total_exposure()}"
-            )
-            return message
-        except Exception as e:
-            logger.error(f"Error getting risk message: {str(e)}")
-            return "Error getting risk information."
-
-    def _get_alerts_message(self) -> str:
-        """Get the recent alerts message."""
-        try:
-            alerts = self.risk_manager.get_recent_alerts()
-            if not alerts:
-                return "No recent alerts."
-            
-            message = "🔔 <b>Recent Alerts</b>\n\n"
-            for alert in alerts:
-                message += (
-                    f"Time: {alert['timestamp']}\n"
-                    f"Type: {alert['type']}\n"
-                    f"Message: {alert['message']}\n\n"
-                )
-            return message
-        except Exception as e:
-            logger.error(f"Error getting alerts message: {str(e)}")
-            return "Error getting alerts information."
 
     async def periodic_balance_check(self) -> None:
         """Periodically check and send balance updates."""
@@ -526,7 +525,6 @@ class TelegramService:
             message = (
                 "📊 <b>Status Report</b>\n\n"
                 f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                f"Status: {'🟢 Running' if self._is_running else '🔴 Stopped'}\n"
                 f"Paused: {'Yes' if self._is_paused else 'No'}\n\n"
                 "💰 <b>Balance</b>\n"
             )
@@ -574,44 +572,6 @@ class TelegramService:
             traceback.print_exc()
             logger.error(f"Error sending status report: {str(e)}")
             
-    async def _handle_pause(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle /pause command."""
-        try:
-            if not self._is_initialized or self._is_closed:
-                await update.message.reply_text("❌ Bot is not ready")
-                return
-                
-            self._is_paused = True
-            await update.message.reply_text("⏸ Bot paused")
-            
-        except Exception as e:
-            logger.error(f"Error handling pause command: {str(e)}")
-            
-    async def _handle_unpause(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle /unpause command."""
-        try:
-            if not self._is_initialized or self._is_closed:
-                await update.message.reply_text("❌ Bot is not ready")
-                return
-                
-            self._is_paused = False
-            await update.message.reply_text("▶️ Bot unpaused")
-            
-        except Exception as e:
-            logger.error(f"Error handling unpause command: {str(e)}")
-            
-    async def _handle_report(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle /report command."""
-        try:
-            if not self._is_initialized or self._is_closed:
-                await update.message.reply_text("❌ Bot is not ready")
-                return
-                
-            await self._send_status_report()
-            
-        except Exception as e:
-            logger.error(f"Error handling report command: {str(e)}")
-            
     async def close(self) -> None:
         """Close the Telegram service."""
         try:
@@ -627,12 +587,14 @@ class TelegramService:
             if self.status_task and not self.status_task.done():
                 self.status_task.cancel()
 
-            # Wait for tasks to complete
+            # Wait for tasks to complete with timeout
             try:
                 if self.polling_task and not self.polling_task.done():
-                    await self.polling_task
+                    await asyncio.wait_for(self.polling_task, timeout=2.0)
                 if self.status_task and not self.status_task.done():
-                    await self.status_task
+                    await asyncio.wait_for(self.status_task, timeout=2.0)
+            except asyncio.TimeoutError:
+                logger.warning("Tasks did not complete in time")
             except asyncio.CancelledError:
                 pass
 
@@ -648,7 +610,7 @@ class TelegramService:
                     await self.application.shutdown()
                     
                     # Give time for pending operations to complete
-                    await asyncio.sleep(2)  # Increased delay to 2 seconds
+                    await asyncio.sleep(1)
                 except Exception as e:
                     logger.error(f"Error during application shutdown: {str(e)}")
                     
@@ -663,42 +625,28 @@ class TelegramService:
         except Exception as e:
             logger.error(f"Error closing Telegram service: {str(e)}")
             raise
-            
-    async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle incoming Telegram commands."""
+
+    def is_trading_paused(self) -> bool:
+        """Check if trading is paused.
+        
+        Returns:
+            bool: True if trading is paused, False otherwise
+        """
+        return self._is_paused
+
+    async def wait_for_trading_resume(self) -> None:
+        """Wait for trading to be resumed.
+        
+        This method will block until trading is resumed or the service is closed.
+        """
+        if not self._is_paused:
+            return
+        
         try:
-            if not self._is_initialized:
-                await update.message.reply_text("Bot is not initialized. Please try again later.")
-                return
-            
-            command = update.message.text.lower()
-            user_id = update.effective_user.id
-            
-            if command == '/start':
-                await self._handle_start_command(update, context)
-            elif command == '/help':
-                await self._handle_help_command(update, context)
-            elif command == '/status':
-                await self._handle_status_command(update, context)
-            elif command == '/subscribe':
-                await self._handle_subscribe_command(update, context)
-            elif command == '/unsubscribe':
-                await self._handle_unsubscribe_command(update, context)
-            elif command == '/settings':
-                await self._handle_settings_command(update, context)
-            elif command == '/trades':
-                await self._handle_trades_command(update, context)
-            elif command == '/risk':
-                await self._handle_risk_command(update, context)
-            elif command == '/alerts':
-                await self._handle_alerts_command(update, context)
-            else:
-                await update.message.reply_text(
-                    "Unknown command. Use /help to see available commands."
-                )
-            
+            await asyncio.wait_for(self._pause_event.wait(), timeout=None)
+        except asyncio.CancelledError:
+            logger.info("Wait for trading resume cancelled")
+            raise
         except Exception as e:
-            logger.error(f"Error handling command: {str(e)}")
-            await update.message.reply_text(
-                "An error occurred while processing your command. Please try again later."
-            ) 
+            logger.error(f"Error waiting for trading resume: {str(e)}")
+            raise 
