@@ -3,6 +3,9 @@ Technical analysis indicators and utilities.
 """
 import pandas as pd
 from typing import Dict, Optional
+import logging
+
+logger = logging.getLogger(__name__)
 
 def calculate_bollinger_bands(df: pd.DataFrame, period: int = 20, std_dev: int = 2) -> pd.DataFrame:
     """
@@ -26,7 +29,7 @@ def calculate_bollinger_bands(df: pd.DataFrame, period: int = 20, std_dev: int =
         df["BB_lower"] = df["BB_middle"] - (rolling_std * std_dev)
         return df
     except Exception as e:
-        print(f"Error calculating Bollinger Bands: {str(e)}")
+        logger.error(f"Error calculating Bollinger Bands: {str(e)}")
         return df
 
 def calculate_adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
@@ -71,7 +74,7 @@ def calculate_adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
         
         return adx
     except Exception as e:
-        print(f"Error calculating ADX: {str(e)}")
+        logger.error(f"Error calculating ADX: {str(e)}")
         return pd.Series(0, index=df.index)
 
 def calculate_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
@@ -101,7 +104,7 @@ def calculate_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
         
         return atr
     except Exception as e:
-        print(f"Error calculating ATR: {str(e)}")
+        logger.error(f"Error calculating ATR: {str(e)}")
         return pd.Series(0, index=df.index)
 
 def calculate_indicators(df: pd.DataFrame, params: Optional[Dict] = None) -> pd.DataFrame:
@@ -128,38 +131,57 @@ def calculate_indicators(df: pd.DataFrame, params: Optional[Dict] = None) -> pd.
         
         # Validate data
         if df.empty or len(df) < 2:
+            logger.warning("Not enough data points to calculate indicators")
             return df
             
-        # Check for missing values
-        if df.isnull().any().any():
-            df = df.ffill().bfill()
-        
-        # Calculate RSI
+        # Check for missing values in required columns
+        required_columns = ['open', 'high', 'low', 'close', 'volume']
+        if not all(col in df.columns for col in required_columns):
+            logger.error(f"Missing required columns. Required: {required_columns}, Found: {df.columns.tolist()}")
+            return df
+            
+        # Check for missing values and fill them
+        if df[required_columns].isnull().any().any():
+            logger.warning("Missing values detected in price data, filling with forward/backward fill")
+            df[required_columns] = df[required_columns].ffill().bfill()
+            
+        # Ensure we have enough data points for calculations
+        min_periods = max(params.values())
+        if len(df) < min_periods:
+            logger.warning(f"Not enough data points for calculations. Need at least {min_periods}, got {len(df)}")
+            return df
+            
+        # Calculate RSI with proper handling of initial values
         delta = df["close"].diff(1)
-        gain = (delta.where(delta > 0, 0)).rolling(window=params["RSI_PERIOD"], min_periods=1).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=params["RSI_PERIOD"], min_periods=1).mean()
-        df["RSI"] = 100 - (100 / (1 + gain / loss))
+        gain = (delta.where(delta > 0, 0)).rolling(window=params["RSI_PERIOD"], min_periods=params["RSI_PERIOD"]).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=params["RSI_PERIOD"], min_periods=params["RSI_PERIOD"]).mean()
+        rs = gain / loss
+        df["RSI"] = 100 - (100 / (1 + rs))
         
-        # Calculate ADX and ATR
+        # Calculate ADX and ATR with proper min_periods
         df["ADX"] = calculate_adx(df)
         df["ATR"] = calculate_atr(df)
         
-        # Calculate EMAs
-        df["EMA_FAST"] = df["close"].ewm(span=params["EMA_FAST"], adjust=False, min_periods=1).mean()
-        df["EMA_SLOW"] = df["close"].ewm(span=params["EMA_SLOW"], adjust=False, min_periods=1).mean()
+        # Calculate EMAs with proper min_periods
+        df["EMA_FAST"] = df["close"].ewm(span=params["EMA_FAST"], adjust=False, min_periods=params["EMA_FAST"]).mean()
+        df["EMA_SLOW"] = df["close"].ewm(span=params["EMA_SLOW"], adjust=False, min_periods=params["EMA_SLOW"]).mean()
         
-        # Calculate MACD
-        df["MACD"] = df["close"].ewm(span=params["MACD_FAST"], adjust=False, min_periods=1).mean() - df["close"].ewm(span=params["MACD_SLOW"], adjust=False, min_periods=1).mean()
-        df["MACD_SIGNAL"] = df["MACD"].ewm(span=params["MACD_SIGNAL"], adjust=False, min_periods=1).mean()
+        # Calculate MACD with proper min_periods
+        fast_ema = df["close"].ewm(span=params["MACD_FAST"], adjust=False, min_periods=params["MACD_FAST"]).mean()
+        slow_ema = df["close"].ewm(span=params["MACD_SLOW"], adjust=False, min_periods=params["MACD_SLOW"]).mean()
+        df["MACD"] = fast_ema - slow_ema
+        df["MACD_SIGNAL"] = df["MACD"].ewm(span=params["MACD_SIGNAL"], adjust=False, min_periods=params["MACD_SIGNAL"]).mean()
         
         # Calculate Bollinger Bands
         df = calculate_bollinger_bands(df)
         df["BB_width"] = (df["BB_upper"] - df["BB_lower"]) / df["BB_middle"]
         
-        # Handle any remaining NaN values
-        df = df.ffill().bfill()
+        # Fill any remaining NaN values with 0 for indicators
+        indicator_columns = ['RSI', 'ADX', 'ATR', 'EMA_FAST', 'EMA_SLOW', 'MACD', 'MACD_SIGNAL', 
+                           'BB_middle', 'BB_upper', 'BB_lower', 'BB_width']
+        df[indicator_columns] = df[indicator_columns].fillna(0)
         
         return df
     except Exception as e:
-        print(f"Error calculating indicators: {str(e)}")
+        logger.error(f"Error calculating indicators: {str(e)}")
         return df 

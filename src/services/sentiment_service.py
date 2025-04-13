@@ -23,6 +23,8 @@ class SentimentService:
         self.sentiment_cache = {}
         self.cache_expiry = timedelta(minutes=5)
         self.analyzer = SentimentIntensityAnalyzer()
+        self._is_initialized = False
+        self._is_closed = False
         
         # Initialize Twitter client if credentials are available
         if all(key in config['api']['twitter'] for key in ['api_key', 'api_secret', 'access_token', 'access_token_secret']):
@@ -38,6 +40,28 @@ class SentimentService:
         else:
             self.twitter_client = None
             logger.warning("Twitter API credentials not found. Social sentiment analysis will be disabled.")
+            
+    async def initialize(self) -> bool:
+        """Initialize the sentiment service.
+        
+        Returns:
+            bool: True if initialization successful, False otherwise
+        """
+        try:
+            if self._is_initialized:
+                logger.warning("Sentiment service already initialized")
+                return True
+                
+            # Clear any existing cache
+            self.sentiment_cache.clear()
+            
+            self._is_initialized = True
+            logger.info("Sentiment service initialized successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize sentiment service: {str(e)}")
+            return False
             
     async def analyze_sentiment(self, symbol: str) -> Optional[Dict]:
         """Analyze sentiment for a symbol.
@@ -202,4 +226,24 @@ class SentimentService:
             
     def clear_cache(self):
         """Clear all cached data."""
-        self.sentiment_cache.clear() 
+        self.sentiment_cache.clear()
+        
+    async def close(self):
+        """Close the sentiment service."""
+        try:
+            if not self._is_initialized:
+                logger.warning("Sentiment service was not initialized")
+                return
+                
+            if self._is_closed:
+                logger.warning("Sentiment service already closed")
+                return
+                
+            # Clear cache
+            self.clear_cache()
+            
+            self._is_closed = True
+            logger.info("Sentiment service closed")
+            
+        except Exception as e:
+            logger.error(f"Error closing sentiment service: {str(e)}") 

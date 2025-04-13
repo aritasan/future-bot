@@ -3,7 +3,7 @@ Service for interacting with Binance exchange.
 """
 
 import logging
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 import ccxt.async_support as ccxt
 from datetime import datetime, timedelta
 import pandas as pd
@@ -63,7 +63,15 @@ class BinanceService:
         """Place an order on Binance.
         
         Args:
-            order_params: Order parameters
+            order_params: Order parameters including:
+                - symbol: Trading pair
+                - side: buy/sell
+                - type: market/limit/stop
+                - amount: Order amount
+                - price: Order price (for limit/stop orders)
+                - stop_loss: Stop loss price (optional)
+                - take_profit: Take profit price (optional)
+                - reduceOnly: Whether the order is reduce-only (for SL/TP)
             
         Returns:
             Optional[Dict]: Order details if successful, None otherwise
@@ -78,25 +86,82 @@ class BinanceService:
                 return None
                 
             # Check for duplicate orders
-            order_key = f"{order_params['symbol']}_{order_params['side']}_{order_params['type']}"
+            order_key = f"{order_params['symbol']}_{order_params['amount']}_{order_params['type']}"
             if order_key in self.order_cache:
                 cached_order, timestamp = self.order_cache[order_key]
                 if datetime.now() - timestamp < self.cache_expiry:
                     logger.warning("Duplicate order detected")
                     return None
                     
-            # Place order
+            # Get current market price
+            ticker = await self.exchange.fetch_ticker(order_params['symbol'])
+            current_price = float(ticker['last'])
+            
+            # Set position side based on order side
+            position_side = "LONG" if order_params['side'] == 'buy' else "SHORT"
+            
+            # Base params for main order
+            params = {
+                'positionSide': position_side,
+                **order_params.get('params', {})
+            }
+            
+            # Place main order
             order = await self.exchange.create_order(
                 symbol=order_params['symbol'],
                 type=order_params['type'],
                 side=order_params['side'],
                 amount=order_params['amount'],
                 price=order_params.get('price'),
-                params=order_params.get('params', {})
+                params=params
             )
             
-            # Cache order
+            # Cache main order
             self.order_cache[order_key] = (order, datetime.now())
+            
+            # Place stop loss order if specified
+            if 'stop_loss' in order_params:
+                sl_side = 'sell' if order_params['side'] == 'buy' else 'buy'
+                sl_price = float(order_params['stop_loss'])
+                
+                try:
+                    sl_order = await self.exchange.create_order(
+                        symbol=order_params['symbol'],
+                        type='STOP_MARKET',
+                        side=sl_side,
+                        amount=order_params['amount'],
+                        params={
+                            'positionSide': position_side,
+                            'stopPrice': sl_price
+                        }
+                    )
+                    logger.info(f"Stop loss order placed: {sl_order}")
+                except Exception as e:
+                    logger.error(f"Failed to place stop loss order: {str(e)}")
+                    # Continue with main order even if stop loss fails
+                    return order
+            
+            # Place take profit order if specified
+            if 'take_profit' in order_params:
+                tp_side = 'sell' if order_params['side'] == 'buy' else 'buy'
+                tp_price = float(order_params['take_profit'])
+                
+                try:
+                    tp_order = await self.exchange.create_order(
+                        symbol=order_params['symbol'],
+                        type='TAKE_PROFIT_MARKET',
+                        side=tp_side,
+                        amount=order_params['amount'],
+                        params={
+                            'positionSide': position_side,
+                            'stopPrice': tp_price
+                        }
+                    )
+                    logger.info(f"Take profit order placed: {tp_order}")
+                except Exception as e:
+                    logger.error(f"Failed to place take profit order: {str(e)}")
+                    # Continue with main order even if take profit fails
+                    return order
             
             return order
             
@@ -172,16 +237,14 @@ class BinanceService:
             logger.error(f"Error getting positions: {str(e)}")
             return None
             
-    async def fetch_ohlcv(self, symbol: str, timeframe: str = "5m", limit: int = 100) -> Optional[pd.DataFrame]:
-        """Fetch OHLCV data.
+    async def get_ticker(self, symbol: str) -> Optional[Dict]:
+        """Get ticker information for a symbol.
         
         Args:
             symbol: Trading pair symbol
-            timeframe: Timeframe for data
-            limit: Number of candles to fetch
             
         Returns:
-            Optional[pd.DataFrame]: OHLCV data if successful, None otherwise
+            Optional[Dict]: Ticker information if successful, None otherwise
         """
         try:
             if not self._is_initialized:
@@ -192,15 +255,58 @@ class BinanceService:
                 logger.error("Binance service is closed")
                 return None
                 
-            # Fetch data
+            # Fetch ticker
+            ticker = await self.exchange.fetch_ticker(symbol)
+            
+            if not ticker:
+                logger.error(f"Failed to fetch ticker for {symbol}")
+                return None
+                
+            # Format ticker with safe float conversion
+            formatted_ticker = {
+                'last': float(ticker.get('last', 0)) if ticker.get('last') is not None else 0,
+                'bid': float(ticker.get('bid', 0)) if ticker.get('bid') is not None else 0,
+                'ask': float(ticker.get('ask', 0)) if ticker.get('ask') is not None else 0,
+                'high': float(ticker.get('high', 0)) if ticker.get('high') is not None else 0,
+                'low': float(ticker.get('low', 0)) if ticker.get('low') is not None else 0,
+                'volume': float(ticker.get('volume', 0)) if ticker.get('volume') is not None else 0,
+                'timestamp': ticker.get('timestamp', 0)
+            }
+            
+            return formatted_ticker
+            
+        except Exception as e:
+            logger.error(f"Error getting ticker for {symbol}: {str(e)}")
+            return None
+            
+    async def fetch_ohlcv(self, symbol: str, timeframe: str = '1h', limit: int = 100) -> Optional[List]:
+        """Fetch OHLCV data for a symbol.
+        
+        Args:
+            symbol: Trading pair symbol
+            timeframe: Timeframe for OHLCV data
+            limit: Number of candles to fetch
+            
+        Returns:
+            Optional[List]: OHLCV data if successful, None otherwise
+        """
+        try:
+            if not self._is_initialized:
+                logger.error("Binance service not initialized")
+                return None
+                
+            if self._is_closed:
+                logger.error("Binance service is closed")
+                return None
+                
+            # Fetch OHLCV data
             ohlcv = await self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
             
-            # Convert to DataFrame
-            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            df.set_index('timestamp', inplace=True)
-            
-            return df
+            if not ohlcv:
+                logger.error(f"Failed to fetch OHLCV data for {symbol}")
+                return None
+                
+            return ohlcv
             
         except Exception as e:
             logger.error(f"Error fetching OHLCV data: {str(e)}")

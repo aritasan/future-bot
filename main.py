@@ -91,20 +91,19 @@ async def process_symbol(
 
                 # Process trading signals
                 signals = await strategy.generate_signals(symbol, indicator_service)
-                if signals:
-                    for signal in signals:
-                        # Check risk before placing order
-                        risk_check = await risk_manager.check_risk(symbol, signal.get('position_size', 0))
-                        if risk_check:
-                            try:
-                                # Place order and send notification
-                                order = await binance_service.place_order(signal)
-                                if order:
-                                    await telegram_service.send_order_notification(order)
-                            except Exception as e:
-                                logger.error(f"Error placing order for {symbol}: {str(e)}")
-                                health_monitor.record_error()
-                                continue
+                if signals is not None:
+                    # Check risk before placing order
+                    risk_check = await risk_manager.check_risk(symbol, signals.get('position_size', 0))
+                    if risk_check:
+                        try:
+                            # Place order and send notification
+                            order = await binance_service.place_order(signals)
+                            if order:
+                                await telegram_service.send_order_notification(order, signals)
+                        except Exception as e:
+                            logger.error(f"Error placing order for {symbol}: {str(e)}")
+                            health_monitor.record_error()
+                            continue
 
                 await asyncio.sleep(1)  # Prevent CPU overload
 
@@ -207,6 +206,11 @@ async def main():
         strategy = EnhancedTradingStrategy(config)
         indicator_service = IndicatorService(config)
 
+        # Set binance_service for services that need it
+        risk_manager.set_binance_service(binance_service)
+        strategy.set_binance_service(binance_service)
+        telegram_service.set_binance_service(binance_service)
+
         # Initialize services
         try:
             if not binance_service.initialize():
@@ -248,9 +252,9 @@ async def main():
             logger.error(f"Failed to initialize strategy: {str(e)}")
             return
 
-        # Set binance service for telegram service
-        telegram_service.set_binance_service(binance_service)
-        
+        # Send startup notification
+        await telegram_service.send_startup_notification()
+
         # Create a dedicated task for Telegram service
         telegram_task = asyncio.create_task(telegram_service.run())
         tasks.append(telegram_task)
@@ -315,11 +319,7 @@ async def main():
                 await asyncio.sleep(0.1)
             
         # Send shutdown notification
-        if telegram_service:
-            try:
-                await telegram_service.send_message("🤖 Bot is shutting down...")
-            except Exception as e:
-                logger.error(f"Error sending shutdown notification: {str(e)}")
+        await telegram_service.send_shutdown_notification()
             
         # Cancel all tasks and wait for them to complete
         logger.info("Shutting down...")

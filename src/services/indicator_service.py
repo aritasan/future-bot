@@ -176,7 +176,11 @@ class IndicatorService:
                 return None
                 
             # Calculate indicators
-            df = calculate_indicators(df)
+            try:
+                df = calculate_indicators(df)
+            except Exception as e:
+                logger.error(f"Error calculating indicators for {symbol}: {str(e)}")
+                return None
             
             # Validate indicators
             if df.isnull().any().any():
@@ -189,7 +193,7 @@ class IndicatorService:
             return df
             
         except Exception as e:
-            logger.error(f"Error calculating indicators for {symbol}: {str(e)}")
+            logger.error(f"Error in calculate_indicators for {symbol}: {str(e)}")
             return None
             
     def clear_cache(self):

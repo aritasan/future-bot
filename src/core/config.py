@@ -14,6 +14,32 @@ MAX_DRAWDOWN = float(os.getenv("MAX_DRAWDOWN", "10.0"))  # 10% max drawdown
 ATR_PERIOD = int(os.getenv("ATR_PERIOD", "14"))
 MAX_ORDERS_PER_SYMBOL = int(os.getenv("MAX_ORDERS_PER_SYMBOL", "3"))
 
+# Position sizing parameters
+RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", "0.02"))  # 2% risk per trade
+
+# Technical analysis parameters
+MIN_VOLUME_RATIO = float(os.getenv("MIN_VOLUME_RATIO", "1.2"))
+MAX_VOLATILITY_RATIO = float(os.getenv("MAX_VOLATILITY_RATIO", "2.0"))
+MIN_ADX = float(os.getenv("MIN_ADX", "25"))
+MAX_BB_WIDTH = float(os.getenv("MAX_BB_WIDTH", "0.1"))
+
+# Timeframe weights
+TIMEFRAME_WEIGHTS = {
+    "5m": 0.2,
+    "15m": 0.3,
+    "1h": 0.3,
+    "4h": 0.2
+}
+
+# Signal score weights
+SIGNAL_SCORE_WEIGHTS = {
+    "technical": 0.3,
+    "market": 0.2,
+    "timeframe": 0.2,
+    "btc": 0.15,
+    "sentiment": 0.15
+}
+
 # Drawdown warning levels
 DRAWDOWN_WARNING_LEVELS = [0.5, 0.7, 0.9]
 
@@ -66,39 +92,21 @@ POSITIONS_FILE = 'positions.json'
 
 # Trading settings
 DEFAULT_TIMEFRAME = "5m"
-DEFAULT_LEVERAGE = 1
+DEFAULT_LEVERAGE = 10
 MAX_LEVERAGE = 20
 MIN_ORDER_SIZE = 10  # USDT
 
 # Risk management
-MAX_POSITION_SIZE = 0.1  # 10% of account balance
 MAX_CORRELATION = 0.7    # Maximum allowed correlation between positions
 MAX_VOLATILITY = 0.02    # Maximum allowed volatility (2%)
 
 def load_config() -> Dict[str, Any]:
-    """
-    Load and return the configuration settings.
+    """Load configuration from environment variables and return as dictionary.
     
     Returns:
         Dict[str, Any]: Configuration dictionary
     """
-    return {
-        "trading": {
-            "order_risk_percent": ORDER_RISK_PERCENT,
-            "max_drawdown": MAX_DRAWDOWN,
-            "atr_period": ATR_PERIOD,
-            "max_orders_per_symbol": MAX_ORDERS_PER_SYMBOL,
-            "drawdown_warning_levels": DRAWDOWN_WARNING_LEVELS,
-            "default_timeframe": DEFAULT_TIMEFRAME,
-            "default_leverage": DEFAULT_LEVERAGE,
-            "max_leverage": MAX_LEVERAGE,
-            "min_order_size": MIN_ORDER_SIZE
-        },
-        "risk_management": {
-            "max_position_size": MAX_POSITION_SIZE,
-            "max_correlation": MAX_CORRELATION,
-            "max_volatility": MAX_VOLATILITY
-        },
+    config = {
         "api": {
             "binance": {
                 "api_key": BINANCE_API_KEY,
@@ -118,21 +126,27 @@ def load_config() -> Dict[str, Any]:
                 "api_key": NEWS_API_KEY
             }
         },
-        "cache": {
-            "price_cache_ttl": PRICE_CACHE_TTL,
-            "position_cache_ttl": POSITION_CACHE_TTL
+        "trading": {
+            "risk_per_trade": RISK_PER_TRADE,
+            "min_volume_ratio": MIN_VOLUME_RATIO,
+            "max_volatility_ratio": MAX_VOLATILITY_RATIO,
+            "min_adx": MIN_ADX,
+            "max_bb_width": MAX_BB_WIDTH,
+            "timeframe_weights": TIMEFRAME_WEIGHTS,
+            "signal_score_weights": SIGNAL_SCORE_WEIGHTS,
+            "leverage": DEFAULT_LEVERAGE
         },
-        "circuit_breaker": {
-            "failure_threshold": FAILURE_THRESHOLD,
-            "reset_timeout": RESET_TIMEOUT
-        },
-        "health": {
+        "health_monitor": {
+            "max_errors": FAILURE_THRESHOLD,
             "cpu_threshold": CPU_THRESHOLD,
             "memory_threshold": MEMORY_THRESHOLD,
             "disk_threshold": DISK_THRESHOLD
         },
-        "trading_pairs": TRADING_PAIRS,
-        "timeframes": TIMEFRAMES,
-        "model_dir": MODEL_DIR,
-        "positions_file": POSITIONS_FILE
-    } 
+        "risk_management": {
+            "max_correlation": MAX_CORRELATION,
+            "max_volatility": MAX_VOLATILITY
+        },
+        "trading_pairs": TRADING_PAIRS
+    }
+    
+    return config 

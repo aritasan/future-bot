@@ -91,19 +91,20 @@ class EnhancedTradingStrategy:
         """
         self.binance_service = binance_service
         
-    async def _calculate_position_size(self, symbol: str, risk_per_trade: float) -> Optional[float]:
-        """Calculate position size based on risk management.
-        
-        Args:
-            symbol: Trading pair symbol
-            risk_per_trade: Risk per trade as a percentage
-            
-        Returns:
-            Optional[float]: Position size or None if calculation fails
-        """
+    async def _calculate_position_size(self, symbol: str, risk_per_trade: float, current_price: float) -> Optional[float]:
+        """Calculate position size based on risk management."""
         try:
             if not self.binance_service:
                 logger.error("Binance service not set")
+                return None
+                
+            # Validate inputs
+            if current_price <= 0:
+                logger.error(f"Invalid current price: {current_price}")
+                return None
+                
+            if risk_per_trade <= 0:
+                logger.error(f"Invalid risk per trade: {risk_per_trade}")
                 return None
                 
             # Get account balance
@@ -112,28 +113,39 @@ class EnhancedTradingStrategy:
                 logger.error(f"Failed to get balance for {symbol}")
                 return None
                 
-            # Get current price
-            ticker = await self.binance_service.get_ticker(symbol)
-            if not ticker:
-                logger.error(f"Failed to get ticker for {symbol}")
+            # Get USDT balance
+            usdt_balance = balance.get('USDT', {}).get('total', 0)
+            if not usdt_balance or float(usdt_balance) <= 0:
+                logger.error(f"Invalid USDT balance: {usdt_balance}")
                 return None
                 
-            current_price = float(ticker['last'])
-            
-            # Calculate position size
-            risk_amount = balance * risk_per_trade
-            position_size = risk_amount / current_price
-            
-            # Apply position size limits
-            min_position = self.config['trading']['min_position_size']
-            max_position = self.config['trading']['max_position_size']
-            
-            if position_size < min_position:
-                logger.warning(f"Position size {position_size} below minimum {min_position}")
+            # Get leverage from config
+            leverage = self.config['trading'].get('leverage', 10)
+            if leverage <= 0:
+                logger.error(f"Invalid leverage: {leverage}")
                 return None
                 
-            if position_size > max_position:
-                logger.warning(f"Position size {position_size} above maximum {max_position}")
+            # Calculate risk amount in USDT
+            risk_amount = float(usdt_balance) * risk_per_trade
+            
+            # Calculate position size with leverage
+            position_size = (risk_amount * leverage) / current_price
+            
+            # Calculate position notional value
+            position_notional = position_size * current_price
+            
+            # Check minimum notional value (5 USDT)
+            min_notional = 5.0  # Binance minimum notional value
+            if position_notional < min_notional:
+                logger.warning(f"Position notional value {position_notional} below minimum {min_notional} USDT")
+                return None
+                
+            # Calculate maximum position size based on available balance and leverage
+            max_position_size = (float(usdt_balance) * leverage) / current_price
+            
+            # Check if position size exceeds maximum
+            if position_size > max_position_size:
+                logger.warning(f"Position size {position_size} exceeds available balance with leverage")
                 return None
                 
             return position_size
@@ -142,76 +154,97 @@ class EnhancedTradingStrategy:
             logger.error(f"Error calculating position size: {str(e)}")
             return None
             
-    async def generate_signals(self, symbol: str, indicator_service: IndicatorService) -> List[Dict]:
-        """Generate trading signals based on technical indicators."""
+    async def generate_signals(self, symbol: str, indicator_service: IndicatorService) -> Optional[Dict]:
+        """Generate trading signals based on technical indicators.
+        
+        Args:
+            symbol: Trading pair symbol
+            indicator_service: Indicator service instance
+            
+        Returns:
+            Optional[Dict]: Trading signals or None if no signal
+        """
         try:
-            if not self._is_initialized:
-                logger.error("Strategy not initialized")
-                return []
-                
-            if self._is_closed:
-                logger.error("Strategy is closed")
-                return []
-                
-            # Get historical data
-            df = await indicator_service.get_historical_data(symbol)
-            if df is None or df.empty:
-                logger.warning(f"No data available for {symbol}")
-                return []
-                
-            # Calculate indicators
+            # Calculate indicators using indicator service
             df = await indicator_service.calculate_indicators(symbol)
-            if df is None or df.empty:
-                logger.warning(f"No indicators available for {symbol}")
-                return []
-                
-            signals = []
+            if df is None:
+                logger.warning(f"No data available for {symbol}")
+                return None
+            
+            # Get current price
             current_price = df['close'].iloc[-1]
             
             # Calculate position size
-            position_size = await self._calculate_position_size(symbol, self.config['trading']['risk_per_trade'])
-            if position_size is None:
+            position_size = await self._calculate_position_size(symbol, self.config['trading']['risk_per_trade'], current_price)
+            if not position_size:
                 logger.warning(f"Invalid position size for {symbol}")
-                return []
+                return None
                 
-            # Check for trend following signals
-            if await self._check_trend_following(df):
-                signals.append({
+            # Calculate stop loss and take profit
+            stop_loss = self._calculate_stop_loss(df)
+            take_profit = self._calculate_take_profit(df, current_price)
+            
+            # Generate signals
+            if df['RSI'].iloc[-1] < 30 and df['MACD'].iloc[-1] > df['MACD_SIGNAL'].iloc[-1]:
+                return {
                     'symbol': symbol,
                     'side': 'buy',
                     'type': 'market',
                     'amount': position_size,
-                    'stop_loss': await self._calculate_stop_loss(df, 'buy'),
-                    'take_profit': await self._calculate_take_profit(df, 'buy')
-                })
-                
-            # Check for mean reversion signals
-            if await self._check_mean_reversion(df):
-                signals.append({
+                    'price': current_price,
+                    'stop_loss': stop_loss,
+                    'take_profit': take_profit,
+                    'position_size': position_size,
+                    'tp_order': {
+                        'symbol': symbol,
+                        'side': 'sell',
+                        'type': 'limit',
+                        'amount': position_size,
+                        'price': take_profit,
+                        'reduceOnly': True
+                    },
+                    'sl_order': {
+                        'symbol': symbol,
+                        'side': 'sell',
+                        'type': 'stop',
+                        'amount': position_size,
+                        'price': stop_loss,
+                        'reduceOnly': True
+                    }
+                }
+            elif df['RSI'].iloc[-1] > 70 and df['MACD'].iloc[-1] < df['MACD_SIGNAL'].iloc[-1]:
+                return {
                     'symbol': symbol,
                     'side': 'sell',
                     'type': 'market',
                     'amount': position_size,
-                    'stop_loss': await self._calculate_stop_loss(df, 'sell'),
-                    'take_profit': await self._calculate_take_profit(df, 'sell')
-                })
+                    'price': current_price,
+                    'stop_loss': stop_loss,
+                    'take_profit': take_profit,
+                    'position_size': position_size,
+                    'tp_order': {
+                        'symbol': symbol,
+                        'side': 'buy',
+                        'type': 'limit',
+                        'amount': position_size,
+                        'price': take_profit,
+                        'reduceOnly': True
+                    },
+                    'sl_order': {
+                        'symbol': symbol,
+                        'side': 'buy',
+                        'type': 'stop',
+                        'amount': position_size,
+                        'price': stop_loss,
+                        'reduceOnly': True
+                    }
+                }
+            else:
+                return None
                 
-            # Check for breakout signals
-            if await self._check_breakout(df):
-                signals.append({
-                    'symbol': symbol,
-                    'side': 'buy',
-                    'type': 'market',
-                    'amount': position_size,
-                    'stop_loss': await self._calculate_stop_loss(df, 'buy'),
-                    'take_profit': await self._calculate_take_profit(df, 'buy')
-                })
-                
-            return signals
-            
         except Exception as e:
             logger.error(f"Error generating signals for {symbol}: {str(e)}")
-            return []
+            return None
             
     def _check_trend_following(self, df: pd.DataFrame) -> bool:
         """Check for trend following signals.
@@ -294,41 +327,57 @@ class EnhancedTradingStrategy:
             logger.error(f"Error checking breakout: {str(e)}")
             return False
             
-    def _calculate_stop_loss(self, df: pd.DataFrame) -> float:
-        """Calculate stop loss level.
+    def _calculate_stop_loss(self, df: pd.DataFrame, position_type: str = 'buy') -> float:
+        """Calculate dynamic stop loss level based on market conditions.
         
         Args:
             df: DataFrame with indicators
+            position_type: Position type (buy/sell)
             
         Returns:
             float: Stop loss level
         """
         try:
-            # Use ATR to calculate stop loss
-            atr = df['ATR'].iloc[-1]
-            return atr * self.config['trading']['stop_loss_atr_multiplier']
+            # Get current price
+            current_price = df['close'].iloc[-1]
+            
+            # Calculate stop loss with fixed 2% distance
+            if position_type == 'buy':
+                stop_loss = current_price * 0.98  # 2% below current price
+            else:
+                stop_loss = current_price * 1.02  # 2% above current price
+                
+            return stop_loss
             
         except Exception as e:
             logger.error(f"Error calculating stop loss: {str(e)}")
-            return 0.0
+            return current_price
             
-    def _calculate_take_profit(self, df: pd.DataFrame) -> float:
-        """Calculate take profit level.
+    def _calculate_take_profit(self, df: pd.DataFrame, position_type: str = 'buy') -> float:
+        """Calculate dynamic take profit level based on market conditions.
         
         Args:
             df: DataFrame with indicators
+            position_type: Position type (buy/sell)
             
         Returns:
             float: Take profit level
         """
         try:
-            # Use ATR to calculate take profit
-            atr = df['ATR'].iloc[-1]
-            return atr * self.config['trading']['take_profit_atr_multiplier']
+            # Get current price
+            current_price = df['close'].iloc[-1]
+            
+            # Calculate take profit with fixed 4% distance
+            if position_type == 'buy':
+                take_profit = current_price * 1.04  # 4% above current price
+            else:
+                take_profit = current_price * 0.96  # 4% below current price
+                
+            return take_profit
             
         except Exception as e:
             logger.error(f"Error calculating take profit: {str(e)}")
-            return 0.0
+            return current_price
             
     async def close(self):
         """Close the strategy."""
@@ -459,10 +508,10 @@ class EnhancedTradingStrategy:
             # Calculate new stops
             if position["side"] == "BUY":
                 new_stop_loss = self.calculate_trailing_stop(current_price, atr, "BUY")
-                new_take_profit = self.calculate_take_profit(current_price, new_stop_loss, "BUY")
+                new_take_profit = self.calculate_take_profit(df, current_price)
             else:
                 new_stop_loss = self.calculate_trailing_stop(current_price, atr, "SELL")
-                new_take_profit = self.calculate_take_profit(current_price, new_stop_loss, "SELL")
+                new_take_profit = self.calculate_take_profit(df, current_price)
                 
             return {
                 "stop_loss": new_stop_loss,
@@ -902,82 +951,6 @@ class EnhancedTradingStrategy:
         except Exception as e:
             logger.error(f"Error checking Bollinger condition: {str(e)}")
             return False
-            
-    def calculate_stop_loss(self, entry_price: float, atr: float, position_type: str) -> float:
-        """Calculate stop loss level.
-        
-        Args:
-            entry_price: Entry price
-            atr: Average True Range
-            position_type: Position type (BUY/SELL)
-            
-        Returns:
-            float: Stop loss level
-        """
-        try:
-            # Calculate base stop based on ATR
-            base_stop = atr * 2
-            
-            # Adjust for coin price
-            min_stop_percent = 0.02  # Minimum 2% for low-priced coins
-            price_based_stop = entry_price * min_stop_percent
-            
-            # Use larger of ATR-based and price-based
-            base_stop = max(base_stop, price_based_stop)
-            
-            # Adjust for position type
-            if position_type == "BUY":
-                stop_loss = entry_price - base_stop
-                max_stop_distance = entry_price * 0.05  # Max 5%
-                stop_loss = max(stop_loss, entry_price - max_stop_distance)
-            else:
-                stop_loss = entry_price + base_stop
-                max_stop_distance = entry_price * 0.05  # Max 5%
-                stop_loss = min(stop_loss, entry_price + max_stop_distance)
-                
-            return stop_loss
-            
-        except Exception as e:
-            logger.error(f"Error calculating stop loss: {str(e)}")
-            return entry_price
-            
-    def calculate_take_profit(self, entry_price: float, stop_loss: float, position_type: str) -> float:
-        """Calculate take profit level.
-        
-        Args:
-            entry_price: Entry price
-            stop_loss: Stop loss level
-            position_type: Position type (BUY/SELL)
-            
-        Returns:
-            float: Take profit level
-        """
-        try:
-            # Calculate risk
-            risk = abs(entry_price - stop_loss)
-            
-            # Ensure minimum take profit distance
-            min_tp_percent = 0.04  # Minimum 4% for low-priced coins
-            min_tp_distance = entry_price * min_tp_percent
-            
-            # Calculate take profit with 2:1 R:R
-            if position_type == "BUY":
-                take_profit = entry_price + max(risk * 2, min_tp_distance)
-            else:
-                take_profit = entry_price - max(risk * 2, min_tp_distance)
-                
-            # Ensure take profit is not too far
-            max_profit_distance = entry_price * 0.1  # Max 10%
-            if position_type == "BUY":
-                take_profit = min(take_profit, entry_price + max_profit_distance)
-            else:
-                take_profit = max(take_profit, entry_price - max_profit_distance)
-                
-            return take_profit
-            
-        except Exception as e:
-            logger.error(f"Error calculating take profit: {str(e)}")
-            return entry_price
             
     def calculate_trailing_stop(self, current_price: float, atr: float, position_type: str) -> float:
         """Calculate trailing stop level.

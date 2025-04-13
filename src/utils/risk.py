@@ -25,21 +25,34 @@ class RiskManager:
         self.price_history = {}
         self.last_update = {}
         self.cache_expiry = timedelta(minutes=5)
+        self.binance_service = None  # Will be set by set_binance_service
+        self._is_initialized = True
+        self._is_closed = False
+        
+    def set_binance_service(self, binance_service):
+        """Set the Binance service instance."""
+        self.binance_service = binance_service
         
     async def check_risk(self, symbol: str, position_size: float) -> bool:
-        """
-        Check if a trade meets risk requirements.
-        
-        Args:
-            symbol: Trading pair symbol
-            position_size: Proposed position size
-            
-        Returns:
-            bool: True if trade meets risk requirements, False otherwise
-        """
+        """Check if a trade meets risk management criteria."""
         try:
-            # Check position size
-            if not await self.check_position_size(position_size):
+            if not self.binance_service:
+                logger.error("Binance service not set")
+                return False
+                
+            # Get current price from Binance service
+            ticker = await self.binance_service.get_ticker(symbol)
+            if not ticker:
+                logger.error(f"Failed to get ticker for {symbol}")
+                return False
+                
+            current_price = ticker.get('last', 0.0)
+            if current_price <= 0:
+                logger.error(f"Invalid current price: {current_price}")
+                return False
+                
+            # Check position size with actual current price
+            if not await self.check_position_size(symbol, position_size, current_price):
                 return False
                 
             # Check correlation with existing positions
@@ -61,33 +74,66 @@ class RiskManager:
             logger.error(f"Error checking risk for {symbol}: {str(e)}")
             return False
             
-    async def check_position_size(self, position_size: float) -> bool:
-        """
-        Check if position size is within limits.
+    async def check_position_size(self, symbol: str, position_size: float, current_price: float) -> bool:
+        """Check if position size is within limits.
         
         Args:
-            position_size: Proposed position size
+            symbol: Trading pair symbol
+            position_size: Position size to check
+            current_price: Current price of the trading pair
             
         Returns:
-            bool: True if position size is acceptable, False otherwise
+            bool: True if position size is valid, False otherwise
         """
         try:
-            # Get current balance
-            balance = await self.get_account_balance()
-            if not balance:
+            logger.debug(f"Checking position size for {symbol}: size={position_size}, price={current_price}")
+            
+            # Validate inputs
+            if position_size <= 0:
+                logger.error(f"Invalid position size: {position_size}")
                 return False
                 
-            # Calculate position size
-            calculated_position_size = await self.calculate_position_size(
-                balance,
-                self.config['trading']['order_risk_percent'],
-                position_size
-            )
+            if current_price <= 0:
+                logger.error(f"Invalid current price: {current_price}")
+                return False
+                
+            # Check minimum notional value (5 USDT)
+            min_notional = 5.0  # Binance minimum notional value
+            position_notional = position_size * current_price
+            logger.debug(f"Position notional value: {position_notional} USDT")
             
-            # Check against maximum position size
-            max_position_size = balance * self.config['risk_management']['max_position_size']
-            if calculated_position_size > max_position_size:
-                logger.warning(f"Position size {calculated_position_size} exceeds maximum {max_position_size}")
+            if position_notional < min_notional:
+                logger.warning(f"Position notional value {position_notional} below minimum {min_notional} USDT")
+                return False
+                
+            # Get account balance
+            balance = await self.get_account_balance()
+            if not balance:
+                logger.error(f"Failed to get balance for {symbol}")
+                return False
+                
+            # Get USDT balance
+            usdt_balance = balance.get('USDT', {}).get('total', 0)
+            if not usdt_balance or float(usdt_balance) <= 0:
+                logger.error(f"Invalid USDT balance: {usdt_balance}")
+                return False
+                
+            logger.debug(f"USDT balance: {usdt_balance}")
+                
+            # Get leverage from config
+            leverage = self.config['trading'].get('leverage', 10)
+            if leverage <= 0:
+                logger.error(f"Invalid leverage: {leverage}")
+                return False
+                
+            logger.debug(f"Leverage: {leverage}")
+                
+            # Check maximum position size based on available balance and leverage
+            max_position_size = (float(usdt_balance) * leverage) / current_price
+            logger.debug(f"Maximum position size: {max_position_size}")
+            
+            if position_size > max_position_size:
+                logger.warning(f"Position size {position_size} exceeds available balance with leverage")
                 return False
                 
             return True
@@ -138,11 +184,25 @@ class RiskManager:
             bool: True if volatility is acceptable, False otherwise
         """
         try:
-            # Calculate volatility
-            volatility = await self.calculate_volatility(symbol)
+            if not self.binance_service:
+                logger.error("Binance service not set")
+                return False
+                
+            # Get historical data
+            ohlcv = await self.binance_service.fetch_ohlcv(symbol, timeframe='1h', limit=100)
+            if not ohlcv or len(ohlcv) < 2:
+                logger.error(f"Not enough data for {symbol}")
+                return False
+                
+            # Extract close prices
+            prices = [float(candle[4]) for candle in ohlcv]  # Close prices
+            
+            # Calculate returns
+            returns = np.diff(prices) / prices[:-1]
+            volatility = float(np.std(returns))
             
             # Check against maximum volatility
-            max_volatility = self.config['risk_management']['max_volatility']
+            max_volatility = float(self.config['risk_management']['max_volatility'])
             if volatility > max_volatility:
                 logger.warning(f"Volatility {volatility} exceeds maximum {max_volatility}")
                 return False
@@ -153,35 +213,43 @@ class RiskManager:
             logger.error(f"Error checking volatility: {str(e)}")
             return False
             
-    async def calculate_position_size(self, account_balance: float, risk_per_trade: float,
-                              stop_loss_distance: float) -> float:
-        """
-        Calculate appropriate position size.
+    async def calculate_position_size(self, symbol: str, risk_per_trade: float, current_price: float) -> Optional[float]:
+        """Calculate position size based on risk management.
         
         Args:
-            account_balance: Current account balance
-            risk_per_trade: Maximum risk per trade as a percentage
-            stop_loss_distance: Distance to stop loss
+            symbol: Trading pair symbol
+            risk_per_trade: Risk per trade as a percentage
+            current_price: Current price of the trading pair
             
         Returns:
-            float: Calculated position size
+            Optional[float]: Position size or None if calculation fails
         """
         try:
-            if stop_loss_distance <= 0:
-                logger.warning("Invalid stop loss distance")
-                return 0.0
+            # Get account balance
+            balance = await self.get_account_balance()
+            if not balance:
+                logger.error(f"Failed to get balance for {symbol}")
+                return None
                 
-            # Calculate risk amount
-            risk_amount = account_balance * risk_per_trade
+            # Get USDT balance
+            usdt_balance = balance.get('USDT', {}).get('total', 0)
+            if not usdt_balance:
+                logger.error(f"No USDT balance available")
+                return None
+                
+            # Calculate position size based on risk
+            risk_amount = float(usdt_balance) * (risk_per_trade / 100)
+            position_size = risk_amount / current_price
             
-            # Calculate position size based on stop loss
-            position_size = risk_amount / stop_loss_distance
-            
+            # Check if position size is valid
+            if not await self.check_position_size(symbol, position_size, current_price):
+                return None
+                
             return position_size
             
         except Exception as e:
             logger.error(f"Error calculating position size: {str(e)}")
-            return 0.0
+            return None
             
     async def check_drawdown(self) -> bool:
         """
@@ -211,32 +279,22 @@ class RiskManager:
             logger.error(f"Error checking drawdown: {e}")
             return False
             
-    async def get_account_balance(self) -> Optional[float]:
-        """
-        Get current account balance.
-        
-        Returns:
-            Optional[float]: Account balance or None if failed
-        """
+    async def get_account_balance(self) -> Optional[Dict]:
+        """Get account balance from Binance service."""
         try:
-            # Initialize Binance client
-            client = ccxt.binance({
-                'apiKey': self.config['binance']['api_key'],
-                'secret': self.config['binance']['api_secret']
-            })
-            
-            # Fetch balance
-            balance = await client.fetch_balance()
-            usdt_balance = float(balance['total']['USDT'])
-            
-            # Set initial balance if not set
-            if self.initial_balance is None:
-                self.initial_balance = usdt_balance
+            if not self.binance_service:
+                logger.error("Binance service not set")
+                return None
                 
-            return usdt_balance
+            balance = await self.binance_service.get_account_balance()
+            if not balance:
+                logger.error("Failed to get account balance")
+                return None
+                
+            return balance
             
         except Exception as e:
-            logger.error(f"Error getting account balance: {e}")
+            logger.error(f"Error getting account balance: {str(e)}")
             return None
             
     async def get_positions(self) -> Dict:
@@ -247,31 +305,30 @@ class RiskManager:
             Dict: Current positions
         """
         try:
-            # Initialize Binance client
-            client = ccxt.binance({
-                'apiKey': self.config['binance']['api_key'],
-                'secret': self.config['binance']['api_secret']
-            })
-            
-            # Fetch positions
-            positions = await client.fetch_positions()
-            
-            # Filter for open positions
-            open_positions = {
-                pos['symbol']: {
-                    'size': float(pos['contracts']),
-                    'entry_price': float(pos['entryPrice']),
-                    'side': pos['side'],
-                    'unrealized_pnl': float(pos['unrealizedPnl'])
-                }
-                for pos in positions
-                if float(pos['contracts']) > 0
-            }
+            if not self.binance_service:
+                logger.error("Binance service not set")
+                return {}
+                
+            # Get positions from binance service
+            positions = await self.binance_service.get_positions()
+            if not positions:
+                return {}
+                
+            # Format positions
+            open_positions = {}
+            for pos in positions:
+                if float(pos.get('size', 0)) > 0:
+                    open_positions[pos['symbol']] = {
+                        'size': float(pos.get('size', 0)),
+                        'entry_price': float(pos.get('entry_price', 0)),
+                        'side': pos.get('side', ''),
+                        'unrealized_pnl': float(pos.get('unrealized_pnl', 0))
+                    }
             
             return open_positions
             
         except Exception as e:
-            logger.error(f"Error getting positions: {e}")
+            logger.error(f"Error getting positions: {str(e)}")
             return {}
             
     async def calculate_correlation(self, symbol: str, positions: Dict) -> float:
@@ -339,36 +396,25 @@ class RiskManager:
             float: Volatility value (standard deviation of returns)
         """
         try:
-            current_time = datetime.now()
-            
-            # Check cache
-            if symbol in self.price_history and symbol in self.last_update:
-                if current_time - self.last_update[symbol] < self.cache_expiry:
-                    prices = self.price_history[symbol]
-                else:
-                    # Fetch new data
-                    client = ccxt.binance()
-                    ohlcv = await client.fetch_ohlcv(symbol, timeframe='1h', limit=100)
-                    prices = [candle[4] for candle in ohlcv]  # Close prices
-                    self.price_history[symbol] = prices
-                    self.last_update[symbol] = current_time
-            else:
-                # Fetch data for the first time
-                client = ccxt.binance()
-                ohlcv = await client.fetch_ohlcv(symbol, timeframe='1h', limit=100)
-                prices = [candle[4] for candle in ohlcv]  # Close prices
-                self.price_history[symbol] = prices
-                self.last_update[symbol] = current_time
+            if not self.binance_service:
+                logger.error("Binance service not set")
+                return 1.0
                 
+            # Get historical data
+            ohlcv = await self.binance_service.fetch_ohlcv(symbol, timeframe='1h', limit=100)
+            if not ohlcv or len(ohlcv) < 2:
+                logger.error(f"Not enough data for {symbol}")
+                return 1.0
+                
+            # Extract close prices
+            prices = [candle[4] for candle in ohlcv]  # Close prices
+            
             # Calculate returns
-            if len(prices) > 1:
-                returns = np.diff(prices) / prices[:-1]
-                volatility = np.std(returns)
-            else:
-                volatility = 0.0
+            returns = np.diff(prices) / prices[:-1]
+            volatility = np.std(returns)
             
             return float(volatility)
             
         except Exception as e:
-            logger.error(f"Error calculating volatility: {e}")
+            logger.error(f"Error calculating volatility: {str(e)}")
             return 1.0  # Return high volatility on error to be safe 

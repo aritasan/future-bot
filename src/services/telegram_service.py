@@ -92,11 +92,12 @@ class TelegramService:
             logger.error(f"Error sending message: {str(e)}")
             return False
             
-    async def send_order_notification(self, order: Dict) -> bool:
+    async def send_order_notification(self, order: Dict, signals: Optional[Dict] = None) -> bool:
         """Send an order notification.
         
         Args:
             order: Order details
+            signals: Trading signals containing SL/TP information
             
         Returns:
             bool: True if notification sent successfully, False otherwise
@@ -115,10 +116,67 @@ class TelegramService:
                 f"Type: {order['type']}"
             )
             
+            # Add SL/TP information from signals if available
+            if signals:
+                if 'stop_loss' in signals:
+                    sl_price = signals['stop_loss']
+                    sl_percent = abs((sl_price - order['price']) / order['price'] * 100)
+                    message += f"\nStop Loss: {sl_price} ({sl_percent:.2f}%)"
+                if 'take_profit' in signals:
+                    tp_price = signals['take_profit']
+                    tp_percent = abs((tp_price - order['price']) / order['price'] * 100)
+                    message += f"\nTake Profit: {tp_price} ({tp_percent:.2f}%)"
+                
             return await self.send_message(message)
             
         except Exception as e:
             logger.error(f"Error sending order notification: {str(e)}")
+            return False
+            
+    async def send_startup_notification(self) -> bool:
+        """Send bot startup notification.
+        
+        Returns:
+            bool: True if notification sent successfully, False otherwise
+        """
+        try:
+            if not self._is_initialized or self._is_closed:
+                logger.error("Telegram service not initialized or closed")
+                return False
+                
+            message = (
+                "🤖 <b>Trading Bot Started</b>\n\n"
+                f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                "Status: Running"
+            )
+            
+            return await self.send_message(message)
+            
+        except Exception as e:
+            logger.error(f"Error sending startup notification: {str(e)}")
+            return False
+            
+    async def send_shutdown_notification(self) -> bool:
+        """Send bot shutdown notification.
+        
+        Returns:
+            bool: True if notification sent successfully, False otherwise
+        """
+        try:
+            if not self._is_initialized or self._is_closed:
+                logger.error("Telegram service not initialized or closed")
+                return False
+                
+            message = (
+                "🤖 <b>Trading Bot Stopped</b>\n\n"
+                f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                "Status: Stopped"
+            )
+            
+            return await self.send_message(message)
+            
+        except Exception as e:
+            logger.error(f"Error sending shutdown notification: {str(e)}")
             return False
             
     async def _handle_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -271,11 +329,21 @@ class TelegramService:
                 
             self._is_running = True
             
-            # Start the application
-            await self.application.start()
+            # Initialize the application if not already initialized
+            if not self.application.running:
+                await self.application.initialize()
+                await self.application.start()
             
-            # Run the application
-            await self.application.run_polling()
+            # Run the application in a separate task
+            polling_task = asyncio.create_task(self.application.run_polling())
+            
+            # Wait for the polling task to complete
+            try:
+                await polling_task
+            except asyncio.CancelledError:
+                logger.info("Telegram polling task was cancelled")
+            except Exception as e:
+                logger.error(f"Error in Telegram polling task: {str(e)}")
             
         except Exception as e:
             logger.error(f"Error running Telegram service: {str(e)}")
@@ -305,8 +373,11 @@ class TelegramService:
             # Stop the application
             if self.application:
                 try:
+                    # Stop the application and wait for it to complete
                     await self.application.stop()
                     await self.application.shutdown()
+                    # Wait for any pending tasks to complete
+                    await asyncio.sleep(1)
                 except Exception as e:
                     logger.error(f"Error stopping application: {str(e)}")
                     
