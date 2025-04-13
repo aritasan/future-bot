@@ -276,51 +276,11 @@ class TelegramService:
                 await update.message.reply_text("Failed to get account balance")
                 return
             
-            # Get positions
-            positions = await self.binance_service.get_positions()
-            if positions is None:
-                await update.message.reply_text("Failed to get positions")
+            # Get position statistics
+            position_stats = await self.binance_service.get_position_statistics()
+            if position_stats is None:
+                await update.message.reply_text("Failed to get position statistics")
                 return
-            
-            
-            # Calculate total PnL and active positions
-            total_pnl = 0.0
-            active_positions = 0
-            position_details = []
-            
-            for pos in positions:
-                if pos and isinstance(pos, dict):
-                    # Get position size
-                    size = pos.get('contracts')
-                    try:
-                        size_float = float(size) if size is not None else 0
-                    except (ValueError, TypeError):
-                        size_float = 0
-                        logger.warning(f"Invalid size value: {size}")
-                    
-                    # Get unrealized PnL
-                    unrealized_pnl = pos.get('unrealizedPnl')
-                    try:
-                        pnl_float = float(unrealized_pnl) if unrealized_pnl is not None else 0
-                    except (ValueError, TypeError):
-                        pnl_float = 0
-                        logger.warning(f"Invalid PnL value: {unrealized_pnl}")
-                    
-                    # Count active positions
-                    if size_float > 0:
-                        active_positions += 1
-                        position_details.append({
-                            'symbol': pos.get('symbol', 'Unknown'),
-                            'size': size_float,
-                            'pnl': pnl_float
-                        })
-                    
-                    total_pnl += pnl_float
-                    
-            # Log calculation results
-            logger.info(f"Total PnL calculation: {total_pnl}")
-            logger.info(f"Active positions count: {active_positions}")
-            logger.info(f"Position details: {position_details}")
             
             # Format message
             message = (
@@ -347,17 +307,21 @@ class TelegramService:
                         continue
                     
             # Add positions information
-            message += f"\n📈 Active Positions: {active_positions}\n"
-            message += f"💵 Total Unrealized PnL: {total_pnl:.2f} USDT\n\n"
+            message += f"\n📈 Active Positions: {position_stats['active_positions']}\n"
+            message += f"💵 Total Unrealized PnL: {position_stats['total_pnl']:.2f} USDT\n\n"
             
             # Add position details
-            if position_details:
+            if position_stats['position_details']:
                 message += "📋 <b>Position Details</b>\n"
-                for pos in position_details:
+                for pos in position_stats['position_details']:
                     message += (
                         f"Symbol: {pos['symbol']}\n"
                         f"Size: {pos['size']}\n"
-                        f"PnL: {pos['pnl']:.2f} USDT\n\n"
+                        f"PnL: {pos['pnl']:.2f} USDT\n"
+                        f"Entry Price: {pos['entry_price']}\n"
+                        f"Mark Price: {pos['mark_price']}\n"
+                        f"Leverage: {pos['leverage']}x\n"
+                        f"Side: {pos['side']}\n\n"
                     )
             
             await update.message.reply_text(message, parse_mode='HTML')

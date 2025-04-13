@@ -341,4 +341,76 @@ class BinanceService:
             logger.info("Binance service closed")
             
         except Exception as e:
-            logger.error(f"Error closing Binance service: {str(e)}") 
+            logger.error(f"Error closing Binance service: {str(e)}")
+            
+    async def get_position_statistics(self) -> Dict:
+        """Calculate position statistics including total PnL and active positions.
+        
+        Returns:
+            Dict: Dictionary containing:
+                - total_pnl: Total unrealized PnL
+                - active_positions: Number of active positions
+                - position_details: List of detailed position information
+        """
+        try:
+            if not self._is_initialized:
+                logger.error("Binance service not initialized")
+                return None
+                
+            if self._is_closed:
+                logger.error("Binance service is closed")
+                return None
+                
+            # Get positions
+            positions = await self.get_positions()
+            if positions is None:
+                logger.error("Failed to get positions")
+                return None
+                
+            # Calculate statistics
+            total_pnl = 0.0
+            active_positions = 0
+            position_details = []
+            
+            for pos in positions:
+                if pos and isinstance(pos, dict):
+                    # Get position size
+                    size = pos.get('contracts')
+                    try:
+                        size_float = float(size) if size is not None else 0
+                    except (ValueError, TypeError):
+                        size_float = 0
+                        logger.warning(f"Invalid size value: {size}")
+                    
+                    # Get unrealized PnL
+                    unrealized_pnl = pos.get('unrealizedPnl')
+                    try:
+                        pnl_float = float(unrealized_pnl) if unrealized_pnl is not None else 0
+                    except (ValueError, TypeError):
+                        pnl_float = 0
+                        logger.warning(f"Invalid PnL value: {unrealized_pnl}")
+                    
+                    # Count active positions
+                    if size_float > 0:
+                        active_positions += 1
+                        position_details.append({
+                            'symbol': pos.get('symbol', 'Unknown'),
+                            'size': size_float,
+                            'pnl': pnl_float,
+                            'entry_price': pos.get('entryPrice'),
+                            'mark_price': pos.get('markPrice'),
+                            'leverage': pos.get('leverage'),
+                            'side': pos.get('side')
+                        })
+                    
+                    total_pnl += pnl_float
+            
+            return {
+                'total_pnl': total_pnl,
+                'active_positions': active_positions,
+                'position_details': position_details
+            }
+            
+        except Exception as e:
+            logger.error(f"Error calculating position statistics: {str(e)}")
+            return None 
