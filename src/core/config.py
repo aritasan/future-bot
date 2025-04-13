@@ -47,7 +47,7 @@ DRAWDOWN_WARNING_LEVELS = [0.5, 0.7, 0.9]
 BINANCE_API_KEY = os.getenv("BINANCE_MAINNET_API_KEY")
 BINANCE_API_SECRET = os.getenv("BINANCE_MAINNET_API_SECRET")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+TELEGRAM_CHAT_ID = str(os.getenv("TELEGRAM_CHAT_ID"))  # Convert to string to handle negative IDs
 
 TWITTER_API_KEY = os.getenv("TWITTER_API_KEY")
 TWITTER_API_SECRET = os.getenv("TWITTER_API_SECRET")
@@ -101,52 +101,64 @@ MAX_CORRELATION = 0.7    # Maximum allowed correlation between positions
 MAX_VOLATILITY = 0.02    # Maximum allowed volatility (2%)
 
 def load_config() -> Dict[str, Any]:
-    """Load configuration from environment variables and return as dictionary.
-    
-    Returns:
-        Dict[str, Any]: Configuration dictionary
-    """
+    """Load configuration from environment variables."""
     config = {
-        "api": {
-            "binance": {
-                "api_key": BINANCE_API_KEY,
-                "api_secret": BINANCE_API_SECRET
+        'api': {
+            'binance': {
+                'api_key': BINANCE_API_KEY,
+                'api_secret': BINANCE_API_SECRET
             },
-            "telegram": {
-                "bot_token": TELEGRAM_BOT_TOKEN,
-                "chat_id": TELEGRAM_CHAT_ID
+            'telegram': {
+                'bot_token': TELEGRAM_BOT_TOKEN,
+                'chat_id': TELEGRAM_CHAT_ID
             },
-            "twitter": {
-                "api_key": TWITTER_API_KEY,
-                "api_secret": TWITTER_API_SECRET,
-                "access_token": TWITTER_ACCESS_TOKEN,
-                "access_token_secret": TWITTER_ACCESS_TOKEN_SECRET
+            'twitter': {
+                'api_key': TWITTER_API_KEY,
+                'api_secret': TWITTER_API_SECRET,
+                'access_token': TWITTER_ACCESS_TOKEN,
+                'access_token_secret': TWITTER_ACCESS_TOKEN_SECRET
             },
-            "news": {
-                "api_key": NEWS_API_KEY
+            'news': {
+                'api_key': NEWS_API_KEY
             }
         },
-        "trading": {
-            "risk_per_trade": RISK_PER_TRADE,
-            "min_volume_ratio": MIN_VOLUME_RATIO,
-            "max_volatility_ratio": MAX_VOLATILITY_RATIO,
-            "min_adx": MIN_ADX,
-            "max_bb_width": MAX_BB_WIDTH,
-            "timeframe_weights": TIMEFRAME_WEIGHTS,
-            "signal_score_weights": SIGNAL_SCORE_WEIGHTS,
-            "leverage": DEFAULT_LEVERAGE
+        'trading': {
+            'order_risk_percent': ORDER_RISK_PERCENT,
+            'max_drawdown': MAX_DRAWDOWN,
+            'atr_period': ATR_PERIOD,
+            'max_orders_per_symbol': MAX_ORDERS_PER_SYMBOL,
+            'risk_per_trade': RISK_PER_TRADE,
+            'min_volume_ratio': MIN_VOLUME_RATIO,
+            'max_volatility_ratio': MAX_VOLATILITY_RATIO,
+            'min_adx': MIN_ADX,
+            'max_bb_width': MAX_BB_WIDTH,
+            'timeframe_weights': TIMEFRAME_WEIGHTS,
+            'signal_score_weights': SIGNAL_SCORE_WEIGHTS,
+            'drawdown_warning_levels': DRAWDOWN_WARNING_LEVELS,
+            'trading_pairs': TRADING_PAIRS,
+            'timeframes': TIMEFRAMES,
+            'default_timeframe': DEFAULT_TIMEFRAME,
+            'default_leverage': DEFAULT_LEVERAGE,
+            'max_leverage': MAX_LEVERAGE,
+            'min_order_size': MIN_ORDER_SIZE,
+            'max_correlation': MAX_CORRELATION
         },
-        "health_monitor": {
-            "max_errors": FAILURE_THRESHOLD,
-            "cpu_threshold": CPU_THRESHOLD,
-            "memory_threshold": MEMORY_THRESHOLD,
-            "disk_threshold": DISK_THRESHOLD
+        'cache': {
+            'price_ttl': PRICE_CACHE_TTL,
+            'position_ttl': POSITION_CACHE_TTL
         },
-        "risk_management": {
-            "max_correlation": MAX_CORRELATION,
-            "max_volatility": MAX_VOLATILITY
+        'circuit_breaker': {
+            'failure_threshold': FAILURE_THRESHOLD,
+            'reset_timeout': RESET_TIMEOUT
         },
-        "trading_pairs": TRADING_PAIRS
+        'health_monitor': {
+            'cpu_threshold': CPU_THRESHOLD,
+            'memory_threshold': MEMORY_THRESHOLD,
+            'disk_threshold': DISK_THRESHOLD
+        },
+        'model': {
+            'dir': MODEL_DIR,
+            'positions_file': POSITIONS_FILE
+        }
     }
-    
     return config 

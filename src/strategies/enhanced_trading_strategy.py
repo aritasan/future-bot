@@ -3,8 +3,9 @@ Enhanced trading strategy implementation.
 """
 
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 import pandas as pd
+import numpy as np
 
 from src.services.indicator_service import IndicatorService
 from src.services.sentiment_service import SentimentService
@@ -30,6 +31,11 @@ class EnhancedTradingStrategy:
         self.max_volatility_ratio = 2.0  # Tỷ lệ biến động tối đa so với trung bình
         self.min_adx = 25  # ADX tối thiểu cho xu hướng mạnh
         self.max_bb_width = 0.1  # Độ rộng tối đa của dải Bollinger
+        
+        # BTC correlation parameters
+        self.min_btc_correlation = 0.5  # Tương quan tối thiểu với BTC
+        self.max_btc_lag = 2  # Độ trễ tối đa cho phép (số nến)
+        self.btc_volatility_threshold = 0.004  # Ngưỡng biến động BTC (0.4%)
         
         # Timeframe weights
         self.timeframe_weights = {
@@ -155,7 +161,7 @@ class EnhancedTradingStrategy:
             return None
             
     async def generate_signals(self, symbol: str, indicator_service: IndicatorService) -> Optional[Dict]:
-        """Generate trading signals based on technical indicators.
+        """Generate trading signals based on technical indicators and BTC correlation.
         
         Args:
             symbol: Trading pair symbol
@@ -184,8 +190,34 @@ class EnhancedTradingStrategy:
             stop_loss = self._calculate_stop_loss(df)
             take_profit = self._calculate_take_profit(df, current_price)
             
-            # Generate signals
-            if df['RSI'].iloc[-1] < 30 and df['MACD'].iloc[-1] > df['MACD_SIGNAL'].iloc[-1]:
+            # Analyze BTC volatility
+            btc_volatility = await self.analyze_btc_volatility()
+            
+            # Analyze altcoin correlation
+            altcoin_correlation = await self.analyze_altcoin_correlation(symbol, btc_volatility)
+            
+            # Analyze multiple timeframes
+            timeframe_analysis = await self.analyze_multiple_timeframes(symbol)
+            
+            # Check volume condition
+            volume_ma = df['volume'].rolling(20).mean()
+            volume_condition = df['volume'].iloc[-1] > volume_ma.iloc[-1] * 1.2
+            
+            # Check ADX condition
+            adx_condition = df['ADX'].iloc[-1] > 20
+            
+            # Generate signals with BTC correlation check
+            if (df['RSI'].iloc[-1] < 35 and  # Giảm từ 30 xuống 35
+                df['MACD'].iloc[-1] > df['MACD_SIGNAL'].iloc[-1] and
+                btc_volatility["trend"] == "UP" and
+                btc_volatility["is_volatile"] and
+                altcoin_correlation["reaction"] in ["STRONG", "MODERATE", "WEAK"] and  # Thêm WEAK
+                altcoin_correlation["correlation"] > 0 and
+                altcoin_correlation["lag"] <= self.max_btc_lag + 1 and  # Tăng độ trễ cho phép
+                volume_condition and  # Thêm điều kiện volume
+                adx_condition and  # Thêm điều kiện ADX
+                self.check_trend_conflicts(timeframe_analysis)):  # Thêm điều kiện multiple timeframe
+                
                 return {
                     'symbol': symbol,
                     'side': 'buy',
@@ -195,24 +227,22 @@ class EnhancedTradingStrategy:
                     'stop_loss': stop_loss,
                     'take_profit': take_profit,
                     'position_size': position_size,
-                    'tp_order': {
-                        'symbol': symbol,
-                        'side': 'sell',
-                        'type': 'limit',
-                        'amount': position_size,
-                        'price': take_profit,
-                        'reduceOnly': True
-                    },
-                    'sl_order': {
-                        'symbol': symbol,
-                        'side': 'sell',
-                        'type': 'stop',
-                        'amount': position_size,
-                        'price': stop_loss,
-                        'reduceOnly': True
-                    }
+                    'btc_volatility': btc_volatility,
+                    'altcoin_correlation': altcoin_correlation,
+                    'timeframe_analysis': timeframe_analysis
                 }
-            elif df['RSI'].iloc[-1] > 70 and df['MACD'].iloc[-1] < df['MACD_SIGNAL'].iloc[-1]:
+                
+            elif (df['RSI'].iloc[-1] > 65 and  # Giảm từ 70 xuống 65
+                  df['MACD'].iloc[-1] < df['MACD_SIGNAL'].iloc[-1] and
+                  btc_volatility["trend"] == "DOWN" and
+                  btc_volatility["is_volatile"] and
+                  altcoin_correlation["reaction"] in ["STRONG", "MODERATE", "WEAK"] and  # Thêm WEAK
+                  altcoin_correlation["correlation"] < 0 and
+                  altcoin_correlation["lag"] <= self.max_btc_lag + 1 and  # Tăng độ trễ cho phép
+                  volume_condition and  # Thêm điều kiện volume
+                  adx_condition and  # Thêm điều kiện ADX
+                  self.check_trend_conflicts(timeframe_analysis)):  # Thêm điều kiện multiple timeframe
+                
                 return {
                     'symbol': symbol,
                     'side': 'sell',
@@ -222,28 +252,15 @@ class EnhancedTradingStrategy:
                     'stop_loss': stop_loss,
                     'take_profit': take_profit,
                     'position_size': position_size,
-                    'tp_order': {
-                        'symbol': symbol,
-                        'side': 'buy',
-                        'type': 'limit',
-                        'amount': position_size,
-                        'price': take_profit,
-                        'reduceOnly': True
-                    },
-                    'sl_order': {
-                        'symbol': symbol,
-                        'side': 'buy',
-                        'type': 'stop',
-                        'amount': position_size,
-                        'price': stop_loss,
-                        'reduceOnly': True
-                    }
+                    'btc_volatility': btc_volatility,
+                    'altcoin_correlation': altcoin_correlation,
+                    'timeframe_analysis': timeframe_analysis
                 }
-            else:
-                return None
                 
+            return None
+            
         except Exception as e:
-            logger.error(f"Error generating signals for {symbol}: {str(e)}")
+            logger.error(f"Error generating signals: {str(e)}")
             return None
             
     def _check_trend_following(self, df: pd.DataFrame) -> bool:
@@ -602,46 +619,35 @@ class EnhancedTradingStrategy:
             logger.error(f"Error analyzing multiple timeframes: {str(e)}")
             return {}
             
-    async def analyze_btc_volatility(self, timeframe: str = "5m") -> Dict:
-        """Analyze BTC volatility.
+    async def analyze_btc_volatility(self) -> Dict:
+        """Phân tích biến động của BTC.
         
-        Args:
-            timeframe: Timeframe for analysis
-            
         Returns:
-            Dict: BTC volatility analysis
+            Dict: Thông tin về biến động BTC
         """
         try:
-            # Get BTC data
-            btc_df = await self.indicator_service.calculate_indicators("BTC/USDT", timeframe)
+            # Lấy dữ liệu BTC/USDT
+            btc_df = await self.indicator_service.calculate_indicators("BTCUSDT")
             if btc_df is None or btc_df.empty:
-                return {
-                    "volatility": 0.0,
-                    "trend": "NEUTRAL",
-                    "strength": 0.0,
-                    "roc": 0.0,
-                    "acceleration": 0.0,
-                    "is_volatile": False,
-                    "is_accelerating": False
-                }
+                return {"volatility": 0.0, "trend": "NEUTRAL", "strength": 0.0}
             
-            # Calculate volatility
+            # Tính toán các chỉ số biến động
             current_price = btc_df["close"].iloc[-1]
-            atr = btc_df.get("ATR", pd.Series([0.0])).iloc[-1]
-            volatility = atr / current_price if current_price > 0 else 0.0
+            atr = btc_df["ATR"].iloc[-1]
+            volatility = atr / current_price
             
-            # Calculate rate of change
-            roc = (current_price - btc_df["close"].iloc[-5]) / btc_df["close"].iloc[-5] if len(btc_df) >= 5 else 0.0
+            # Tính tốc độ thay đổi giá (ROC)
+            roc = (current_price - btc_df["close"].iloc[-5]) / btc_df["close"].iloc[-5]
             
-            # Calculate acceleration
-            prev_roc = (btc_df["close"].iloc[-6] - btc_df["close"].iloc[-10]) / btc_df["close"].iloc[-10] if len(btc_df) >= 10 else 0.0
+            # Tính gia tốc (thay đổi của ROC)
+            prev_roc = (btc_df["close"].iloc[-6] - btc_df["close"].iloc[-10]) / btc_df["close"].iloc[-10]
             acceleration = roc - prev_roc
             
-            # Determine trend
+            # Xác định xu hướng ngắn hạn
             ema_20 = btc_df["close"].ewm(span=20).mean()
             ema_50 = btc_df["close"].ewm(span=50).mean()
             trend = "UP" if ema_20.iloc[-1] > ema_50.iloc[-1] else "DOWN"
-            strength = abs(ema_20.iloc[-1] - ema_50.iloc[-1]) / ema_50.iloc[-1] if ema_50.iloc[-1] > 0 else 0.0
+            strength = abs(ema_20.iloc[-1] - ema_50.iloc[-1]) / ema_50.iloc[-1]
             
             return {
                 "volatility": volatility,
@@ -649,94 +655,104 @@ class EnhancedTradingStrategy:
                 "strength": strength,
                 "roc": roc,
                 "acceleration": acceleration,
-                "is_volatile": volatility > 0.004,  # > 0.5%
-                "is_accelerating": abs(acceleration) > 0.005  # > 0.5%
+                "is_volatile": volatility > self.btc_volatility_threshold,
+                "is_accelerating": abs(acceleration) > self.btc_volatility_threshold
             }
             
         except Exception as e:
             logger.error(f"Error analyzing BTC volatility: {str(e)}")
-            return {
-                "volatility": 0.0,
-                "trend": "NEUTRAL",
-                "strength": 0.0,
-                "roc": 0.0,
-                "acceleration": 0.0,
-                "is_volatile": False,
-                "is_accelerating": False
-            }
-            
+            return {"volatility": 0.0, "trend": "NEUTRAL", "strength": 0.0}
+
     async def analyze_altcoin_correlation(self, symbol: str, btc_volatility: Dict) -> Dict:
-        """Analyze altcoin correlation with BTC.
+        """Phân tích tương quan giữa altcoin và BTC.
         
         Args:
-            symbol: Altcoin symbol
-            btc_volatility: BTC volatility analysis
+            symbol: Trading pair symbol
+            btc_volatility: Thông tin biến động BTC
             
         Returns:
-            Dict: Altcoin correlation analysis
+            Dict: Thông tin tương quan
         """
         try:
-            # Get altcoin data
-            alt_df = await self.indicator_service.calculate_indicators(symbol, "5m")
-            if alt_df is None or alt_df.empty:
+            # Lấy dữ liệu altcoin và BTC
+            alt_df = await self.indicator_service.calculate_indicators(symbol)
+            btc_df = await self.indicator_service.calculate_indicators("BTCUSDT")
+            
+            if alt_df is None or btc_df is None or alt_df.empty or btc_df.empty:
+                return {"reaction": "WEAK", "correlation": 0, "lag": 0}
+            
+            # Đảm bảo dữ liệu có cùng độ dài
+            min_length = min(len(alt_df), len(btc_df))
+            alt_df = alt_df.tail(min_length)
+            btc_df = btc_df.tail(min_length)
+            
+            # Tính toán tương quan động với xử lý lỗi
+            correlation_window = 24  # 24 nến
+            try:
+                # Sử dụng numpy để tính tương quan với xử lý lỗi
+                # Tính toán returns với xử lý lỗi
+                alt_returns = alt_df["close"].pct_change()
+                btc_returns = btc_df["close"].pct_change()
+                
+                # Loại bỏ các giá trị NaN và vô cùng
+                alt_returns = alt_returns.replace([np.inf, -np.inf], np.nan).fillna(0)
+                btc_returns = btc_returns.replace([np.inf, -np.inf], np.nan).fillna(0)
+                
+                # Kiểm tra độ lệch chuẩn để tránh chia cho 0
+                def safe_correlation(x, y):
+                    if len(x) < 2 or len(y) < 2:
+                        return 0
+                    x_std = np.std(x)
+                    y_std = np.std(y)
+                    if x_std == 0 or y_std == 0:
+                        return 0
+                    return np.corrcoef(x, y)[0, 1]
+                
+                # Tính tương quan động
+                rolling_corr = pd.Series(index=alt_df.index)
+                for i in range(correlation_window, len(alt_df)):
+                    window_alt = alt_returns[i-correlation_window:i]
+                    window_btc = btc_returns[i-correlation_window:i]
+                    corr = safe_correlation(window_alt, window_btc)
+                    if not np.isnan(corr):
+                        rolling_corr.iloc[i] = corr
+                
+                current_corr = rolling_corr.iloc[-1] if not rolling_corr.empty else 0
+                
+                # Tính toán độ trễ phản ứng với xử lý lỗi
+                max_lag = 6
+                best_lag = 0
+                max_corr = 0
+                
+                for lag in range(max_lag + 1):
+                    shifted_btc = btc_returns.shift(lag).fillna(0)
+                    corr = safe_correlation(alt_returns, shifted_btc)
+                    if not np.isnan(corr) and abs(corr) > abs(max_corr):
+                        max_corr = corr
+                        best_lag = lag
+                
+                # Phân tích phản ứng với xử lý lỗi
+                reaction = "WEAK"
+                if not np.isnan(current_corr):
+                    if abs(current_corr) > 0.7:
+                        reaction = "STRONG"
+                    elif abs(current_corr) > 0.5:
+                        reaction = "MODERATE"
+                
                 return {
-                    "correlation": 0.0,
-                    "reaction": "NEUTRAL",
-                    "strength": 0.0,
-                    "volatility": 0.0,
-                    "roc": 0.0,
-                    "is_reacting": False
+                    "reaction": reaction,
+                    "correlation": float(current_corr) if not np.isnan(current_corr) else 0,
+                    "lag": best_lag,
+                    "max_correlation": float(max_corr) if not np.isnan(max_corr) else 0
                 }
-            
-            # Calculate altcoin volatility
-            atr = alt_df.get("ATR", pd.Series([0.0])).iloc[-1]
-            current_price = alt_df["close"].iloc[-1]
-            alt_volatility = atr / current_price if current_price > 0 else 0.0
-            
-            # Calculate rate of change
-            alt_roc = (current_price - alt_df["close"].iloc[-5]) / alt_df["close"].iloc[-5] if len(alt_df) >= 5 else 0.0
-            
-            # Calculate correlation
-            correlation = await self.calculate_dynamic_correlation(symbol)
-            
-            # Analyze reaction
-            reaction = "NEUTRAL"
-            reaction_strength = 0.0
-            is_reacting = False
-            
-            if btc_volatility.get("is_volatile", False):
-                if abs(alt_roc) > abs(btc_volatility.get("roc", 0.0)) * 0.8:
-                    reaction = "STRONG"
-                    reaction_strength = alt_volatility / btc_volatility.get("volatility", 1.0)
-                    is_reacting = True
-                elif abs(alt_roc) > abs(btc_volatility.get("roc", 0.0)) * 0.5:
-                    reaction = "MODERATE"
-                    reaction_strength = alt_volatility / btc_volatility.get("volatility", 1.0)
-                    is_reacting = True
-                else:
-                    reaction = "WEAK"
-                    reaction_strength = alt_volatility / btc_volatility.get("volatility", 1.0)
-                    is_reacting = True
-            
-            return {
-                "correlation": float(correlation),
-                "reaction": reaction,
-                "strength": float(reaction_strength),
-                "volatility": float(alt_volatility),
-                "roc": float(alt_roc),
-                "is_reacting": is_reacting
-            }
+                
+            except Exception as e:
+                logger.error(f"Error in correlation calculation: {str(e)}")
+                return {"reaction": "WEAK", "correlation": 0, "lag": 0}
             
         except Exception as e:
             logger.error(f"Error analyzing altcoin correlation: {str(e)}")
-            return {
-                "correlation": 0.0,
-                "reaction": "NEUTRAL",
-                "strength": 0.0,
-                "volatility": 0.0,
-                "roc": 0.0,
-                "is_reacting": False
-            }
+            return {"reaction": "WEAK", "correlation": 0, "lag": 0}
             
     async def calculate_dynamic_correlation(self, symbol: str, window: int = 20) -> float:
         """Calculate dynamic correlation between altcoin and BTC.

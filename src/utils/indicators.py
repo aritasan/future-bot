@@ -176,9 +176,32 @@ def calculate_indicators(df: pd.DataFrame, params: Optional[Dict] = None) -> pd.
         df = calculate_bollinger_bands(df)
         df["BB_width"] = (df["BB_upper"] - df["BB_lower"]) / df["BB_middle"]
         
+        # Calculate Ichimoku Cloud
+        # Tenkan-sen (Conversion Line)
+        high_9 = df["high"].rolling(window=9, min_periods=1).max()
+        low_9 = df["low"].rolling(window=9, min_periods=1).min()
+        df["tenkan_sen"] = (high_9 + low_9) / 2
+        
+        # Kijun-sen (Base Line)
+        high_26 = df["high"].rolling(window=26, min_periods=1).max()
+        low_26 = df["low"].rolling(window=26, min_periods=1).min()
+        df["kijun_sen"] = (high_26 + low_26) / 2
+        
+        # Senkou Span A (Leading Span A)
+        df["senkou_span_a"] = ((df["tenkan_sen"] + df["kijun_sen"]) / 2).shift(26)
+        
+        # Senkou Span B (Leading Span B)
+        high_52 = df["high"].rolling(window=52, min_periods=1).max()
+        low_52 = df["low"].rolling(window=52, min_periods=1).min()
+        df["senkou_span_b"] = ((high_52 + low_52) / 2).shift(26)
+        
+        # Chikou Span (Lagging Span)
+        df["chikou_span"] = df["close"].shift(-26)
+        
         # Fill any remaining NaN values with 0 for indicators
         indicator_columns = ['RSI', 'ADX', 'ATR', 'EMA_FAST', 'EMA_SLOW', 'MACD', 'MACD_SIGNAL', 
-                           'BB_middle', 'BB_upper', 'BB_lower', 'BB_width']
+                           'BB_middle', 'BB_upper', 'BB_lower', 'BB_width',
+                           'tenkan_sen', 'kijun_sen', 'senkou_span_a', 'senkou_span_b', 'chikou_span']
         df[indicator_columns] = df[indicator_columns].fillna(0)
         
         return df

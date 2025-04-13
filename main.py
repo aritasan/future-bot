@@ -11,6 +11,7 @@ import os
 from datetime import datetime
 from typing import List, Set, Optional
 import platform
+import time
 
 from src.core.config import load_config
 from src.services.binance_service import BinanceService
@@ -116,20 +117,23 @@ async def process_symbol(
         logger.error(f"Fatal error processing symbol {symbol}: {str(e)}")
         health_monitor.record_error()
     finally:
-        # Cleanup
-        try:
-            if 'binance' not in closed_services:
-                await binance_service.close()
-                closed_services.add('binance')
-        except Exception as e:
-            logger.error(f"Error closing Binance service for {symbol}: {str(e)}")
-            
-        try:
-            if 'telegram' not in closed_services:
-                await telegram_service.close()
-                closed_services.add('telegram')
-        except Exception as e:
-            logger.error(f"Error closing Telegram service for {symbol}: {str(e)}")
+        # Only cleanup if the service is not already closed
+        if not is_running:
+            try:
+                if 'binance' not in closed_services:
+                    await binance_service.close()
+                    closed_services.add('binance')
+            except Exception as e:
+                logger.error(f"Error closing Binance service for {symbol}: {str(e)}")
+                
+            try:
+                if 'telegram' not in closed_services:
+                    # Wait for any pending messages to be sent
+                    await asyncio.sleep(2)
+                    await telegram_service.close()
+                    closed_services.add('telegram')
+            except Exception as e:
+                logger.error(f"Error closing Telegram service for {symbol}: {str(e)}")
 
 async def cleanup_services(
     binance_service: Optional[BinanceService],
@@ -165,8 +169,15 @@ async def cleanup_services(
             
     if telegram_service and 'telegram' not in closed_services:
         try:
-            # Give Telegram service time to process pending messages
-            await asyncio.sleep(1)
+            # Give Telegram service more time to process pending messages
+            await asyncio.sleep(3)
+            # Ensure all pending messages are sent
+            if hasattr(telegram_service, 'polling_task') and telegram_service.polling_task:
+                telegram_service.polling_task.cancel()
+                try:
+                    await telegram_service.polling_task
+                except asyncio.CancelledError:
+                    pass
             await telegram_service.close()
             closed_services.add('telegram')
         except Exception as e:
@@ -206,50 +217,31 @@ async def main():
         strategy = EnhancedTradingStrategy(config)
         indicator_service = IndicatorService(config)
 
-        # Set binance_service for services that need it
+        # Set up services
         risk_manager.set_binance_service(binance_service)
         strategy.set_binance_service(binance_service)
         telegram_service.set_binance_service(binance_service)
 
         # Initialize services
-        try:
-            if not binance_service.initialize():
-                logger.error("Failed to initialize Binance service")
-                return
-        except Exception as e:
-            logger.error(f"Failed to initialize Binance service: {str(e)}")
+        if not binance_service.initialize():
+            logger.error("Failed to initialize Binance service")
             return
             
-        try:
-            if not await telegram_service.initialize():
-                logger.error("Failed to initialize Telegram service")
-                return
-        except Exception as e:
-            logger.error(f"Failed to initialize Telegram service: {str(e)}")
+        await telegram_service.initialize()
+        if not telegram_service._is_initialized:
+            logger.error("Telegram service initialization failed")
             return
             
-        try:
-            if not await health_monitor.initialize():
-                logger.error("Failed to initialize health monitor")
-                return
-        except Exception as e:
-            logger.error(f"Failed to initialize health monitor: {str(e)}")
+        if not await health_monitor.initialize():
+            logger.error("Failed to initialize health monitor")
             return
             
-        try:
-            if not await indicator_service.initialize():
-                logger.error("Failed to initialize indicator service")
-                return
-        except Exception as e:
-            logger.error(f"Failed to initialize indicator service: {str(e)}")
+        if not await indicator_service.initialize():
+            logger.error("Failed to initialize indicator service")
             return
             
-        try:
-            if not await strategy.initialize():
-                logger.error("Failed to initialize strategy")
-                return
-        except Exception as e:
-            logger.error(f"Failed to initialize strategy: {str(e)}")
+        if not await strategy.initialize():
+            logger.error("Failed to initialize strategy")
             return
 
         # Send startup notification
@@ -288,35 +280,45 @@ async def main():
         # Main loop to keep the bot running
         while is_running:
             try:
-                # Check if any tasks have completed
-                done, pending = await asyncio.wait(
-                    tasks,
-                    timeout=0.1,
-                    return_when=asyncio.FIRST_COMPLETED
-                )
+                # Read trading pairs from file
+                try:
+                    with open("filtered_pairs.txt", "r") as f:
+                        symbols = [line.strip() for line in f.readlines()]
+                except Exception as e:
+                    logger.error(f"Error reading trading pairs: {str(e)}")
+                    await asyncio.sleep(60)
+                    continue
+                    
+                if not symbols:
+                    logger.warning("No trading symbols available in filtered_pairs.txt, retrying in 60 seconds...")
+                    await asyncio.sleep(60)
+                    continue
+                    
+                logger.info(f"Processing {len(symbols)} trading symbols from filtered_pairs.txt")
                 
-                # Handle completed tasks
-                for task in done:
+                # Process each symbol
+                for symbol in symbols:
                     try:
-                        await task
-                    except asyncio.CancelledError:
-                        logger.info("Task was cancelled")
-                    except Exception as e:
-                        logger.error(f"Task failed: {str(e)}")
-                        health_monitor.record_error()
+                        # Generate signals with indicator_service
+                        signals = await strategy.generate_signals(symbol, indicator_service)
                         
-                # Update tasks list with pending tasks
-                tasks = list(pending)
+                        # Process signals
+                        if signals:
+                            await strategy.process_signals(symbol, signals)
+                            
+                    except Exception as e:
+                        logger.error(f"Error processing symbol {symbol}: {str(e)}")
+                        continue
                 
-                # Add back any completed tasks that need to be restarted
-                for task in done:
-                    if not task.done() or not task.cancelled():
-                        tasks.append(task)
-            
+                # Sleep for a while before next iteration
+                await asyncio.sleep(60)
+                
+            except KeyboardInterrupt:
+                logger.info("Received keyboard interrupt, shutting down...")
+                break
             except Exception as e:
                 logger.error(f"Error in main loop: {str(e)}")
-                health_monitor.record_error()
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(60)  # Wait before retrying
             
         # Send shutdown notification
         await telegram_service.send_shutdown_notification()
@@ -356,11 +358,15 @@ async def main():
         logger.info("Shutdown complete")
 
 if __name__ == "__main__":
-    # Configure event loop for Windows
-    if platform.system() == 'Windows':
+    # Set event loop policy for Windows
+    if sys.platform == 'win32':
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-        loop = asyncio.SelectorEventLoop()
-        asyncio.set_event_loop(loop)
     
-    # Run the main function
-    asyncio.run(main())
+    try:
+        # Run main function using asyncio.run()
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Received keyboard interrupt, shutting down...")
+    except Exception as e:
+        logger.error(f"Error in main: {str(e)}")
+        sys.exit(1)
