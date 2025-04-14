@@ -8,6 +8,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 from telegram.constants import ParseMode
 import asyncio
 from datetime import datetime, timedelta
+import telegram.error
 
 logger = logging.getLogger(__name__)
 
@@ -439,6 +440,7 @@ class TelegramService:
                 return
             
             if self._is_running:
+                logger.warning("Telegram service is already running")
                 return
             
             self._is_running = True
@@ -448,12 +450,31 @@ class TelegramService:
             if not self._event_loop:
                 self._event_loop = asyncio.get_event_loop()
             
-            # Start polling for updates
-            self.polling_task = asyncio.create_task(self.application.run_polling(
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=True  # Drop any pending updates to avoid conflicts
-            ))
-            logger.info("Started polling for updates")
+            # Start polling for updates with retry mechanism
+            max_retries = 3
+            retry_count = 0
+            while retry_count < max_retries:
+                try:
+                    # Initialize the application first
+                    await self.application.initialize()
+                    await self.application.start()
+                    
+                    # Start polling
+                    self.polling_task = asyncio.create_task(self.application.run_polling(
+                        allowed_updates=Update.ALL_TYPES,
+                        drop_pending_updates=True,
+                        timeout=30
+                    ))
+                    logger.info("Started polling for updates")
+                    break
+                except telegram.error.Conflict as e:
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        logger.warning(f"Conflict detected, retrying ({retry_count}/{max_retries})...")
+                        await asyncio.sleep(2)
+                    else:
+                        logger.error("Max retries reached for polling")
+                        raise
             
             # Start sending status updates
             self.status_task = asyncio.create_task(self._send_status_updates())
@@ -606,7 +627,6 @@ class TelegramService:
         """Close the Telegram service."""
         try:
             if not self._is_running:
-                logger.warning("Telegram service is not running")
                 return
                 
             self._is_running = False
@@ -632,19 +652,20 @@ class TelegramService:
                     # Stop the updater first
                     if self.application.updater:
                         await self.application.updater.stop()
-                        # Clear the update queue
+                        # Clear the update queue and bot instance
                         self.application.updater._update_queue = None
+                        self.application.updater.bot = None
                     
                     # Then stop the application
                     await self.application.stop()
                     await self.application.shutdown()
                     
-                    # Clear the bot instance
+                    # Clear the bot instance and application
                     self.application.bot = None
                     self.application = None
                     
                     # Give time for pending operations to complete
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(2)
                 except Exception as e:
                     logger.error(f"Error during application shutdown: {str(e)}")
                     
