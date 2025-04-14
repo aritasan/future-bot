@@ -7,6 +7,8 @@ from typing import Dict, Optional, List
 import ccxt.async_support as ccxt
 from datetime import datetime, timedelta
 import pandas as pd
+import time
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +30,11 @@ class BinanceService:
         self.position_cache = {}
         self.cache_expiry = timedelta(minutes=5)
         self.last_update = {}
+        self._market_cache = {}
+        self._position_cache = {}
+        self._balance_cache = {}
+        self._cache_ttl = 60  # 1 minute
+        self._last_update = {}
         
     def initialize(self) -> bool:
         """Initialize the Binance service.
@@ -318,6 +325,9 @@ class BinanceService:
         self.balance_cache.clear()
         self.position_cache.clear()
         self.last_update.clear()
+        self._market_cache.clear()
+        self._position_cache.clear()
+        self._balance_cache.clear()
         
     async def close(self):
         """Close the Binance service."""
@@ -343,68 +353,123 @@ class BinanceService:
         except Exception as e:
             logger.error(f"Error closing Binance service: {str(e)}")
             
-    async def get_position_statistics(self) -> Dict:
-        """Calculate position statistics including total PnL and active positions.
-        
-        Returns:
-            Dict: Dictionary containing:
-                - total_pnl: Total unrealized PnL
-                - active_positions: Number of active positions
-                - position_details: List of detailed position information
-        """
+    async def get_market_data(self, symbol: str) -> Optional[Dict]:
+        """Get market data with caching."""
         try:
-            if not self._is_initialized:
-                logger.error("Binance service not initialized")
+            current_time = time.time()
+            cache_key = f"market_{symbol}"
+            
+            if cache_key in self._market_cache:
+                cached_data, timestamp = self._market_cache[cache_key]
+                if current_time - timestamp < self._cache_ttl:
+                    return cached_data
+            
+            # Fetch fresh data if cache expired
+            data = await self._fetch_market_data(symbol)
+            if data:
+                self._market_cache[cache_key] = (data, current_time)
+                self._last_update[cache_key] = current_time
+            return data
+            
+        except Exception as e:
+            logger.error(f"Error getting market data: {str(e)}")
+            return None
+            
+    async def get_position_statistics(self) -> Dict:
+        """Get position statistics with caching."""
+        try:
+            current_time = time.time()
+            cache_key = "position_stats"
+            
+            if cache_key in self._position_cache:
+                cached_data, timestamp = self._position_cache[cache_key]
+                if current_time - timestamp < self._cache_ttl:
+                    return cached_data
+            
+            # Calculate fresh statistics
+            stats = await self._calculate_position_statistics()
+            if stats:
+                self._position_cache[cache_key] = (stats, current_time)
+                self._last_update[cache_key] = current_time
+            return stats
+            
+        except Exception as e:
+            logger.error(f"Error getting position statistics: {str(e)}")
+            return None
+            
+    async def _fetch_market_data(self, symbol: str) -> Optional[Dict]:
+        """Fetch market data efficiently."""
+        try:
+            # Fetch multiple data points in parallel
+            tasks = [
+                self.exchange.fetch_ticker(symbol),
+                self.exchange.fetch_ohlcv(symbol, timeframe='1m', limit=1),
+                self.exchange.fetch_order_book(symbol, limit=5)
+            ]
+            
+            ticker, ohlcv, order_book = await asyncio.gather(*tasks)
+            
+            if not all([ticker, ohlcv, order_book]):
                 return None
                 
-            if self._is_closed:
-                logger.error("Binance service is closed")
-                return None
+            return {
+                'price': ticker['last'],
+                'volume': ticker['quoteVolume'],
+                'bid': order_book['bids'][0][0],
+                'ask': order_book['asks'][0][0],
+                'high': ohlcv[0][2],
+                'low': ohlcv[0][3]
+            }
+            
+        except Exception as e:
+            logger.error(f"Error fetching market data: {str(e)}")
+            return None
+            
+    async def _calculate_position_statistics(self) -> Dict:
+        """Calculate position statistics efficiently."""
+        try:
+            # Get positions and account info in parallel
+            tasks = [
+                self.exchange.fetch_positions(),
+                self.exchange.fetch_balance()
+            ]
+            
+            positions, balance = await asyncio.gather(*tasks)
+            
+            if not positions:
+                return {
+                    'total_pnl': 0.0,
+                    'active_positions': 0,
+                    'position_details': []
+                }
                 
-            # Get positions
-            positions = await self.get_positions()
-            if positions is None:
-                logger.error("Failed to get positions")
-                return None
-                
-            # Calculate statistics
+            # Process positions efficiently
             total_pnl = 0.0
             active_positions = 0
             position_details = []
             
             for pos in positions:
-                if pos and isinstance(pos, dict):
-                    # Get position size
-                    size = pos.get('contracts')
-                    try:
-                        size_float = float(size) if size is not None else 0
-                    except (ValueError, TypeError):
-                        size_float = 0
-                        logger.warning(f"Invalid size value: {size}")
+                if not pos or not isinstance(pos, dict):
+                    continue
                     
-                    # Get unrealized PnL
-                    unrealized_pnl = pos.get('unrealizedPnl')
-                    try:
-                        pnl_float = float(unrealized_pnl) if unrealized_pnl is not None else 0
-                    except (ValueError, TypeError):
-                        pnl_float = 0
-                        logger.warning(f"Invalid PnL value: {unrealized_pnl}")
+                size = float(pos.get('contracts', 0))
+                if size <= 0:
+                    continue
                     
-                    # Count active positions
-                    if size_float > 0:
-                        active_positions += 1
-                        position_details.append({
-                            'symbol': pos.get('symbol', 'Unknown'),
-                            'size': size_float,
-                            'pnl': pnl_float,
-                            'entry_price': pos.get('entryPrice'),
-                            'mark_price': pos.get('markPrice'),
-                            'leverage': pos.get('leverage'),
-                            'side': pos.get('side')
-                        })
-                    
-                    total_pnl += pnl_float
-            
+                pnl = float(pos.get('unrealizedPnl', 0))
+                total_pnl += pnl
+                active_positions += 1
+                
+                position_details.append({
+                    'symbol': pos.get('symbol', 'Unknown'),
+                    'size': size,
+                    'pnl': pnl,
+                    'entry_price': pos.get('entryPrice'),
+                    'mark_price': pos.get('markPrice'),
+                    'leverage': pos.get('leverage'),
+                    'side': pos.get('side')
+                })
+                
             return {
                 'total_pnl': total_pnl,
                 'active_positions': active_positions,

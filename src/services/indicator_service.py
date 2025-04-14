@@ -8,9 +8,9 @@ from datetime import datetime, timedelta
 import ccxt.async_support as ccxt
 import asyncio
 import platform
-from src.utils.indicators import (
-    calculate_indicators
-)
+import numpy as np
+
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +32,9 @@ class IndicatorService:
         self.exchange = None
         self.max_retries = 3
         self.retry_delay = 1
+        self._cache = {}
+        self._cache_ttl = 300  # 5 minutes
+        self._last_update = {}
         
     async def initialize(self) -> bool:
         """Initialize the indicator service.
@@ -140,88 +143,47 @@ class IndicatorService:
             logger.error(f"Error in get_historical_data for {symbol}: {str(e)}")
             return None
             
-    async def calculate_indicators(self, symbol: str, timeframe: str = "5m", limit: int = 100) -> Optional[pd.DataFrame]:
-        """Calculate technical indicators with caching.
-        
-        Args:
-            symbol: Trading pair symbol
-            timeframe: Timeframe for data
-            limit: Number of candles to fetch
-            
-        Returns:
-            Optional[pd.DataFrame]: DataFrame with indicators
-        """
+    async def calculate_indicators(self, symbol: str, timeframe: str = "5m") -> Optional[pd.DataFrame]:
+        """Calculate indicators with caching."""
         try:
-            if not self._is_initialized:
-                logger.error("Indicator service not initialized")
-                return None
-                
-            if self._is_closed:
-                logger.error("Indicator service is closed")
-                return None
-                
-            cache_key = f"{symbol}_{timeframe}_{limit}_indicators"
-            current_time = datetime.now()
+            # Check cache first
+            cache_key = f"{symbol}_{timeframe}"
+            current_time = time.time()
             
-            # Check cache
-            if cache_key in self.indicator_cache:
-                cached_data, timestamp = self.indicator_cache[cache_key]
-                if current_time - timestamp < self.cache_expiry:
+            if cache_key in self._cache:
+                cached_data, timestamp = self._cache[cache_key]
+                if current_time - timestamp < self._cache_ttl:
                     return cached_data
-                    
-            # Get historical data
-            df = await self.get_historical_data(symbol, timeframe, limit)
+            
+            # Calculate indicators if not in cache or cache expired
+            df = await self.get_historical_data(symbol, timeframe)
             if df is None or df.empty:
-                logger.warning(f"No data available for {symbol}")
                 return None
                 
             # Calculate indicators
-            try:
-                df = calculate_indicators(df)
-            except Exception as e:
-                logger.error(f"Error calculating indicators for {symbol}: {str(e)}")
-                return None
+            df = await self._calculate_technical_indicators(df)
             
-            # Validate indicators
-            if df.isnull().any().any():
-                logger.warning(f"Missing values in indicators for {symbol} {timeframe}")
-                df = df.ffill().bfill()
-                
             # Update cache
-            self.indicator_cache[cache_key] = (df, current_time)
+            self._cache[cache_key] = (df, current_time)
+            self._last_update[cache_key] = current_time
             
             return df
             
         except Exception as e:
-            logger.error(f"Error in calculate_indicators for {symbol}: {str(e)}")
+            logger.error(f"Error calculating indicators: {str(e)}")
             return None
             
     def clear_cache(self):
-        """Clear all cached data."""
-        self.data_cache.clear()
-        self.indicator_cache.clear()
+        """Clear the indicator cache."""
+        self._cache.clear()
+        self._last_update.clear()
         
     async def close(self):
-        """Close the indicator service."""
+        """Close the service and clear cache."""
         try:
-            if not self._is_initialized:
-                logger.warning("Indicator service was not initialized")
-                return
-                
-            if self._is_closed:
-                logger.warning("Indicator service already closed")
-                return
-                
-            # Clear cache
             self.clear_cache()
-            
-            # Close exchange
-            if self.exchange:
-                await self.exchange.close()
-                
             self._is_closed = True
             logger.info("Indicator service closed")
-            
         except Exception as e:
             logger.error(f"Error closing indicator service: {str(e)}")
             
@@ -339,4 +301,159 @@ class IndicatorService:
             
         except Exception as e:
             logger.error(f"Error calculating Volume Profile: {str(e)}")
+            return df
+            
+    async def _calculate_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate all technical indicators in parallel."""
+        try:
+            # Calculate each indicator sequentially
+            df = self._calculate_rsi(df)
+            df = self._calculate_macd(df)
+            df = self._calculate_bollinger_bands(df)
+            df = self._calculate_atr(df)
+            df = self._calculate_ema(df)
+            df = self._calculate_roc(df)
+            df = self._calculate_adx(df)
+            df = self._calculate_ichimoku(df)
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error calculating technical indicators: {str(e)}")
+            return df
+            
+    def _calculate_rsi(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate RSI indicator."""
+        try:
+            delta = df['close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            
+            # Handle division by zero
+            rs = gain / loss.replace(0, np.nan)
+            rsi = 100 - (100 / (1 + rs))
+            
+            df['RSI'] = rsi.fillna(50)  # Fill NaN with neutral value
+            return df
+        except Exception as e:
+            logger.error(f"Error calculating RSI: {str(e)}")
+            return df
+            
+    def _calculate_macd(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate MACD indicator."""
+        try:
+            exp1 = df['close'].ewm(span=12, adjust=False).mean()
+            exp2 = df['close'].ewm(span=26, adjust=False).mean()
+            macd = exp1 - exp2
+            signal = macd.ewm(span=9, adjust=False).mean()
+            
+            df['MACD'] = macd
+            df['MACD_SIGNAL'] = signal
+            return df
+        except Exception as e:
+            logger.error(f"Error calculating MACD: {str(e)}")
+            return df
+            
+    def _calculate_bollinger_bands(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate Bollinger Bands."""
+        try:
+            sma = df['close'].rolling(window=20).mean()
+            std = df['close'].rolling(window=20).std()
+            
+            # Handle NaN values
+            std = std.fillna(0)
+            
+            df['BB_upper'] = sma + (std * 2)
+            df['BB_lower'] = sma - (std * 2)
+            df['BB_middle'] = sma
+            return df
+        except Exception as e:
+            logger.error(f"Error calculating Bollinger Bands: {str(e)}")
+            return df
+            
+    def _calculate_atr(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate Average True Range."""
+        try:
+            high_low = df['high'] - df['low']
+            high_close = (df['high'] - df['close'].shift()).abs()
+            low_close = (df['low'] - df['close'].shift()).abs()
+            
+            ranges = pd.concat([high_low, high_close, low_close], axis=1)
+            true_range = ranges.max(axis=1)
+            
+            df['ATR'] = true_range.rolling(window=14).mean().fillna(0)
+            return df
+        except Exception as e:
+            logger.error(f"Error calculating ATR: {str(e)}")
+            return df
+            
+    def _calculate_ema(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate Exponential Moving Average."""
+        try:
+            df['EMA_FAST'] = df['close'].ewm(span=12, adjust=False).mean()
+            df['EMA_SLOW'] = df['close'].ewm(span=26, adjust=False).mean()
+            return df
+        except Exception as e:
+            logger.error(f"Error calculating EMA: {str(e)}")
+            return df
+            
+    def _calculate_roc(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate Rate of Change (ROC) indicator."""
+        try:
+            # Calculate ROC with 14-period lookback
+            df['ROC'] = ((df['close'] - df['close'].shift(14)) / df['close'].shift(14)) * 100
+            return df
+        except Exception as e:
+            logger.error(f"Error calculating ROC: {str(e)}")
+            return df
+            
+    def _calculate_adx(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate Average Directional Index (ADX)."""
+        try:
+            # Calculate True Range
+            high_low = df['high'] - df['low']
+            high_close = (df['high'] - df['close'].shift()).abs()
+            low_close = (df['low'] - df['close'].shift()).abs()
+            
+            # Convert to pandas Series for rolling operations
+            high_low = pd.Series(high_low)
+            high_close = pd.Series(high_close)
+            low_close = pd.Series(low_close)
+            
+            # Calculate True Range
+            true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+            
+            # Calculate +DM and -DM
+            up_move = df['high'] - df['high'].shift()
+            down_move = df['low'].shift() - df['low']
+            
+            # Convert to pandas Series
+            up_move = pd.Series(up_move)
+            down_move = pd.Series(down_move)
+            
+            plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0)
+            minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0)
+            
+            # Convert back to pandas Series
+            plus_dm = pd.Series(plus_dm)
+            minus_dm = pd.Series(minus_dm)
+            
+            # Calculate smoothed values
+            tr14 = true_range.rolling(window=14).mean()
+            plus_di14 = 100 * (plus_dm.rolling(window=14).mean() / tr14)
+            minus_di14 = 100 * (minus_dm.rolling(window=14).mean() / tr14)
+            
+            # Calculate ADX
+            dx = 100 * abs(plus_di14 - minus_di14) / (plus_di14 + minus_di14)
+            df['ADX'] = dx.rolling(window=14).mean()
+            
+            # Fill NaN values
+            df['ADX'] = df['ADX'].fillna(0)
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error calculating ADX: {str(e)}")
+            # Return original DataFrame with ADX column set to 0
+            df['ADX'] = 0
             return df 

@@ -10,15 +10,13 @@ from logging.handlers import RotatingFileHandler
 import os
 from datetime import datetime
 from typing import List, Set, Optional
-import platform
-import time
+
 
 from src.core.config import load_config
 from src.services.binance_service import BinanceService
 from src.services.telegram_service import TelegramService
 from src.services.indicator_service import IndicatorService
 from src.core.health_monitor import HealthMonitor
-from src.utils.risk import RiskManager
 from src.strategies.enhanced_trading_strategy import EnhancedTradingStrategy
 
 # Create logs directory if it doesn't exist
@@ -74,7 +72,6 @@ async def process_symbol(
     binance_service: BinanceService,
     telegram_service: TelegramService,
     health_monitor: HealthMonitor,
-    risk_manager: RiskManager,
     strategy: EnhancedTradingStrategy,
     indicator_service: IndicatorService
 ) -> None:
@@ -98,18 +95,15 @@ async def process_symbol(
                 # Process trading signals
                 signals = await strategy.generate_signals(symbol, indicator_service)
                 if signals is not None:
-                    # Check risk before placing order
-                    risk_check = await risk_manager.check_risk(symbol, signals.get('position_size', 0))
-                    if risk_check:
-                        try:
-                            # Place order and send notification
-                            order = await binance_service.place_order(signals)
-                            if order:
-                                await telegram_service.send_order_notification(order, signals)
-                        except Exception as e:
-                            logger.error(f"Error placing order for {symbol}: {str(e)}")
-                            health_monitor.record_error()
-                            continue
+                    try:
+                        # Place order and send notification
+                        order = await binance_service.place_order(signals)
+                        if order:
+                            await telegram_service.send_order_notification(order, signals)
+                    except Exception as e:
+                        logger.error(f"Error placing order for {symbol}: {str(e)}")
+                        health_monitor.record_error()
+                        continue
 
                 await asyncio.sleep(1)  # Prevent CPU overload
 
@@ -247,12 +241,10 @@ async def main():
         binance_service = BinanceService(config)
         telegram_service = TelegramService(config)
         health_monitor = HealthMonitor(config)
-        risk_manager = RiskManager(config)
-        strategy = EnhancedTradingStrategy(config)
         indicator_service = IndicatorService(config)
+        strategy = EnhancedTradingStrategy(config)
 
         # Set up services
-        risk_manager.set_binance_service(binance_service)
         strategy.set_binance_service(binance_service)
         telegram_service.set_binance_service(binance_service)
 
@@ -301,7 +293,6 @@ async def main():
                 binance_service=binance_service,
                 telegram_service=telegram_service,
                 health_monitor=health_monitor,
-                risk_manager=risk_manager,
                 strategy=strategy,
                 indicator_service=indicator_service
             ))

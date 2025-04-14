@@ -6,6 +6,7 @@ import logging
 from typing import Dict, Optional
 import pandas as pd
 import numpy as np
+import time
 
 from src.services.indicator_service import IndicatorService
 from src.services.sentiment_service import SentimentService
@@ -56,6 +57,9 @@ class EnhancedTradingStrategy:
         
         self._is_initialized = False
         self._is_closed = False
+        self._cache = {}
+        self._cache_ttl = 300  # 5 minutes
+        self._last_update = {}
         
     async def initialize(self) -> bool:
         """Initialize the strategy.
@@ -205,6 +209,12 @@ class EnhancedTradingStrategy:
             
             # Check ADX condition
             adx_condition = df['ADX'].iloc[-1] > 20
+            
+            # print(f"BTC volatility: {btc_volatility}")
+            # print(f"Altcoin correlation: {altcoin_correlation}")
+            # print(f"Volume condition: {volume_condition}")
+            # print(f"ADX condition: {adx_condition}")
+            # logger.info(f"{symbol} - BTC volatility: {btc_volatility} - Altcoin correlation: {altcoin_correlation} - Volume condition: {volume_condition} - ADX condition: {adx_condition}")
             
             # Generate signals with BTC correlation check
             if (df['RSI'].iloc[-1] < 35 and  # Giảm từ 30 xuống 35
@@ -397,19 +407,11 @@ class EnhancedTradingStrategy:
             return current_price
             
     async def close(self):
-        """Close the strategy."""
+        """Close the strategy and clear cache."""
         try:
-            if not self._is_initialized:
-                logger.warning("Strategy was not initialized")
-                return
-                
-            if self._is_closed:
-                logger.warning("Strategy already closed")
-                return
-                
+            self.clear_cache()
             self._is_closed = True
             logger.info("Strategy closed")
-            
         except Exception as e:
             logger.error(f"Error closing strategy: {str(e)}")
             
@@ -620,139 +622,80 @@ class EnhancedTradingStrategy:
             return {}
             
     async def analyze_btc_volatility(self) -> Dict:
-        """Phân tích biến động của BTC.
-        
-        Returns:
-            Dict: Thông tin về biến động BTC
-        """
+        """Analyze BTC volatility with caching."""
         try:
-            # Lấy dữ liệu BTC/USDT
-            btc_df = await self.indicator_service.calculate_indicators("BTCUSDT")
-            if btc_df is None or btc_df.empty:
-                return {"volatility": 0.0, "trend": "NEUTRAL", "strength": 0.0}
+            current_time = time.time()
+            cache_key = "btc_volatility"
             
-            # Tính toán các chỉ số biến động
-            current_price = btc_df["close"].iloc[-1]
-            atr = btc_df["ATR"].iloc[-1]
-            volatility = atr / current_price
+            if cache_key in self._cache:
+                cached_data, timestamp = self._cache[cache_key]
+                if current_time - timestamp < self._cache_ttl:
+                    return cached_data
             
-            # Tính tốc độ thay đổi giá (ROC)
-            roc = (current_price - btc_df["close"].iloc[-5]) / btc_df["close"].iloc[-5]
-            
-            # Tính gia tốc (thay đổi của ROC)
-            prev_roc = (btc_df["close"].iloc[-6] - btc_df["close"].iloc[-10]) / btc_df["close"].iloc[-10]
-            acceleration = roc - prev_roc
-            
-            # Xác định xu hướng ngắn hạn
-            ema_20 = btc_df["close"].ewm(span=20).mean()
-            ema_50 = btc_df["close"].ewm(span=50).mean()
-            trend = "UP" if ema_20.iloc[-1] > ema_50.iloc[-1] else "DOWN"
-            strength = abs(ema_20.iloc[-1] - ema_50.iloc[-1]) / ema_50.iloc[-1]
-            
-            return {
-                "volatility": volatility,
-                "trend": trend,
-                "strength": strength,
-                "roc": roc,
-                "acceleration": acceleration,
-                "is_volatile": volatility > self.btc_volatility_threshold,
-                "is_accelerating": abs(acceleration) > self.btc_volatility_threshold
-            }
+            # Calculate fresh analysis
+            analysis = await self._calculate_btc_volatility()
+            if analysis:
+                self._cache[cache_key] = (analysis, current_time)
+                self._last_update[cache_key] = current_time
+            return analysis
             
         except Exception as e:
             logger.error(f"Error analyzing BTC volatility: {str(e)}")
-            return {"volatility": 0.0, "trend": "NEUTRAL", "strength": 0.0}
-
+            return None
+            
     async def analyze_altcoin_correlation(self, symbol: str, btc_volatility: Dict) -> Dict:
-        """Phân tích tương quan giữa altcoin và BTC.
-        
-        Args:
-            symbol: Trading pair symbol
-            btc_volatility: Thông tin biến động BTC
-            
-        Returns:
-            Dict: Thông tin tương quan
-        """
+        """Analyze altcoin correlation with caching."""
         try:
-            # Lấy dữ liệu altcoin và BTC
-            alt_df = await self.indicator_service.calculate_indicators(symbol)
-            btc_df = await self.indicator_service.calculate_indicators("BTCUSDT")
+            current_time = time.time()
+            cache_key = f"correlation_{symbol}"
             
-            if alt_df is None or btc_df is None or alt_df.empty or btc_df.empty:
-                return {"reaction": "WEAK", "correlation": 0, "lag": 0}
+            if cache_key in self._cache:
+                cached_data, timestamp = self._cache[cache_key]
+                if current_time - timestamp < self._cache_ttl:
+                    return cached_data
             
-            # Đảm bảo dữ liệu có cùng độ dài
-            min_length = min(len(alt_df), len(btc_df))
-            alt_df = alt_df.tail(min_length)
-            btc_df = btc_df.tail(min_length)
-            
-            # Tính toán tương quan động với xử lý lỗi
-            correlation_window = 24  # 24 nến
-            try:
-                # Sử dụng numpy để tính tương quan với xử lý lỗi
-                # Tính toán returns với xử lý lỗi
-                alt_returns = alt_df["close"].pct_change()
-                btc_returns = btc_df["close"].pct_change()
-                
-                # Loại bỏ các giá trị NaN và vô cùng
-                alt_returns = alt_returns.replace([np.inf, -np.inf], np.nan).fillna(0)
-                btc_returns = btc_returns.replace([np.inf, -np.inf], np.nan).fillna(0)
-                
-                # Kiểm tra độ lệch chuẩn để tránh chia cho 0
-                def safe_correlation(x, y):
-                    if len(x) < 2 or len(y) < 2:
-                        return 0
-                    x_std = np.std(x)
-                    y_std = np.std(y)
-                    if x_std == 0 or y_std == 0:
-                        return 0
-                    return np.corrcoef(x, y)[0, 1]
-                
-                # Tính tương quan động
-                rolling_corr = pd.Series(index=alt_df.index)
-                for i in range(correlation_window, len(alt_df)):
-                    window_alt = alt_returns[i-correlation_window:i]
-                    window_btc = btc_returns[i-correlation_window:i]
-                    corr = safe_correlation(window_alt, window_btc)
-                    if not np.isnan(corr):
-                        rolling_corr.iloc[i] = corr
-                
-                current_corr = rolling_corr.iloc[-1] if not rolling_corr.empty else 0
-                
-                # Tính toán độ trễ phản ứng với xử lý lỗi
-                max_lag = 6
-                best_lag = 0
-                max_corr = 0
-                
-                for lag in range(max_lag + 1):
-                    shifted_btc = btc_returns.shift(lag).fillna(0)
-                    corr = safe_correlation(alt_returns, shifted_btc)
-                    if not np.isnan(corr) and abs(corr) > abs(max_corr):
-                        max_corr = corr
-                        best_lag = lag
-                
-                # Phân tích phản ứng với xử lý lỗi
-                reaction = "WEAK"
-                if not np.isnan(current_corr):
-                    if abs(current_corr) > 0.7:
-                        reaction = "STRONG"
-                    elif abs(current_corr) > 0.5:
-                        reaction = "MODERATE"
-                
-                return {
-                    "reaction": reaction,
-                    "correlation": float(current_corr) if not np.isnan(current_corr) else 0,
-                    "lag": best_lag,
-                    "max_correlation": float(max_corr) if not np.isnan(max_corr) else 0
-                }
-                
-            except Exception as e:
-                logger.error(f"Error in correlation calculation: {str(e)}")
-                return {"reaction": "WEAK", "correlation": 0, "lag": 0}
+            # Calculate fresh analysis
+            analysis = await self._calculate_altcoin_correlation(symbol)
+            if analysis:
+                self._cache[cache_key] = (analysis, current_time)
+                self._last_update[cache_key] = current_time
+            return analysis
             
         except Exception as e:
             logger.error(f"Error analyzing altcoin correlation: {str(e)}")
-            return {"reaction": "WEAK", "correlation": 0, "lag": 0}
+            return None
+            
+    def clear_cache(self):
+        """Clear the strategy cache."""
+        self._cache.clear()
+        self._last_update.clear()
+        
+    def calculate_trailing_stop(self, current_price: float, atr: float, position_type: str) -> float:
+        """Calculate trailing stop level.
+        
+        Args:
+            current_price: Current market price
+            atr: Average True Range
+            position_type: Position type (BUY/SELL)
+            
+        Returns:
+            float: Trailing stop level
+        """
+        try:
+            # Calculate base trailing stop
+            base_stop = atr * 1.5  # Tighter than initial stop
+            
+            # Adjust for position type
+            if position_type == "BUY":
+                trailing_stop = current_price - base_stop
+            else:
+                trailing_stop = current_price + base_stop
+                
+            return trailing_stop
+            
+        except Exception as e:
+            logger.error(f"Error calculating trailing stop: {str(e)}")
+            return current_price
             
     async def calculate_dynamic_correlation(self, symbol: str, window: int = 20) -> float:
         """Calculate dynamic correlation between altcoin and BTC.
@@ -968,29 +911,126 @@ class EnhancedTradingStrategy:
             logger.error(f"Error checking Bollinger condition: {str(e)}")
             return False
             
-    def calculate_trailing_stop(self, current_price: float, atr: float, position_type: str) -> float:
-        """Calculate trailing stop level.
-        
-        Args:
-            current_price: Current market price
-            atr: Average True Range
-            position_type: Position type (BUY/SELL)
-            
-        Returns:
-            float: Trailing stop level
-        """
+    async def _calculate_btc_volatility(self) -> Dict:
+        """Calculate BTC volatility metrics."""
         try:
-            # Calculate base trailing stop
-            base_stop = atr * 1.5  # Tighter than initial stop
-            
-            # Adjust for position type
-            if position_type == "BUY":
-                trailing_stop = current_price - base_stop
-            else:
-                trailing_stop = current_price + base_stop
+            # Get BTC data
+            btc_data = await self.indicator_service.calculate_indicators("BTCUSDT")
+            if btc_data is None or btc_data.empty:
+                return None
                 
-            return trailing_stop
+            # Calculate volatility metrics
+            atr = btc_data['ATR'].iloc[-1]
+            roc = btc_data['ROC'].iloc[-1]
+            ema = btc_data['EMA_FAST'].iloc[-1]
+            current_price = btc_data['close'].iloc[-1]
+            
+            # Calculate volatility score (0-100)
+            volatility_score = min(100, (atr / current_price) * 1000)
+            
+            # Determine volatility state
+            is_volatile = volatility_score > 50
+            is_accelerating = abs(roc) > 1.0
+            
+            return {
+                'volatility_score': volatility_score,
+                'is_volatile': is_volatile,
+                'is_accelerating': is_accelerating,
+                'atr': atr,
+                'roc': roc,
+                'ema': ema,
+                'current_price': current_price
+            }
             
         except Exception as e:
-            logger.error(f"Error calculating trailing stop: {str(e)}")
-            return current_price 
+            logger.error(f"Error calculating BTC volatility: {str(e)}")
+            return None
+            
+    async def _calculate_altcoin_correlation(self, symbol: str) -> Dict:
+        """Calculate correlation between altcoin and BTC."""
+        try:
+            # Get altcoin and BTC data
+            altcoin_data = await self.indicator_service.calculate_indicators(symbol)
+            btc_data = await self.indicator_service.calculate_indicators("BTCUSDT")
+            
+            if altcoin_data is None or btc_data is None or altcoin_data.empty or btc_data.empty:
+                return None
+                
+            # Clean data - remove NaN and infinite values
+            altcoin_returns = altcoin_data['close'].pct_change().replace([np.inf, -np.inf], np.nan).dropna()
+            btc_returns = btc_data['close'].pct_change().replace([np.inf, -np.inf], np.nan).dropna()
+            
+            # Ensure we have enough data points and no NaN values
+            if len(altcoin_returns) < 2 or len(btc_returns) < 2:
+                return None
+                
+            # Align the data
+            common_index = altcoin_returns.index.intersection(btc_returns.index)
+            if len(common_index) < 2:
+                return None
+                
+            altcoin_returns = altcoin_returns[common_index]
+            btc_returns = btc_returns[common_index]
+            
+            # Calculate correlation coefficient with error handling
+            try:
+                # Calculate standard deviations first
+                alt_std = altcoin_returns.std()
+                btc_std = btc_returns.std()
+                
+                # Check for zero standard deviation
+                if alt_std == 0 or btc_std == 0:
+                    correlation = 0.0
+                else:
+                    # Calculate covariance
+                    covariance = ((altcoin_returns - altcoin_returns.mean()) * 
+                                (btc_returns - btc_returns.mean())).mean()
+                    # Calculate correlation
+                    correlation = covariance / (alt_std * btc_std)
+                    
+                if np.isnan(correlation):
+                    correlation = 0.0
+            except Exception as e:
+                logger.warning(f"Error calculating correlation: {str(e)}")
+                correlation = 0.0
+            
+            # Calculate price change correlation with error handling
+            try:
+                # Calculate standard deviations for returns
+                alt_returns_std = altcoin_returns.std()
+                btc_returns_std = btc_returns.std()
+                
+                # Check for zero standard deviation
+                if alt_returns_std == 0 or btc_returns_std == 0:
+                    returns_correlation = 0.0
+                else:
+                    # Calculate covariance for returns
+                    returns_covariance = ((altcoin_returns - altcoin_returns.mean()) * 
+                                        (btc_returns - btc_returns.mean())).mean()
+                    # Calculate correlation for returns
+                    returns_correlation = returns_covariance / (alt_returns_std * btc_returns_std)
+                    
+                if np.isnan(returns_correlation):
+                    returns_correlation = 0.0
+            except Exception as e:
+                logger.warning(f"Error calculating returns correlation: {str(e)}")
+                returns_correlation = 0.0
+            
+            # Calculate reaction strength with bounds
+            reaction_strength = min(100, max(0, abs(returns_correlation) * 100))
+            
+            # Determine correlation state
+            is_strongly_correlated = abs(correlation) > 0.7
+            is_reacting = abs(returns_correlation) > 0.5
+            
+            return {
+                'correlation': correlation,
+                'returns_correlation': returns_correlation,
+                'reaction_strength': reaction_strength,
+                'is_strongly_correlated': is_strongly_correlated,
+                'is_reacting': is_reacting
+            }
+            
+        except Exception as e:
+            logger.error(f"Error calculating altcoin correlation: {str(e)}")
+            return None 
