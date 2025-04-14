@@ -437,12 +437,22 @@ class TelegramService:
             if not self._is_initialized:
                 logger.error("Telegram service not initialized")
                 return
-                
+            
+            if self._is_running:
+                return
+            
             self._is_running = True
             self._start_time = datetime.now()
             
+            # Create a new event loop if needed
+            if not self._event_loop:
+                self._event_loop = asyncio.get_event_loop()
+            
             # Start polling for updates
-            self.polling_task = asyncio.create_task(self.application.run_polling())
+            self.polling_task = asyncio.create_task(self.application.run_polling(
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True  # Drop any pending updates to avoid conflicts
+            ))
             logger.info("Started polling for updates")
             
             # Start sending status updates
