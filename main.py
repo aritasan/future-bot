@@ -152,86 +152,78 @@ async def cleanup_services(
     logger.info("Starting service cleanup...")
     
     # Set a timeout for cleanup
-    cleanup_timeout = 5.0  # seconds
+    cleanup_timeout = 10.0  # Increased timeout for better reliability
     
-    # Create cleanup tasks
-    cleanup_tasks = []
-    
-    # Close services in reverse order of dependency
-    if strategy and 'strategy' not in closed_services:
-        try:
+    try:
+        # First, close non-critical services concurrently
+        non_critical_tasks = []
+        
+        if strategy and 'strategy' not in closed_services:
             logger.info("Closing strategy service...")
-            cleanup_tasks.append(asyncio.create_task(strategy.close()))
+            non_critical_tasks.append(asyncio.create_task(strategy.close()))
             closed_services.add('strategy')
-        except Exception as e:
-            logger.error(f"Error creating task to close strategy: {str(e)}")
-        
-    if indicator_service and 'indicator' not in closed_services:
-        try:
-            logger.info("Closing indicator service...")
-            cleanup_tasks.append(asyncio.create_task(indicator_service.close()))
-            closed_services.add('indicator')
-        except Exception as e:
-            logger.error(f"Error creating task to close indicator service: {str(e)}")
-        
-    if health_monitor and 'health_monitor' not in closed_services:
-        try:
-            logger.info("Closing health monitor...")
-            cleanup_tasks.append(asyncio.create_task(health_monitor.close()))
-            closed_services.add('health_monitor')
-        except Exception as e:
-            logger.error(f"Error creating task to close health monitor: {str(e)}")
-    
-    # Wait for these tasks to complete first before closing critical services
-    if cleanup_tasks:
-        try:
-            logger.info(f"Waiting for {len(cleanup_tasks)} non-critical services to close...")
-            done, pending = await asyncio.wait(cleanup_tasks, timeout=cleanup_timeout/2)
             
-            # Cancel any pending tasks
-            for task in pending:
+        if indicator_service and 'indicator' not in closed_services:
+            logger.info("Closing indicator service...")
+            non_critical_tasks.append(asyncio.create_task(indicator_service.close()))
+            closed_services.add('indicator')
+            
+        if health_monitor and 'health_monitor' not in closed_services:
+            logger.info("Closing health monitor...")
+            non_critical_tasks.append(asyncio.create_task(health_monitor.close()))
+            closed_services.add('health_monitor')
+        
+        # Wait for non-critical services to close with timeout
+        if non_critical_tasks:
+            try:
+                logger.info(f"Waiting for {len(non_critical_tasks)} non-critical services to close...")
+                await asyncio.wait_for(asyncio.gather(*non_critical_tasks, return_exceptions=True), 
+                                     timeout=cleanup_timeout/2)
+                logger.info("Non-critical services closed successfully")
+            except asyncio.TimeoutError:
+                logger.warning("Timeout while closing non-critical services")
+                for task in non_critical_tasks:
+                    if not task.done():
+                        task.cancel()
+            except Exception as e:
+                logger.error(f"Error closing non-critical services: {str(e)}")
+        
+        # Then close critical services sequentially
+        if telegram_service and 'telegram' not in closed_services:
+            try:
+                logger.info("Closing Telegram service...")
+                await asyncio.wait_for(telegram_service.close(), timeout=cleanup_timeout/4)
+                closed_services.add('telegram')
+                logger.info("Telegram service closed successfully")
+            except asyncio.TimeoutError:
+                logger.warning("Timeout while closing Telegram service")
+            except Exception as e:
+                logger.error(f"Error closing Telegram service: {str(e)}")
+        
+        # Finally close Binance service
+        if binance_service and 'binance' not in closed_services:
+            try:
+                logger.info("Closing Binance service...")
+                await asyncio.wait_for(binance_service.close(), timeout=cleanup_timeout/4)
+                closed_services.add('binance')
+                logger.info("Binance service closed successfully")
+            except asyncio.TimeoutError:
+                logger.warning("Timeout while closing Binance service")
+            except Exception as e:
+                logger.error(f"Error closing Binance service: {str(e)}")
+                
+    except Exception as e:
+        logger.error(f"Error during service cleanup: {str(e)}")
+    finally:
+        # Log final cleanup status
+        logger.info(f"Service cleanup completed. Closed services: {closed_services}")
+        
+        # Clear any remaining tasks
+        for task in asyncio.all_tasks():
+            if not task.done() and task != asyncio.current_task():
                 task.cancel()
                 
-            logger.info(f"Completed {len(done)}/{len(cleanup_tasks)} non-critical service closures")
-        except Exception as e:
-            logger.error(f"Error waiting for non-critical services to close: {str(e)}")
-    
-    # Now handle critical services with remaining timeout
-    remaining_tasks = []
-    
-    # Close Telegram service first as it might depend on Binance service
-    if telegram_service and 'telegram' not in closed_services:
-        try:
-            logger.info("Closing Telegram service...")
-            remaining_tasks.append(asyncio.create_task(telegram_service.close()))
-            closed_services.add('telegram')
-        except Exception as e:
-            logger.error(f"Error creating task to close Telegram service: {str(e)}")
-    
-    # Finally close Binance service
-    if binance_service and 'binance' not in closed_services:
-        try:
-            logger.info("Closing Binance service...")
-            remaining_tasks.append(asyncio.create_task(binance_service.close()))
-            closed_services.add('binance')
-        except Exception as e:
-            logger.error(f"Error creating task to close Binance service: {str(e)}")
-    
-    # Wait for remaining tasks with a timeout
-    if remaining_tasks:
-        try:
-            logger.info(f"Waiting for {len(remaining_tasks)} critical services to close...")
-            done, pending = await asyncio.wait(remaining_tasks, timeout=cleanup_timeout/2)
-            
-            # Log any services that didn't close in time
-            if pending:
-                logger.warning(f"{len(pending)} services did not close in time")
-                for task in pending:
-                    task.cancel()
-        except Exception as e:
-            logger.error(f"Error waiting for critical services to close: {str(e)}")
-    
-    logger.info("Service cleanup complete")
+        logger.info("All remaining tasks cancelled")
 
 
 async def main():
