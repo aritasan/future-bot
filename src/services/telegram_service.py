@@ -282,8 +282,8 @@ class TelegramService:
                 await update.message.reply_text("Failed to get position statistics")
                 return
             
-            # Format message
-            message = (
+            # Format header message
+            header_message = (
                 "📊 <b>Detailed Report</b>\n\n"
                 f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                 f"Paused: {'Yes' if self._is_paused else 'No'}\n\n"
@@ -301,20 +301,25 @@ class TelegramService:
                     try:
                         amount_float = float(amount)
                         if amount_float > 0:
-                            message += f"{asset}: {amount_float}\n"
+                            header_message += f"{asset}: {amount_float}\n"
                     except (ValueError, TypeError):
                         logger.warning(f"Invalid balance amount for {asset}: {amount}")
                         continue
-                    
-            # Add positions information
-            message += f"\n📈 Active Positions: {position_stats['active_positions']}\n"
-            message += f"💵 Total Unrealized PnL: {position_stats['total_pnl']:.2f} USDT\n\n"
             
-            # Add position details
+            # Add positions summary
+            header_message += f"\n📈 Active Positions: {position_stats['active_positions']}\n"
+            header_message += f"💵 Total Unrealized PnL: {position_stats['total_pnl']:.2f} USDT\n"
+            
+            # Send header message
+            await update.message.reply_text(header_message, parse_mode='HTML')
+            
+            # Send position details in chunks if there are any
             if position_stats['position_details']:
-                message += "📋 <b>Position Details</b>\n"
+                position_chunks = []
+                current_chunk = "📋 <b>Position Details</b>\n"
+                
                 for pos in position_stats['position_details']:
-                    message += (
+                    position_info = (
                         f"Symbol: {pos['symbol']}\n"
                         f"Size: {pos['size']}\n"
                         f"PnL: {pos['pnl']:.2f} USDT\n"
@@ -323,8 +328,22 @@ class TelegramService:
                         f"Leverage: {pos['leverage']}x\n"
                         f"Side: {pos['side']}\n\n"
                     )
-            
-            await update.message.reply_text(message, parse_mode='HTML')
+                    
+                    # If adding this position would make the chunk too long, start a new chunk
+                    if len(current_chunk) + len(position_info) > 4000:
+                        position_chunks.append(current_chunk)
+                        current_chunk = "📋 <b>Position Details (continued)</b>\n" + position_info
+                    else:
+                        current_chunk += position_info
+                
+                # Add the last chunk if it's not empty
+                if current_chunk:
+                    position_chunks.append(current_chunk)
+                
+                # Send each chunk
+                for chunk in position_chunks:
+                    await update.message.reply_text(chunk, parse_mode='HTML')
+                    await asyncio.sleep(0.5)  # Small delay between messages
             
         except Exception as e:
             logger.error(f"Error handling report command: {str(e)}")
@@ -585,19 +604,17 @@ class TelegramService:
             # Cancel all tasks
             if self.polling_task and not self.polling_task.done():
                 self.polling_task.cancel()
+                try:
+                    await self.polling_task
+                except asyncio.CancelledError:
+                    pass
+                
             if self.status_task and not self.status_task.done():
                 self.status_task.cancel()
-
-            # Wait for tasks to complete with timeout
-            try:
-                if self.polling_task and not self.polling_task.done():
-                    await asyncio.wait_for(self.polling_task, timeout=2.0)
-                if self.status_task and not self.status_task.done():
-                    await asyncio.wait_for(self.status_task, timeout=2.0)
-            except asyncio.TimeoutError:
-                logger.warning("Tasks did not complete in time")
-            except asyncio.CancelledError:
-                pass
+                try:
+                    await self.status_task
+                except asyncio.CancelledError:
+                    pass
 
             # Shutdown the application
             if self.application:
@@ -605,10 +622,16 @@ class TelegramService:
                     # Stop the updater first
                     if self.application.updater:
                         await self.application.updater.stop()
+                        # Clear the update queue
+                        self.application.updater._update_queue = None
                     
                     # Then stop the application
                     await self.application.stop()
                     await self.application.shutdown()
+                    
+                    # Clear the bot instance
+                    self.application.bot = None
+                    self.application = None
                     
                     # Give time for pending operations to complete
                     await asyncio.sleep(1)
