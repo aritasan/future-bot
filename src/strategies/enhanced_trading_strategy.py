@@ -932,6 +932,9 @@ class EnhancedTradingStrategy:
             is_volatile = volatility_score > 50
             is_accelerating = abs(roc) > 1.0
             
+            # Determine trend based on EMA and current price
+            trend = "UP" if current_price > ema else "DOWN"
+            
             return {
                 'volatility_score': volatility_score,
                 'is_volatile': is_volatile,
@@ -939,7 +942,8 @@ class EnhancedTradingStrategy:
                 'atr': atr,
                 'roc': roc,
                 'ema': ema,
-                'current_price': current_price
+                'current_price': current_price,
+                'trend': trend
             }
             
         except Exception as e:
