@@ -305,36 +305,6 @@ async def main():
         # Main loop to keep the bot running
         while is_running:
             try:
-                # Read trading pairs from file
-                try:
-                    with open("filtered_pairs.txt", "r") as f:
-                        symbols = [line.strip() for line in f.readlines()]
-                except Exception as e:
-                    logger.error(f"Error reading trading pairs: {str(e)}")
-                    await asyncio.sleep(60)
-                    continue
-                    
-                if not symbols:
-                    logger.warning("No trading symbols available in filtered_pairs.txt, retrying in 60 seconds...")
-                    await asyncio.sleep(60)
-                    continue
-                    
-                logger.info(f"Processing {len(symbols)} trading symbols from filtered_pairs.txt")
-                
-                # Process each symbol
-                for symbol in symbols:
-                    try:
-                        # Generate signals with indicator_service
-                        signals = await strategy.generate_signals(symbol, indicator_service)
-                        
-                        # Process signals
-                        if signals:
-                            await strategy.process_signals(symbol, signals)
-                            
-                    except Exception as e:
-                        logger.error(f"Error processing symbol {symbol}: {str(e)}")
-                        continue
-                
                 # Sleep for a while before next iteration
                 await asyncio.sleep(60)
                 
