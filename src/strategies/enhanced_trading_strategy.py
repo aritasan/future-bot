@@ -7,30 +7,37 @@ from typing import Dict, Optional
 import pandas as pd
 import numpy as np
 import time
+import asyncio
 
 from src.services.indicator_service import IndicatorService
 from src.services.sentiment_service import SentimentService
+from src.services.binance_service import BinanceService
+from src.services.telegram_service import TelegramService
 
 logger = logging.getLogger(__name__)
 
 class EnhancedTradingStrategy:
     """Enhanced trading strategy with multiple indicators and risk management."""
     
-    def __init__(self, config: Dict):
+    def __init__(self, config: Dict, binance_service: BinanceService, indicator_service: IndicatorService, telegram_service: TelegramService):
         """Initialize the strategy.
         
         Args:
             config: Configuration dictionary
+            binance_service: Binance service instance
+            indicator_service: Indicator service instance
+            telegram_service: Telegram service instance
         """
         self.config = config
-        self.indicator_service = None
+        self.binance_service = binance_service
+        self.indicator_service = indicator_service
+        self.telegram_service = telegram_service
         self.sentiment_service = None
-        self.binance_service = None
         
         # Trading parameters
         self.min_volume_ratio = 1.2  # Tỷ lệ volume tối thiểu so với trung bình
         self.max_volatility_ratio = 2.0  # Tỷ lệ biến động tối đa so với trung bình
-        self.min_adx = 25  # ADX tối thiểu cho xu hướng mạnh
+        self.min_adx = 20  # ADX tối thiểu cho xu hướng mạnh
         self.max_bb_width = 0.1  # Độ rộng tối đa của dải Bollinger
         
         # BTC correlation parameters
@@ -61,6 +68,34 @@ class EnhancedTradingStrategy:
         self._cache_ttl = 300  # 5 minutes
         self._last_update = {}
         
+        # DCA settings with dynamic levels
+        self.dca_settings = {
+            'base_levels': [
+                {'drop': 0.02, 'multiplier': 1.0, 'max_uses': 2},  # 2% drop - same size
+                {'drop': 0.04, 'multiplier': 1.5, 'max_uses': 1},  # 4% drop - 1.5x size
+                {'drop': 0.06, 'multiplier': 2.0, 'max_uses': 1}   # 6% drop - 2x size
+            ],
+            'dynamic_adjustment': {
+                'volatility_factor': 1.2,  # Increase levels in high volatility
+                'trend_factor': 1.1,       # Increase levels in strong trend
+                'volume_factor': 1.15      # Increase levels in high volume
+            },
+            'max_total_multiplier': 3.0,   # Maximum total position size multiplier
+            'min_time_between_dca': 3600,  # Minimum time between DCA orders (1 hour)
+            'max_dca_attempts': 3          # Maximum number of DCA attempts per position
+        }
+        
+        # Trailing stop settings
+        self.trailing_settings = [
+            {'profit': 0.01, 'trail_percent': 0.005, 'atr_multiplier': 1.0},  # 1% profit - 0.5% trail
+            {'profit': 0.02, 'trail_percent': 0.008, 'atr_multiplier': 1.2},  # 2% profit - 0.8% trail
+            {'profit': 0.03, 'trail_percent': 0.01, 'atr_multiplier': 1.5}    # 3% profit - 1.0% trail
+        ]
+        
+        # Initialize state
+        self._dca_history = {}  # Track DCA history per position
+        self._last_dca_time = {}  # Track last DCA time per position
+        
     async def initialize(self) -> bool:
         """Initialize the strategy.
         
@@ -73,14 +108,9 @@ class EnhancedTradingStrategy:
                 return True
                 
             # Initialize services
-            self.indicator_service = IndicatorService(self.config)
             self.sentiment_service = SentimentService(self.config)
             
             # Initialize services
-            if not await self.indicator_service.initialize():
-                logger.error("Failed to initialize indicator service")
-                return False
-                
             if not await self.sentiment_service.initialize():
                 logger.error("Failed to initialize sentiment service")
                 return False
@@ -93,14 +123,6 @@ class EnhancedTradingStrategy:
             logger.error(f"Failed to initialize strategy: {str(e)}")
             return False
             
-    def set_binance_service(self, binance_service):
-        """Set the Binance service for trading operations.
-        
-        Args:
-            binance_service: Binance service instance
-        """
-        self.binance_service = binance_service
-        
     async def _calculate_position_size(self, symbol: str, risk_per_trade: float, current_price: float) -> Optional[float]:
         """Calculate position size based on risk management."""
         try:
@@ -165,112 +187,150 @@ class EnhancedTradingStrategy:
             return None
             
     async def generate_signals(self, symbol: str, indicator_service: IndicatorService) -> Optional[Dict]:
-        """Generate trading signals based on technical indicators and BTC correlation.
+        """Generate trading signals with enhanced market analysis.
         
         Args:
             symbol: Trading pair symbol
-            indicator_service: Indicator service instance
+            indicator_service: Service for calculating indicators
             
         Returns:
-            Optional[Dict]: Trading signals or None if no signal
+            Optional[Dict]: Trading signals if valid, None otherwise
         """
         try:
-            # Calculate indicators using indicator service
+            # Get market data
             df = await indicator_service.calculate_indicators(symbol)
-            if df is None:
-                logger.warning(f"No data available for {symbol}")
+            if df is None or df.empty:
                 return None
+                
+            # Multi-timeframe analysis
+            timeframe_analysis = await self.analyze_multiple_timeframes(symbol)
+            if not timeframe_analysis:
+                return None
+                
+            # BTC volatility analysis
+            btc_volatility = await self.analyze_btc_volatility()
+            if not btc_volatility:
+                return None
+                
+            # Altcoin correlation analysis
+            altcoin_correlation = await self.analyze_altcoin_correlation(symbol, btc_volatility)
+            if not altcoin_correlation:
+                return None
+                
+            # Market sentiment analysis
+            sentiment = await self.analyze_market_sentiment(symbol)
+            if not sentiment:
+                return None
+                
+            # Calculate signal score
+            signal_score = await self.calculate_signal_score(
+                df, timeframe_analysis, btc_volatility, 
+                altcoin_correlation, sentiment
+            )
             
-            # Get current price
-            current_price = df['close'].iloc[-1]
-            
+            # Check trend conflicts
+            # if self.check_trend_conflicts(timeframe_analysis):
+            #     # logger.info(f"Trend conflicts detected for {symbol}")
+            #     return None
+                
+            # Check volume condition
+            if not self.check_volume_condition(df):
+                # logger.info(f"Volume condition not met for {symbol}")
+                return None
+                
+            # Check volatility condition
+            if not self.check_volatility_condition(df):
+                logger.info(f"Volatility condition not met for {symbol}")
+                return None
+                
+            # Check ADX condition
+            if not self.check_adx_condition(df):
+                # logger.info(f"ADX condition not met for {symbol}")
+                return None
+                
+            # Check Bollinger condition
+            if not self.check_bollinger_condition(df):
+                # logger.info(f"Bollinger condition not met for {symbol}")
+                return None
+                
+            # Determine position type based on signal score
+            logger.info(f"{symbol} signal_score: {signal_score}")
+            if signal_score > 0.6:  # Strong buy signal
+                position_type = 'buy'
+            elif signal_score < -0.6:  # Strong sell signal
+                position_type = 'sell'
+            else:
+                return None
+                
             # Calculate position size
+            current_price = float(df['close'].iloc[-1])
             position_size = await self._calculate_position_size(symbol, self.config['trading']['risk_per_trade'], current_price)
             if not position_size:
-                logger.warning(f"Invalid position size for {symbol}")
                 return None
                 
             # Calculate stop loss and take profit
-            stop_loss = self._calculate_stop_loss(df)
-            take_profit = self._calculate_take_profit(df, current_price)
+            stop_loss = await self._calculate_stop_loss(df, position_type, symbol)
+            take_profit = await self._calculate_take_profit(df, position_type, symbol)
             
-            # Analyze BTC volatility
-            btc_volatility = await self.analyze_btc_volatility()
-            
-            # Analyze altcoin correlation
-            altcoin_correlation = await self.analyze_altcoin_correlation(symbol, btc_volatility)
-            
-            # Analyze multiple timeframes
-            timeframe_analysis = await self.analyze_multiple_timeframes(symbol)
-            
-            # Check volume condition
-            volume_ma = df['volume'].rolling(20).mean()
-            volume_condition = df['volume'].iloc[-1] > volume_ma.iloc[-1] * 1.2
-            
-            # Check ADX condition
-            adx_condition = df['ADX'].iloc[-1] > 20
-            
-            # print(f"BTC volatility: {btc_volatility}")
-            # print(f"Altcoin correlation: {altcoin_correlation}")
-            # print(f"Volume condition: {volume_condition}")
-            # print(f"ADX condition: {adx_condition}")
-            # logger.info(f"{symbol} - BTC volatility: {btc_volatility} - Altcoin correlation: {altcoin_correlation} - Volume condition: {volume_condition} - ADX condition: {adx_condition}")
-            
-            # Generate signals with BTC correlation check
-            if (df['RSI'].iloc[-1] < 35 and  # Giảm từ 30 xuống 35
-                df['MACD'].iloc[-1] > df['MACD_SIGNAL'].iloc[-1] and
-                btc_volatility["trend"] == "UP" and
-                btc_volatility["is_volatile"] and
-                altcoin_correlation["reaction"] in ["STRONG", "MODERATE", "WEAK"] and  # Thêm WEAK
-                altcoin_correlation["correlation"] > 0 and
-                altcoin_correlation["lag"] <= self.max_btc_lag + 1 and  # Tăng độ trễ cho phép
-                volume_condition and  # Thêm điều kiện volume
-                adx_condition and  # Thêm điều kiện ADX
-                self.check_trend_conflicts(timeframe_analysis)):  # Thêm điều kiện multiple timeframe
-                
-                return {
-                    'symbol': symbol,
-                    'side': 'buy',
-                    'type': 'market',
-                    'amount': position_size,
-                    'price': current_price,
-                    'stop_loss': stop_loss,
-                    'take_profit': take_profit,
-                    'position_size': position_size,
-                    'btc_volatility': btc_volatility,
-                    'altcoin_correlation': altcoin_correlation,
-                    'timeframe_analysis': timeframe_analysis
-                }
-                
-            elif (df['RSI'].iloc[-1] > 65 and  # Giảm từ 70 xuống 65
-                  df['MACD'].iloc[-1] < df['MACD_SIGNAL'].iloc[-1] and
-                  btc_volatility["trend"] == "DOWN" and
-                  btc_volatility["is_volatile"] and
-                  altcoin_correlation["reaction"] in ["STRONG", "MODERATE", "WEAK"] and  # Thêm WEAK
-                  altcoin_correlation["correlation"] < 0 and
-                  altcoin_correlation["lag"] <= self.max_btc_lag + 1 and  # Tăng độ trễ cho phép
-                  volume_condition and  # Thêm điều kiện volume
-                  adx_condition and  # Thêm điều kiện ADX
-                  self.check_trend_conflicts(timeframe_analysis)):  # Thêm điều kiện multiple timeframe
-                
-                return {
-                    'symbol': symbol,
-                    'side': 'sell',
-                    'type': 'market',
-                    'amount': position_size,
-                    'price': current_price,
-                    'stop_loss': stop_loss,
-                    'take_profit': take_profit,
-                    'position_size': position_size,
-                    'btc_volatility': btc_volatility,
-                    'altcoin_correlation': altcoin_correlation,
-                    'timeframe_analysis': timeframe_analysis
-                }
-                
-            return None
+            return {
+                'symbol': symbol,
+                'side': position_type,
+                'amount': position_size,
+                'type': 'market',
+                'price': current_price,
+                'stop_loss': stop_loss,
+                'take_profit': take_profit,
+                'signal_score': signal_score,
+                'timeframe_analysis': timeframe_analysis,
+                'btc_volatility': btc_volatility,
+                'altcoin_correlation': altcoin_correlation,
+                'sentiment': sentiment
+            }
             
         except Exception as e:
             logger.error(f"Error generating signals: {str(e)}")
+            return None
+            
+    async def analyze_market_sentiment(self, symbol: str) -> Dict:
+        """Analyze market sentiment using multiple indicators.
+        
+        Args:
+            symbol: Trading pair symbol
+            
+        Returns:
+            Dict: Market sentiment analysis
+        """
+        try:
+            # Get market data
+            df = await self.indicator_service.calculate_indicators(symbol)
+            if df is None or df.empty:
+                return None
+                
+            # Calculate sentiment indicators
+            rsi = df['RSI'].iloc[-1]
+            mfi = df['MFI'].iloc[-1] if 'MFI' in df.columns else None
+            obv = df['OBV'].iloc[-1] if 'OBV' in df.columns else None
+            adx = df['ADX'].iloc[-1]
+            
+            # Analyze sentiment
+            sentiment = {
+                'rsi_sentiment': 'bullish' if rsi < 30 else 'bearish' if rsi > 70 else 'neutral',
+                'mfi_sentiment': 'bullish' if mfi and mfi < 20 else 'bearish' if mfi and mfi > 80 else 'neutral',
+                'obv_sentiment': 'bullish' if obv and obv > 0 else 'bearish' if obv and obv < 0 else 'neutral',
+                'trend_strength': 'strong' if adx > 25 else 'weak',
+                'overall_sentiment': 'bullish' if (
+                    (rsi < 30 and (not mfi or mfi < 20)) or
+                    (obv and obv > 0 and adx > 25)
+                ) else 'bearish' if (
+                    (rsi > 70 and (not mfi or mfi > 80)) or
+                    (obv and obv < 0 and adx > 25)
+                ) else 'neutral'
+            }
+            
+            return sentiment
+            
+        except Exception as e:
+            logger.error(f"Error analyzing market sentiment: {str(e)}")
             return None
             
     def _check_trend_following(self, df: pd.DataFrame) -> bool:
@@ -354,57 +414,158 @@ class EnhancedTradingStrategy:
             logger.error(f"Error checking breakout: {str(e)}")
             return False
             
-    def _calculate_stop_loss(self, df: pd.DataFrame, position_type: str = 'buy') -> float:
-        """Calculate dynamic stop loss level based on market conditions.
-        
-        Args:
-            df: DataFrame with indicators
-            position_type: Position type (buy/sell)
-            
-        Returns:
-            float: Stop loss level
-        """
+    async def _calculate_stop_loss(self, df: pd.DataFrame, position_type: str = 'buy', symbol: str = None) -> float:
+        """Calculate stop loss price with enhanced market analysis."""
         try:
-            # Get current price
             current_price = df['close'].iloc[-1]
+            atr = df['ATR'].iloc[-1]
             
-            # Calculate stop loss with fixed 2% distance
+            # Calculate support/resistance levels
+            recent_lows = df['low'].rolling(window=20).min()
+            recent_highs = df['high'].rolling(window=20).max()
+            
+            # Calculate volatility-based stop distance
+            volatility = df['close'].pct_change().std() * 100
+            base_atr_multiplier = 3.0  # Base ATR multiplier
+            
+            # Adjust ATR multiplier based on volatility
+            if volatility > 3:  # High volatility
+                base_atr_multiplier = 3.5
+            elif volatility < 1:  # Low volatility
+                base_atr_multiplier = 2.5
+            
             if position_type == 'buy':
-                stop_loss = current_price * 0.98  # 2% below current price
-            else:
-                stop_loss = current_price * 1.02  # 2% above current price
+                # For long positions
+                base_sl = current_price - (base_atr_multiplier * atr)
+                support = recent_lows.iloc[-1]
                 
+                # Use the more conservative stop (further from price)
+                stop_loss = min(base_sl, support * 0.995)
+                
+                # Ensure minimum distance from current price for DCA
+                min_distance = current_price * 0.015  # 1.5% minimum distance
+                if current_price - stop_loss < min_distance:
+                    stop_loss = current_price - min_distance
+                    
+                # Ensure stop loss is not too far (max 5% from current price)
+                max_distance = current_price * 0.05
+                if current_price - stop_loss > max_distance:
+                    stop_loss = current_price - max_distance
+                
+            else:
+                # For short positions
+                base_sl = current_price + (base_atr_multiplier * atr)
+                resistance = recent_highs.iloc[-1]
+                
+                # Use the more conservative stop (further from price)
+                stop_loss = max(base_sl, resistance * 1.005)
+                
+                # Ensure minimum distance from current price for DCA
+                min_distance = current_price * 0.015  # 1.5% minimum distance
+                if stop_loss - current_price < min_distance:
+                    stop_loss = current_price + min_distance
+                    
+                # Ensure stop loss is not too far (max 5% from current price)
+                max_distance = current_price * 0.05
+                if stop_loss - current_price > max_distance:
+                    stop_loss = current_price + max_distance
+            
+            # Round to symbol precision
+            if symbol and self.binance_service:
+                markets = await self.binance_service.get_markets()
+                if markets and symbol in markets:
+                    precision = markets[symbol]['precision']['price']
+                    stop_loss = round(stop_loss, int(precision))
+            
+            # Validate final stop loss value
+            if stop_loss <= 0:
+                logger.error(f"Invalid stop loss calculated: {stop_loss}")
+                return current_price * 0.985 if position_type == 'buy' else current_price * 1.015
+            
             return stop_loss
             
         except Exception as e:
             logger.error(f"Error calculating stop loss: {str(e)}")
-            return current_price
-            
-    def _calculate_take_profit(self, df: pd.DataFrame, position_type: str = 'buy') -> float:
-        """Calculate dynamic take profit level based on market conditions.
-        
-        Args:
-            df: DataFrame with indicators
-            position_type: Position type (buy/sell)
-            
-        Returns:
-            float: Take profit level
-        """
-        try:
-            # Get current price
-            current_price = df['close'].iloc[-1]
-            
-            # Calculate take profit with fixed 4% distance
+            # Return a safe default value
             if position_type == 'buy':
-                take_profit = current_price * 1.04  # 4% above current price
+                return current_price * 0.985  # 1.5% below current price
             else:
-                take_profit = current_price * 0.96  # 4% below current price
+                return current_price * 1.015  # 1.5% above current price
+
+    async def _calculate_take_profit(self, df: pd.DataFrame, position_type: str = 'buy', symbol: str = None) -> float:
+        """Calculate take profit price with enhanced market analysis."""
+        try:
+            current_price = df['close'].iloc[-1]
+            atr = df['ATR'].iloc[-1]
+            
+            # Calculate volatility-based TP distance
+            volatility = df['close'].pct_change().std() * 100
+            base_atr_multiplier = 5.0  # Base ATR multiplier
+            
+            # Adjust ATR multiplier based on volatility
+            if volatility > 3:  # High volatility
+                base_atr_multiplier = 6.0
+            elif volatility < 1:  # Low volatility
+                base_atr_multiplier = 4.0
+            
+            # Calculate trend strength
+            ema20 = df['close'].ewm(span=20).mean()
+            ema50 = df['close'].ewm(span=50).mean()
+            trend_strength = abs(ema20.iloc[-1] - ema50.iloc[-1]) / current_price * 100
+            
+            # Adjust TP based on trend strength
+            if trend_strength > 2:  # Strong trend
+                base_atr_multiplier *= 1.3
+            elif trend_strength < 0.5:  # Weak trend
+                base_atr_multiplier *= 0.9
+            
+            if position_type == 'buy':
+                take_profit = current_price + (base_atr_multiplier * atr)
                 
+                # Ensure minimum distance from current price for trailing stop
+                min_distance = current_price * 0.03  # 3% minimum distance
+                if take_profit - current_price < min_distance:
+                    take_profit = current_price + min_distance
+                    
+                # Ensure take profit is not too far (max 10% from current price)
+                max_distance = current_price * 0.10
+                if take_profit - current_price > max_distance:
+                    take_profit = current_price + max_distance
+                
+            else:
+                take_profit = current_price - (base_atr_multiplier * atr)
+                
+                # Ensure minimum distance from current price
+                min_distance = current_price * 0.03  # 3% minimum distance
+                if current_price - take_profit < min_distance:
+                    take_profit = current_price - min_distance
+                    
+                # Ensure take profit is not too far (max 10% from current price)
+                max_distance = current_price * 0.10
+                if current_price - take_profit > max_distance:
+                    take_profit = current_price - max_distance
+            
+            # Round to symbol precision
+            if symbol and self.binance_service:
+                markets = await self.binance_service.get_markets()
+                if markets and symbol in markets:
+                    precision = markets[symbol]['precision']['price']
+                    take_profit = round(take_profit, int(precision))
+            
+            # Validate final take profit value
+            if take_profit <= 0:
+                logger.error(f"Invalid take profit calculated: {take_profit}")
+                return current_price * 1.02 if position_type == 'buy' else current_price * 0.98
+            
             return take_profit
             
         except Exception as e:
             logger.error(f"Error calculating take profit: {str(e)}")
-            return current_price
+            # Return a safe default value
+            if position_type == 'buy':
+                return current_price * 1.02  # 2% above current price
+            else:
+                return current_price * 0.98  # 2% below current price
             
     async def close(self):
         """Close the strategy and clear cache."""
@@ -731,82 +892,74 @@ class EnhancedTradingStrategy:
     async def calculate_signal_score(self, df: pd.DataFrame, timeframe_analysis: Dict, 
                                    btc_volatility: Dict, altcoin_correlation: Dict,
                                    sentiment: Dict) -> float:
-        """Calculate signal score.
+        """Calculate a signal score based on multiple factors.
         
         Args:
-            df: Price data DataFrame
-            timeframe_analysis: Multi-timeframe analysis
+            df: DataFrame with price data
+            timeframe_analysis: Analysis results from multiple timeframes
             btc_volatility: BTC volatility analysis
             altcoin_correlation: Altcoin correlation analysis
-            sentiment: Sentiment analysis
+            sentiment: Market sentiment analysis
             
         Returns:
-            float: Signal score
+            float: Signal score between 0 and 1
         """
         try:
-            score = 0.0
+            # Initialize score components
+            trend_score = 0.0
+            volume_score = 0.0
+            volatility_score = 0.0
+            correlation_score = 0.0
+            sentiment_score = 0.0
             
-            # 1. Technical Analysis Score (0-3 points)
-            if "RSI" in df and "MACD" in df and "MACD_SIGNAL" in df:
-                rsi = df["RSI"].iloc[-1]
-                macd = df["MACD"].iloc[-1]
-                macd_signal = df["MACD_SIGNAL"].iloc[-1]
+            # Calculate trend score
+            if timeframe_analysis:
+                trend_strength = timeframe_analysis.get('trend_strength', 0)
+                trend_direction = timeframe_analysis.get('trend_direction', 0)
+                trend_score = (trend_strength * trend_direction) / 100.0
                 
-                # RSI conditions
-                if rsi < 30 or rsi > 70:
-                    score += 1.5
-                elif (rsi < 35 and macd > macd_signal) or (rsi > 65 and macd < macd_signal):
-                    score += 1
-                elif macd > macd_signal or macd < macd_signal:
-                    score += 0.5
+            # Calculate volume score
+            if self.check_volume_condition(df):
+                volume_score = 0.2
+                
+            # Calculate volatility score
+            if btc_volatility:
+                volatility_level = btc_volatility.get('volatility_level', 'medium')
+                if volatility_level == 'low':
+                    volatility_score = 0.3
+                elif volatility_level == 'medium':
+                    volatility_score = 0.2
+                else:
+                    volatility_score = 0.1
                     
-            # 2. Market Conditions Score (0-2 points)
-            if df["volume"].iloc[-1] > df["volume"].rolling(20).mean().iloc[-1] * 1.5:
-                score += 1
-            if df["ATR"].iloc[-1] < df["ATR"].rolling(20).mean().iloc[-1] * 1.5:
-                score += 0.5
-            if df["ADX"].iloc[-1] > 25:
-                score += 0.5
+            # Calculate correlation score
+            if altcoin_correlation:
+                correlation = altcoin_correlation.get('correlation', 0)
+                correlation_score = abs(correlation) * 0.2
                 
-            # 3. Multi-timeframe Analysis Score (0-2 points)
-            if self.check_trend_conflicts(timeframe_analysis):
-                score += 1
-            if sum(1 for data in timeframe_analysis.values() if data["strength"] > 0.02) >= len(timeframe_analysis) * 0.5:
-                score += 1
+            # Calculate sentiment score
+            if sentiment:
+                sentiment_value = sentiment.get('sentiment', 0)
+                sentiment_score = (sentiment_value + 1) * 0.15  # Normalize to 0-0.3
                 
-            # 4. BTC Volatility Score (0-1.5 points)
-            if btc_volatility["is_volatile"]:
-                score += 0.5
-            if btc_volatility["is_accelerating"]:
-                score += 0.5
-            if btc_volatility["strength"] > 0.02:
-                score += 0.5
-                
-            # 5. Altcoin Correlation Score (0-1.5 points)
-            if altcoin_correlation["is_reacting"]:
-                score += 0.5
-            if altcoin_correlation["correlation"] > 0.7:
-                score += 0.5
-            if altcoin_correlation["strength"] > 0.02:
-                score += 0.5
-                
-            # 6. Sentiment Score (0-1.5 points)
-            if sentiment["confidence"] > 0.5:
-                if sentiment["trend"] in ["BULLISH", "BEARISH"]:
-                    score += 1
-                elif sentiment["trend"] == "NEUTRAL":
-                    score += 0.5
-                    
-            # Apply weights
-            score = (
-                score * self.score_weights["technical"] +
-                score * self.score_weights["market"] +
-                score * self.score_weights["timeframe"] +
-                score * self.score_weights["btc"] +
-                score * self.score_weights["sentiment"]
+            # Calculate final score
+            final_score = (
+                trend_score +
+                volume_score +
+                volatility_score +
+                correlation_score +
+                sentiment_score
             )
-                
-            return score
+            
+            # Ensure score is between 0 and 1
+            final_score = max(0.0, min(1.0, final_score))
+            
+            logger.debug(f"Signal score components: trend={trend_score:.2f}, "
+                        f"volume={volume_score:.2f}, volatility={volatility_score:.2f}, "
+                        f"correlation={correlation_score:.2f}, sentiment={sentiment_score:.2f}, "
+                        f"final={final_score:.2f}")
+                        
+            return final_score
             
         except Exception as e:
             logger.error(f"Error calculating signal score: {str(e)}")
@@ -912,37 +1065,61 @@ class EnhancedTradingStrategy:
             return False
             
     async def _calculate_btc_volatility(self) -> Dict:
-        """Calculate BTC volatility metrics."""
+        """Calculate BTC volatility metrics using both 1m and 5m timeframes."""
         try:
-            # Get BTC data
-            btc_data = await self.indicator_service.calculate_indicators("BTCUSDT")
-            if btc_data is None or btc_data.empty:
+            # Get BTC data for both timeframes with caching
+            btc_data_1m = await self.indicator_service.calculate_indicators("BTCUSDT", "1m")
+            btc_data_5m = await self.indicator_service.calculate_indicators("BTCUSDT", "5m")
+            
+            if btc_data_1m is None or btc_data_5m is None or btc_data_1m.empty or btc_data_5m.empty:
                 return None
                 
-            # Calculate volatility metrics
-            atr = btc_data['ATR'].iloc[-1]
-            roc = btc_data['ROC'].iloc[-1]
-            ema = btc_data['EMA_FAST'].iloc[-1]
-            current_price = btc_data['close'].iloc[-1]
+            # Calculate volatility metrics for 1m
+            atr_1m = btc_data_1m['ATR'].iloc[-1]
+            roc_1m = btc_data_1m['ROC'].iloc[-1]
+            current_price_1m = btc_data_1m['close'].iloc[-1]
             
-            # Calculate volatility score (0-100)
-            volatility_score = min(100, (atr / current_price) * 1000)
+            # Calculate volatility metrics for 5m
+            atr_5m = btc_data_5m['ATR'].iloc[-1]
+            roc_5m = btc_data_5m['ROC'].iloc[-1]
+            current_price_5m = btc_data_5m['close'].iloc[-1]
+            ema = btc_data_5m['EMA_FAST'].iloc[-1]
             
-            # Determine volatility state
-            is_volatile = volatility_score > 50
-            is_accelerating = abs(roc) > 1.0
+            # Calculate volatility scores
+            volatility_score_1m = min(100, (atr_1m / current_price_1m) * 1000)
+            volatility_score_5m = min(100, (atr_5m / current_price_5m) * 1000)
+            
+            # Combined volatility score with more weight on 5m
+            volatility_score = (volatility_score_1m * 0.3) + (volatility_score_5m * 0.7)
+            
+            # More appropriate thresholds:
+            # - Low volatility: < 7 (< 0.7% movement)
+            # - Medium volatility: 7-8 (0.7-0.8% movement)
+            # - High volatility: > 8 (> 0.8% movement)
+            is_volatile = volatility_score > 8
+            
+            # Consider acceleration when price changes more than 0.2% in 1m or 0.3% in 5m
+            is_accelerating = abs(roc_1m) > 0.2 or abs(roc_5m) > 0.3
             
             # Determine trend based on EMA and current price
-            trend = "UP" if current_price > ema else "DOWN"
+            trend = "UP" if current_price_5m > ema else "DOWN"
+            
+            # Add volatility level for more granular decision making
+            volatility_level = "LOW" if volatility_score < 7 else "MEDIUM" if volatility_score < 8 else "HIGH"
             
             return {
                 'volatility_score': volatility_score,
+                'volatility_score_1m': volatility_score_1m,
+                'volatility_score_5m': volatility_score_5m,
+                'volatility_level': volatility_level,
                 'is_volatile': is_volatile,
                 'is_accelerating': is_accelerating,
-                'atr': atr,
-                'roc': roc,
+                'atr_1m': atr_1m,
+                'atr_5m': atr_5m,
+                'roc_1m': roc_1m,
+                'roc_5m': roc_5m,
                 'ema': ema,
-                'current_price': current_price,
+                'current_price': current_price_5m,
                 'trend': trend
             }
             
@@ -951,90 +1128,539 @@ class EnhancedTradingStrategy:
             return None
             
     async def _calculate_altcoin_correlation(self, symbol: str) -> Dict:
-        """Calculate correlation between altcoin and BTC."""
+        """Calculate correlation between BTC and altcoin price movements."""
+        if not self.binance_service or not hasattr(self.binance_service, 'get_klines'):
+            logging.error("Binance service not properly initialized")
+            return self._get_default_correlation()
+
         try:
-            # Get altcoin and BTC data
-            altcoin_data = await self.indicator_service.calculate_indicators(symbol)
-            btc_data = await self.indicator_service.calculate_indicators("BTCUSDT")
+            btc_symbol = 'BTCUSDT'
+            # Format symbol for Binance if needed
+            if not symbol.endswith('USDT'):
+                symbol = f"{symbol}USDT"
+
+            logging.debug(f"Starting correlation calculation for {symbol} with BTC")
             
-            if altcoin_data is None or btc_data is None or altcoin_data.empty or btc_data.empty:
-                return None
-                
-            # Clean data - remove NaN and infinite values
-            altcoin_returns = altcoin_data['close'].pct_change().replace([np.inf, -np.inf], np.nan).dropna()
-            btc_returns = btc_data['close'].pct_change().replace([np.inf, -np.inf], np.nan).dropna()
-            
-            # Ensure we have enough data points and no NaN values
-            if len(altcoin_returns) < 2 or len(btc_returns) < 2:
-                return None
-                
-            # Align the data
-            common_index = altcoin_returns.index.intersection(btc_returns.index)
-            if len(common_index) < 2:
-                return None
-                
-            altcoin_returns = altcoin_returns[common_index]
-            btc_returns = btc_returns[common_index]
-            
-            # Calculate correlation coefficient with error handling
+            # Fetch data with timeout
+            async with asyncio.timeout(10):  # 10 second timeout
+                btc_data, alt_data = await asyncio.gather(
+                    self.binance_service.get_klines(btc_symbol, '5m', limit=100),
+                    self.binance_service.get_klines(symbol, '5m', limit=100)
+                )
+
+            if not btc_data or not alt_data:
+                logging.error(f"Failed to fetch data for correlation calculation: BTC data exists: {bool(btc_data)}, Alt data exists: {bool(alt_data)}")
+                return self._get_default_correlation()
+
+            # Convert to DataFrames with numeric close prices
             try:
-                # Calculate standard deviations first
-                alt_std = altcoin_returns.std()
-                btc_std = btc_returns.std()
+                btc_df = pd.DataFrame(btc_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                alt_df = pd.DataFrame(alt_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 
-                # Check for zero standard deviation
-                if alt_std == 0 or btc_std == 0:
-                    correlation = 0.0
-                else:
-                    # Calculate covariance
-                    covariance = ((altcoin_returns - altcoin_returns.mean()) * 
-                                (btc_returns - btc_returns.mean())).mean()
-                    # Calculate correlation
-                    correlation = covariance / (alt_std * btc_std)
-                    
-                if np.isnan(correlation):
-                    correlation = 0.0
-            except Exception as e:
-                logger.warning(f"Error calculating correlation: {str(e)}")
-                correlation = 0.0
-            
-            # Calculate price change correlation with error handling
-            try:
-                # Calculate standard deviations for returns
-                alt_returns_std = altcoin_returns.std()
-                btc_returns_std = btc_returns.std()
+                # Convert timestamps
+                btc_df['timestamp'] = pd.to_datetime(btc_df['timestamp'], unit='ms')
+                alt_df['timestamp'] = pd.to_datetime(alt_df['timestamp'], unit='ms')
                 
-                # Check for zero standard deviation
-                if alt_returns_std == 0 or btc_returns_std == 0:
-                    returns_correlation = 0.0
-                else:
-                    # Calculate covariance for returns
-                    returns_covariance = ((altcoin_returns - altcoin_returns.mean()) * 
-                                        (btc_returns - btc_returns.mean())).mean()
-                    # Calculate correlation for returns
-                    returns_correlation = returns_covariance / (alt_returns_std * btc_returns_std)
-                    
-                if np.isnan(returns_correlation):
-                    returns_correlation = 0.0
+                # Set index and ensure close prices are numeric
+                btc_df.set_index('timestamp', inplace=True)
+                alt_df.set_index('timestamp', inplace=True)
+                
+                btc_df['close'] = pd.to_numeric(btc_df['close'], errors='coerce')
+                alt_df['close'] = pd.to_numeric(alt_df['close'], errors='coerce')
+                
+                # Remove any rows with zero or invalid prices
+                btc_df = btc_df[btc_df['close'] > 0]
+                alt_df = alt_df[alt_df['close'] > 0]
+                
+                if len(btc_df) < 10 or len(alt_df) < 10:
+                    logging.warning("Insufficient price data points")
+                    return self._get_default_correlation()
+                
+                # Calculate returns with explicit handling of edge cases
+                btc_returns = btc_df['close'].pct_change()
+                alt_returns = alt_df['close'].pct_change()
+                
+                # Handle inf/nan values
+                btc_returns = btc_returns.replace([np.inf, -np.inf], np.nan)
+                alt_returns = alt_returns.replace([np.inf, -np.inf], np.nan)
+                
+                # Create clean DataFrames for correlation
+                corr_df = pd.DataFrame({
+                    'btc': btc_returns,
+                    'alt': alt_returns
+                })
+                
+                # Drop any NaN values
+                corr_df = corr_df.dropna()
+                
+                if len(corr_df) < 10:
+                    logging.warning(f"Insufficient data points after cleaning: {len(corr_df)}")
+                    return self._get_default_correlation()
+                
+                # Calculate standard deviations with minimum threshold
+                btc_std = corr_df['btc'].std()
+                alt_std = corr_df['alt'].std()
+                
+                # Check for very small or zero standard deviations
+                min_std = 1e-8
+                if btc_std < min_std or alt_std < min_std:
+                    logging.warning(f"Near-zero standard deviation detected: BTC={btc_std}, ALT={alt_std}")
+                    return self._get_default_correlation()
+                
+                # Calculate correlation manually to avoid numpy warning
+                btc_norm = (corr_df['btc'] - corr_df['btc'].mean()) / btc_std
+                alt_norm = (corr_df['alt'] - corr_df['alt'].mean()) / alt_std
+                correlation = (btc_norm * alt_norm).mean()
+                
+                if not np.isfinite(correlation):
+                    logging.warning("Non-finite correlation value detected")
+                    return self._get_default_correlation()
+                
+                # Calculate reaction metrics
+                reaction_strength = abs(correlation)
+                is_strongly_correlated = reaction_strength > 0.7
+                is_reacting = reaction_strength > 0.5
+                
+                result = {
+                    'correlation': float(correlation),
+                    'returns_correlation': float(correlation),
+                    'reaction_strength': float(reaction_strength),
+                    'is_strongly_correlated': is_strongly_correlated,
+                    'is_reacting': is_reacting,
+                    'reaction': 'STRONG' if is_strongly_correlated else 'MODERATE' if is_reacting else 'WEAK',
+                    'data_points': len(corr_df),
+                    'btc_std': float(btc_std),
+                    'alt_std': float(alt_std)
+                }
+                
+                logging.debug(f"Correlation calculation complete for {symbol}:")
+                logging.debug(f"Data points: {result['data_points']}")
+                logging.debug(f"BTC std: {result['btc_std']:.6f}")
+                logging.debug(f"ALT std: {result['alt_std']:.6f}")
+                logging.debug(f"Correlation: {result['correlation']:.4f}")
+                logging.debug(f"Reaction: {result['reaction']}")
+                
+                return result
+                
             except Exception as e:
-                logger.warning(f"Error calculating returns correlation: {str(e)}")
-                returns_correlation = 0.0
+                logging.error(f"Error in data processing: {str(e)}")
+                return self._get_default_correlation()
+
+        except asyncio.TimeoutError:
+            logging.error(f"Timeout while calculating correlation for {symbol}")
+            return self._get_default_correlation()
+        except Exception as e:
+            logging.error(f"Error calculating correlation for {symbol}: {str(e)}")
+            return self._get_default_correlation()
             
-            # Calculate reaction strength with bounds
-            reaction_strength = min(100, max(0, abs(returns_correlation) * 100))
+    def _get_default_correlation(self) -> Dict:
+        """Return default correlation values when calculation fails."""
+        return {
+            'correlation': 0.0,
+            'returns_correlation': 0.0,
+            'reaction_strength': 0.0,
+            'is_strongly_correlated': False,
+            'is_reacting': False,
+            'reaction': 'WEAK',
+            'data_points': 0
+        }
+
+    async def _handle_dca(self, symbol: str, position: dict) -> Dict:
+        """Handle DCA for a position with enhanced market analysis.
+        
+        Args:
+            symbol: Trading pair symbol
+            position: Current position details
             
-            # Determine correlation state
-            is_strongly_correlated = abs(correlation) > 0.7
-            is_reacting = abs(returns_correlation) > 0.5
+        Returns:
+            Dict: DCA execution details or None if no DCA needed
+        """
+        try:
+            # Get current price and position details
+            current_price = float(await self.binance_service.get_current_price(symbol))
+            entry_price = float(position['entryPrice'])
+            position_size = float(position['positionAmt'])
+            
+            # Calculate price drop percentage
+            price_drop = (entry_price - current_price) / entry_price if position_size > 0 else (current_price - entry_price) / entry_price
+            
+            # Get market conditions
+            market_conditions = await self._get_market_conditions(symbol)
+            if not market_conditions:
+                return None
+                
+            # Check if DCA is favorable
+            if not self._is_dca_favorable(market_conditions, price_drop):
+                logger.info(f"DCA not favorable for {symbol} at {price_drop:.2%} drop")
+                return None
+                
+            # Get DCA history for this position
+            dca_history = self._dca_history.get(symbol, [])
+            last_dca_time = self._last_dca_time.get(symbol, 0)
+            current_time = time.time()
+            
+            # Check DCA conditions
+            if (len(dca_history) >= self.dca_settings['max_dca_attempts'] or
+                current_time - last_dca_time < self.dca_settings['min_time_between_dca']):
+                return None
+                
+            # Find applicable DCA level
+            dca_level = None
+            for level in self.dca_settings['base_levels']:
+                if price_drop >= level['drop']:
+                    # Check if level has been used too many times
+                    level_uses = sum(1 for dca in dca_history if dca['level'] == level)
+                    if level_uses < level['max_uses']:
+                        dca_level = level
+                        break
+                        
+            if not dca_level:
+                return None
+                
+            # Calculate dynamic multiplier based on market conditions
+            base_multiplier = dca_level['multiplier']
+            dynamic_multiplier = base_multiplier
+            
+            # Adjust multiplier based on market conditions
+            if market_conditions['volatility'] > 0.02:  # High volatility
+                dynamic_multiplier *= self.dca_settings['dynamic_adjustment']['volatility_factor']
+            if market_conditions['trend_strength'] > 0.7:  # Strong trend
+                dynamic_multiplier *= self.dca_settings['dynamic_adjustment']['trend_factor']
+            if market_conditions['volume_ratio'] > 1.5:  # High volume
+                dynamic_multiplier *= self.dca_settings['dynamic_adjustment']['volume_factor']
+                
+            # Cap the multiplier
+            dynamic_multiplier = min(dynamic_multiplier, self.dca_settings['max_total_multiplier'])
+            
+            # Calculate new position size
+            new_size = abs(position_size) * dynamic_multiplier
+            
+            # Place DCA order
+            side = 'buy' if position_size > 0 else 'sell'
+            order = await self.binance_service.place_order({
+                'symbol': symbol,
+                'side': side,
+                'type': 'market',
+                'amount': new_size - abs(position_size),
+                'price': current_price
+            })
+            
+            if order:
+                # Update DCA history
+                dca_history.append({
+                    'time': current_time,
+                    'price': current_price,
+                    'size': new_size - abs(position_size),
+                    'level': dca_level,
+                    'multiplier': dynamic_multiplier
+                })
+                self._dca_history[symbol] = dca_history
+                self._last_dca_time[symbol] = current_time
+                
+                # Calculate new average entry price
+                total_cost = (abs(position_size) * entry_price) + ((new_size - abs(position_size)) * current_price)
+                new_entry_price = total_cost / new_size
+                
+                # Update stop loss and take profit
+                new_stop_loss = await self._calculate_stop_loss(symbol, new_entry_price, side)
+                new_take_profit = await self._calculate_take_profit(symbol, new_entry_price, side)
+                
+                # Send notification
+                await self.telegram_service.send_message(
+                    f"🔄 DCA executed for {symbol}\n"
+                    f"Price drop: {price_drop:.2%}\n"
+                    f"New size: {new_size:.8f}\n"
+                    f"New entry: {new_entry_price:.8f}\n"
+                    f"New SL: {new_stop_loss:.8f}\n"
+                    f"New TP: {new_take_profit:.8f}\n"
+                    f"Market conditions:\n"
+                    f"Volatility: {market_conditions['volatility']:.2%}\n"
+                    f"Trend: {market_conditions['trend']}\n"
+                    f"Volume: {market_conditions['volume_ratio']:.2f}x"
+                )
+                
+                return {
+                    'order': order,
+                    'new_entry_price': new_entry_price,
+                    'new_size': new_size,
+                    'stop_loss': new_stop_loss,
+                    'take_profit': new_take_profit,
+                    'market_conditions': market_conditions
+                }
+                
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error handling DCA: {str(e)}")
+            return None
+            
+    async def _get_market_conditions(self, symbol: str) -> Dict:
+        """Get current market conditions for DCA decision making.
+        
+        Args:
+            symbol: Trading pair symbol
+            
+        Returns:
+            Dict: Market conditions including trend, volatility, and volume
+        """
+        try:
+            # Get indicators for the symbol
+            df = await self.indicator_service.calculate_indicators(symbol)
+            if df is None or df.empty:
+                return {}
+                
+            # Analyze trend
+            trend = "UP" if df['close'].iloc[-1] > df['EMA_FAST'].iloc[-1] else "DOWN"
+            
+            # Analyze volatility
+            atr = df['ATR'].iloc[-1]
+            atr_ma = df['ATR'].rolling(20).mean().iloc[-1]
+            volatility = "HIGH" if atr > atr_ma * 1.5 else "MEDIUM" if atr > atr_ma else "LOW"
+            
+            # Analyze volume
+            volume = df['volume'].iloc[-1]
+            volume_ma = df['volume'].rolling(20).mean().iloc[-1]
+            volume_ratio = volume / volume_ma if volume_ma > 0 else 0
+            volume_status = "HIGH" if volume_ratio > 1.5 else "MEDIUM" if volume_ratio > 1 else "LOW"
             
             return {
-                'correlation': correlation,
-                'returns_correlation': returns_correlation,
-                'reaction_strength': reaction_strength,
-                'is_strongly_correlated': is_strongly_correlated,
-                'is_reacting': is_reacting
+                'trend': trend,
+                'volatility': volatility,
+                'volume': volume_status,
+                'atr': atr,
+                'volume_ratio': volume_ratio
             }
             
         except Exception as e:
-            logger.error(f"Error calculating altcoin correlation: {str(e)}")
-            return None 
+            logger.error(f"Error getting market conditions: {str(e)}")
+            return {}
+            
+    def _is_dca_favorable(self, market_conditions: Dict, price_drop: float) -> bool:
+        """Check if market conditions are favorable for DCA.
+        
+        Args:
+            market_conditions: Current market conditions
+            price_drop: Current price drop percentage
+            
+        Returns:
+            bool: True if conditions are favorable for DCA
+        """
+        try:
+            # Check if we have valid market conditions
+            if not market_conditions:
+                return False
+                
+            # Get conditions
+            trend = market_conditions.get('trend')
+            volatility = market_conditions.get('volatility')
+            volume = market_conditions.get('volume')
+            atr = market_conditions.get('atr', 0)
+            volume_ratio = market_conditions.get('volume_ratio', 0)
+            
+            # Favorable conditions:
+            # 1. Price drop is significant but not too extreme (2% - 10%)
+            # 2. Volatility is not extremely high
+            # 3. Volume is not extremely low
+            # 4. Trend is not strongly against the position
+            # 5. ATR is within reasonable range
+            return (
+                price_drop >= 0.02 and  # Minimum 2% drop
+                price_drop <= 0.10 and  # Maximum 10% drop
+                volatility != "HIGH" and  # Avoid high volatility
+                volume != "LOW" and  # Avoid low volume
+                volume_ratio > 0.8 and  # Volume above 80% of average
+                atr > 0 and  # Valid ATR
+                trend != "DOWN"  # Avoid DCA in strong downtrend
+            )
+            
+        except Exception as e:
+            logger.error(f"Error checking DCA favorability: {str(e)}")
+            return False
+
+    async def _update_trailing_stop(self, symbol: str, position: dict) -> bool:
+        """Update trailing stop for a position with enhanced market analysis.
+        
+        Args:
+            symbol: Trading pair symbol
+            position: Current position details
+            
+        Returns:
+            bool: True if trailing stop was updated, False otherwise
+        """
+        try:
+            # Get current price and position details
+            current_price = float(await self.binance_service.get_current_price(symbol))
+            entry_price = float(position['entryPrice'])
+            position_size = float(position['positionAmt'])
+            
+            # Calculate unrealized profit percentage
+            profit_pct = (current_price - entry_price) / entry_price if position_size > 0 else (entry_price - current_price) / entry_price
+            
+            # Get market conditions
+            market_conditions = await self._get_market_conditions(symbol)
+            if not market_conditions:
+                return False
+                
+            # Get current ATR
+            atr = market_conditions.get('atr', 0)
+            if not atr:
+                return False
+                
+            # Find applicable trailing stop level
+            trailing_level = None
+            for level in self.trailing_settings:
+                if profit_pct >= level['profit']:
+                    trailing_level = level
+                    break
+                    
+            if not trailing_level:
+                return False
+                
+            # Calculate dynamic trailing stop based on ATR and market conditions
+            base_trail = trailing_level['trail_percent']
+            atr_trail = (atr / current_price) * trailing_level['atr_multiplier']
+            
+            # Adjust trail based on market conditions
+            if market_conditions['volatility'] > 0.02:  # High volatility
+                atr_trail *= 1.2
+            if market_conditions['trend_strength'] > 0.7:  # Strong trend
+                atr_trail *= 1.1
+                
+            # Use the larger of base trail and ATR trail
+            final_trail = max(base_trail, atr_trail)
+            
+            # Calculate new stop loss price
+            if position_size > 0:  # Long position
+                new_stop_price = current_price * (1 - final_trail)
+            else:  # Short position
+                new_stop_price = current_price * (1 + final_trail)
+                
+            # Get current stop loss price
+            current_stop_price = await self._get_current_stop_loss(symbol)
+            if not current_stop_price:
+                return False
+                
+            # Only update if new stop loss is better (higher for long, lower for short)
+            should_update = (
+                (position_size > 0 and new_stop_price > current_stop_price) or
+                (position_size < 0 and new_stop_price < current_stop_price)
+            )
+            
+            if should_update:
+                # Update stop loss order
+                side = 'sell' if position_size > 0 else 'buy'
+                updated = await self.binance_service.update_stop_loss(
+                    symbol=symbol,
+                    stop_price=new_stop_price,
+                    side=side,
+                    amount=abs(position_size)
+                )
+                
+                if updated:
+                    # Send notification
+                    await self.telegram_service.send_message(
+                        f"🔄 Trailing stop updated for {symbol}\n"
+                        f"Profit: {profit_pct:.2%}\n"
+                        f"New stop: {new_stop_price:.8f}\n"
+                        f"Trail: {final_trail:.2%}\n"
+                        f"Market conditions:\n"
+                        f"Volatility: {market_conditions['volatility']:.2%}\n"
+                        f"Trend: {market_conditions['trend']}\n"
+                        f"ATR: {atr:.8f}"
+                    )
+                    return True
+                    
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error updating trailing stop: {str(e)}")
+            return False
+            
+    async def _get_current_stop_loss(self, symbol: str) -> float:
+        """Get current stop loss price for a symbol.
+        
+        Args:
+            symbol: Trading pair symbol
+            
+        Returns:
+            float: Current stop loss price or None if not found
+        """
+        try:
+            # Get open orders
+            orders = await self.binance_service.get_open_orders(symbol)
+            if not orders:
+                return None
+                
+            # Find stop loss order
+            for order in orders:
+                if order['type'].lower() == 'stop_loss':
+                    return float(order['stopPrice'])
+                    
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error getting current stop loss: {str(e)}")
+            return None
+            
+    
+    def calculate_stop_loss(self, current_price: float, side: str, dca_level: int = 0) -> float:
+        """Calculate stop loss price based on DCA level.
+        
+        Args:
+            current_price: Current market price
+            side: Trade side (buy/sell)
+            dca_level: Current DCA level (0-2)
+            
+        Returns:
+            float: Stop loss price
+        """
+        try:
+            # Base risk percentage from config
+            risk_percentage = self.config['trading']['risk_percentage']
+            
+            # Adjust risk based on DCA level
+            # Level 0 (initial): 100% risk
+            # Level 1 (first DCA): 150% risk
+            # Level 2 (second DCA): 200% risk
+            risk_multiplier = 1.0 + (dca_level * 0.5)
+            adjusted_risk = risk_percentage * risk_multiplier
+            
+            if side == 'buy':
+                return current_price * (1 - adjusted_risk)
+            else:
+                return current_price * (1 + adjusted_risk)
+                
+        except Exception as e:
+            logger.error(f"Error calculating stop loss: {str(e)}")
+            return None
+
+    def calculate_take_profit(self, current_price: float, side: str, dca_level: int = 0) -> float:
+        """Calculate take profit price based on DCA level.
+        
+        Args:
+            current_price: Current market price
+            side: Trade side (buy/sell)
+            dca_level: Current DCA level (0-2)
+            
+        Returns:
+            float: Take profit price
+        """
+        try:
+            # Base reward percentage from config
+            reward_percentage = self.config['trading']['reward_percentage']
+            
+            # Adjust reward based on DCA level
+            # Level 0 (initial): 100% reward
+            # Level 1 (first DCA): 75% reward
+            # Level 2 (second DCA): 50% reward
+            reward_multiplier = 1.0 - (dca_level * 0.25)
+            adjusted_reward = reward_percentage * reward_multiplier
+            
+            if side == 'buy':
+                return current_price * (1 + adjusted_reward)
+            else:
+                return current_price * (1 - adjusted_reward)
+                
+        except Exception as e:
+            logger.error(f"Error calculating take profit: {str(e)}")
+            return None

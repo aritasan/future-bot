@@ -95,7 +95,7 @@ class TelegramService:
             logger.error(f"Error sending message: {str(e)}")
             return False
             
-    async def send_order_notification(self, order: Dict, signals: Optional[Dict] = None) -> bool:
+    async def send_order_notification(self, order: Dict) -> bool:
         """Send an order notification.
         
         Args:
@@ -109,7 +109,7 @@ class TelegramService:
             if not self._is_initialized or self._is_closed:
                 logger.error("Telegram service not initialized or closed")
                 return False
-                
+          
             message = (
                 f"📊 <b>New Order</b>\n\n"
                 f"Symbol: {order['symbol']}\n"
@@ -119,16 +119,16 @@ class TelegramService:
                 f"Type: {order['type']}"
             )
             
-            # Add SL/TP information from signals if available
-            if signals:
-                if 'stop_loss' in signals:
-                    sl_price = signals['stop_loss']
-                    sl_percent = abs((sl_price - order['price']) / order['price'] * 100)
-                    message += f"\nStop Loss: {sl_price} ({sl_percent:.2f}%)"
-                if 'take_profit' in signals:
-                    tp_price = signals['take_profit']
-                    tp_percent = abs((tp_price - order['price']) / order['price'] * 100)
-                    message += f"\nTake Profit: {tp_price} ({tp_percent:.2f}%)"
+            # Add SL/TP information from order parameters
+            if 'stop_loss' in order:
+                sl_price = float(order['stop_loss'])
+                sl_percent = abs((sl_price - float(order['price'])) / float(order['price']) * 100)
+                message += f"\nStop Loss: {sl_price:.8f} ({sl_percent:.2f}%)"
+                
+            if 'take_profit' in order:
+                tp_price = float(order['take_profit'])
+                tp_percent = abs((tp_price - float(order['price'])) / float(order['price']) * 100)
+                message += f"\nTake Profit: {tp_price:.8f} ({tp_percent:.2f}%)"
                 
             return await self.send_message(message)
             

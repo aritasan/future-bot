@@ -101,7 +101,7 @@ async def process_symbol(
                         # Place order and send notification
                         order = await binance_service.place_order(signals)
                         if order:
-                            await telegram_service.send_order_notification(order, signals)
+                            await telegram_service.send_order_notification(order)
                     except Exception as e:
                         logger.error(f"Error placing order for {symbol}: {str(e)}")
                         health_monitor.record_error()

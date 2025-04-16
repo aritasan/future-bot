@@ -114,7 +114,7 @@ class BinanceService:
                 return None
                 
             # Check for duplicate orders
-            order_key = f"{order_params['symbol']}_{order_params['amount']}_{order_params['type']}"
+            order_key = f"{order_params['symbol']}_{order_params['amount']}_{order_params.get('type', 'market')}"
             if order_key in self.order_cache:
                 cached_order, timestamp = self.order_cache[order_key]
                 if datetime.now() - timestamp < self.cache_expiry:
@@ -137,7 +137,7 @@ class BinanceService:
             # Place main order
             order = await self.exchange.create_order(
                 symbol=order_params['symbol'],
-                type=order_params['type'],
+                type=order_params.get('type', 'market'),
                 side=order_params['side'],
                 amount=order_params['amount'],
                 price=order_params.get('price'),
@@ -160,10 +160,12 @@ class BinanceService:
                         amount=order_params['amount'],
                         params={
                             'positionSide': position_side,
-                            'stopPrice': sl_price
+                            'stopPrice': sl_price,
+                            'reduceOnly': True
                         }
                     )
                     logger.info(f"Stop loss order placed: {sl_order}")
+                    order['stop_loss'] = sl_order
                 except Exception as e:
                     logger.error(f"Failed to place stop loss order: {str(e)}")
                     # Continue with main order even if stop loss fails
@@ -182,10 +184,12 @@ class BinanceService:
                         amount=order_params['amount'],
                         params={
                             'positionSide': position_side,
-                            'stopPrice': tp_price
+                            'stopPrice': tp_price,
+                            'reduceOnly': True
                         }
                     )
                     logger.info(f"Take profit order placed: {tp_order}")
+                    order['take_profit'] = tp_order
                 except Exception as e:
                     logger.error(f"Failed to place take profit order: {str(e)}")
                     # Continue with main order even if take profit fails
@@ -593,4 +597,35 @@ class BinanceService:
                 del self._ws_connections[symbol][channel]
                 logger.info(f"WebSocket connection closed for {symbol} {channel}")
         except Exception as e:
-            logger.error(f"Error cleaning up WebSocket for {symbol} {channel}: {str(e)}") 
+            logger.error(f"Error cleaning up WebSocket for {symbol} {channel}: {str(e)}")
+
+    async def get_markets(self) -> Optional[Dict]:
+        """Get all available markets from Binance.
+        
+        Returns:
+            Optional[Dict]: Dictionary of market information if successful, None otherwise
+        """
+        try:
+            if not self._is_initialized:
+                logger.error("Binance service not initialized")
+                return None
+                
+            if self._is_closed:
+                logger.error("Binance service is closed")
+                return None
+                
+            # Check cache first
+            cache_key = "markets"
+            cached_data = await self._get_cached_data(cache_key, ttl=3600)  # Cache for 1 hour
+            if cached_data:
+                return cached_data
+                
+            # Fetch markets from exchange
+            markets = await self._make_request(self.exchange.load_markets)
+            if markets:
+                self._set_cached_data(cache_key, markets)
+            return markets
+            
+        except Exception as e:
+            logger.error(f"Error getting markets: {str(e)}")
+            return None 
