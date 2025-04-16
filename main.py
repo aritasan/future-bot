@@ -52,6 +52,8 @@ for handler in root_logger.handlers[:]:
 # Configure specific loggers
 logging.getLogger('telegram').setLevel(logging.WARNING)  # Reduce telegram library logging
 logging.getLogger('ccxt').setLevel(logging.WARNING)  # Reduce ccxt library logging
+logging.getLogger('httpx').setLevel(logging.WARNING)  # Disable httpx logging
+logging.getLogger('httpcore').setLevel(logging.WARNING)  # Disable httpcore logging
 
 logger = logging.getLogger(__name__)
 
@@ -242,32 +244,48 @@ async def main():
         telegram_service = TelegramService(config)
         health_monitor = HealthMonitor(config)
         indicator_service = IndicatorService(config)
-        strategy = EnhancedTradingStrategy(config)
+        strategy = EnhancedTradingStrategy(
+            config=config,
+            binance_service=binance_service,
+            indicator_service=indicator_service,
+            telegram_service=telegram_service
+        )
+
+        # Initialize Binance service first
+        try:
+            if not await binance_service.initialize():
+                logger.error("Failed to initialize Binance service")
+                return
+            logger.info("Binance service initialized successfully")
+        except Exception as e:
+            logger.error(f"Error initializing Binance service: {str(e)}")
+            return
 
         # Set up services
-        strategy.set_binance_service(binance_service)
         telegram_service.set_binance_service(binance_service)
 
-        # Initialize services
-        if not binance_service.initialize():
-            logger.error("Failed to initialize Binance service")
-            return
-            
-        await telegram_service.initialize()
-        if not telegram_service._is_initialized:
-            logger.error("Telegram service initialization failed")
-            return
-            
-        if not await health_monitor.initialize():
-            logger.error("Failed to initialize health monitor")
-            return
-            
-        if not await indicator_service.initialize():
-            logger.error("Failed to initialize indicator service")
-            return
-            
-        if not await strategy.initialize():
-            logger.error("Failed to initialize strategy")
+        # Initialize other services
+        try:
+            await telegram_service.initialize()
+            if not telegram_service._is_initialized:
+                logger.error("Telegram service initialization failed")
+                return
+                
+            if not await health_monitor.initialize():
+                logger.error("Failed to initialize health monitor")
+                return
+                
+            if not await indicator_service.initialize():
+                logger.error("Failed to initialize indicator service")
+                return
+                
+            if not await strategy.initialize():
+                logger.error("Failed to initialize strategy")
+                return
+                
+            logger.info("All services initialized successfully")
+        except Exception as e:
+            logger.error(f"Error initializing services: {str(e)}")
             return
 
         # Send startup notification

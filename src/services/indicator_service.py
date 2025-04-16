@@ -9,8 +9,8 @@ import ccxt.async_support as ccxt
 import asyncio
 import platform
 import numpy as np
-
 import time
+import sys
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,13 @@ class IndicatorService:
         self.max_retries = 3
         self.retry_delay = 1
         self._cache = {}
-        self._cache_ttl = 300  # 5 minutes
+        self._cache_ttl = {
+            "1m": 30,  # 30 seconds for 1m data
+            "5m": 60,  # 1 minute for 5m data
+            "15m": 300,  # 5 minutes for 15m data
+            "1h": 900,  # 15 minutes for 1h data
+            "4h": 3600,  # 1 hour for 4h data
+        }
         self._last_update = {}
         
     async def initialize(self) -> bool:
@@ -143,27 +149,51 @@ class IndicatorService:
             logger.error(f"Error in get_historical_data for {symbol}: {str(e)}")
             return None
             
-    async def calculate_indicators(self, symbol: str, timeframe: str = "5m") -> Optional[pd.DataFrame]:
-        """Calculate indicators with caching."""
+    async def calculate_indicators(self, symbol: str, timeframe: str = "5m", limit: int = 100) -> Optional[pd.DataFrame]:
+        """Calculate technical indicators for a symbol.
+        
+        Args:
+            symbol: Trading pair symbol
+            timeframe: Candlestick timeframe
+            limit: Number of candles to fetch
+            
+        Returns:
+            Optional[pd.DataFrame]: DataFrame with indicators or None if error
+        """
         try:
-            # Check cache first
+            if not self._is_initialized:
+                logger.error("Indicator service not initialized")
+                return None
+                
+            if self._is_closed:
+                logger.error("Indicator service is closed")
+                return None
+                
+            # Check cache
             cache_key = f"{symbol}_{timeframe}"
             current_time = time.time()
             
             if cache_key in self._cache:
                 cached_data, timestamp = self._cache[cache_key]
-                if current_time - timestamp < self._cache_ttl:
+                # Check if cache is still valid
+                if current_time - timestamp < self._cache_ttl[timeframe]:
                     return cached_data
             
-            # Calculate indicators if not in cache or cache expired
-            df = await self.get_historical_data(symbol, timeframe)
-            if df is None or df.empty:
+            # Fetch new data if cache is invalid or missing
+            ohlcv = await self.exchange.fetch_ohlcv(symbol, timeframe, limit)
+            if not ohlcv:
+                logger.error(f"Failed to fetch OHLCV data for {symbol}")
                 return None
                 
+            # Convert to DataFrame
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('timestamp', inplace=True)
+            
             # Calculate indicators
             df = await self._calculate_technical_indicators(df)
             
-            # Update cache
+            # Cache the result
             self._cache[cache_key] = (df, current_time)
             self._last_update[cache_key] = current_time
             
@@ -457,3 +487,25 @@ class IndicatorService:
             # Return original DataFrame with ADX column set to 0
             df['ADX'] = 0
             return df 
+
+    def get_cache_stats(self) -> Dict:
+        """Get cache statistics.
+        
+        Returns:
+            Dict: Cache statistics including hit rate and memory usage
+        """
+        try:
+            total_requests = len(self._last_update)
+            cache_hits = sum(1 for key in self._cache if time.time() - self._last_update.get(key, 0) < self._cache_ttl.get(key.split('_')[1], 300))
+            hit_rate = cache_hits / total_requests if total_requests > 0 else 0
+            
+            return {
+                'total_requests': total_requests,
+                'cache_hits': cache_hits,
+                'hit_rate': hit_rate,
+                'cache_size': len(self._cache),
+                'memory_usage': sys.getsizeof(self._cache)
+            }
+        except Exception as e:
+            logger.error(f"Error getting cache stats: {str(e)}")
+            return {} 

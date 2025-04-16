@@ -3,7 +3,7 @@ Service for interacting with Binance exchange.
 """
 
 import logging
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Any
 import ccxt.async_support as ccxt
 from datetime import datetime, timedelta
 import pandas as pd
@@ -35,8 +35,17 @@ class BinanceService:
         self._balance_cache = {}
         self._cache_ttl = 60  # 1 minute
         self._last_update = {}
+        self._time_offset = 0  # Time difference between local and server time
+        self._last_sync_time = 0  # Last time synchronization timestamp
+        self._sync_interval = 300  # Sync every 5 minutes
+        self._max_retries = 3  # Maximum number of retries
+        self._retry_delay = 1  # Initial retry delay in seconds
+        self._max_retry_delay = 32  # Maximum retry delay in seconds
+        self._cache = {}  # In-memory cache for indicators
+        self._ws_connections = {}  # WebSocket connections
+        self._ws_subscriptions = {}  # WebSocket subscriptions
         
-    def initialize(self) -> bool:
+    async def initialize(self) -> bool:
         """Initialize the Binance service.
         
         Returns:
@@ -54,9 +63,20 @@ class BinanceService:
                 'enableRateLimit': True,
                 'options': {
                     'defaultType': 'future',
-                    'adjustForTimeDifference': True
+                    'adjustForTimeDifference': True,
+                    'recvWindow': 60000  # Increase recvWindow to 60 seconds
                 }
             })
+            
+            # Test connection by loading markets
+            await self.exchange.load_markets()
+            
+            # Test API key by fetching balance
+            try:
+                await self.exchange.fetch_balance()
+            except Exception as e:
+                logger.error(f"Failed to fetch balance: {str(e)}")
+                return False
             
             self._is_initialized = True
             logger.info("Binance service initialized successfully")
@@ -64,6 +84,7 @@ class BinanceService:
             
         except Exception as e:
             logger.error(f"Failed to initialize Binance service: {str(e)}")
+            self._is_initialized = False
             return False
             
     async def place_order(self, order_params: Dict) -> Optional[Dict]:
@@ -183,29 +204,17 @@ class BinanceService:
             Optional[Dict]: Account balance if successful, None otherwise
         """
         try:
-            if not self._is_initialized:
-                logger.error("Binance service not initialized")
-                return None
-                
-            if self._is_closed:
-                logger.error("Binance service is closed")
-                return None
-                
-            # Check cache
-            current_time = datetime.now()
-            if 'balance' in self.balance_cache:
-                cached_balance, timestamp = self.balance_cache['balance']
-                if current_time - timestamp < self.cache_expiry:
-                    return cached_balance
-                    
-            # Fetch balance
-            balance = await self.exchange.fetch_balance()
-            
-            # Cache balance
-            self.balance_cache['balance'] = (balance, current_time)
-            
+            # Check cache first
+            cache_key = "account_balance"
+            cached_data = await self._get_cached_data(cache_key, ttl=60)  # Cache for 1 minute
+            if cached_data:
+                return cached_data
+
+            # Use REST API with retry mechanism
+            balance = await self._make_request(self.exchange.fetch_balance)
+            if balance:
+                self._set_cached_data(cache_key, balance)
             return balance
-            
         except Exception as e:
             logger.error(f"Error getting account balance: {str(e)}")
             return None
@@ -217,71 +226,41 @@ class BinanceService:
             Optional[Dict]: Open positions if successful, None otherwise
         """
         try:
-            if not self._is_initialized:
-                logger.error("Binance service not initialized")
-                return None
-                
-            if self._is_closed:
-                logger.error("Binance service is closed")
-                return None
-                
-            # Check cache
-            current_time = datetime.now()
-            if 'positions' in self.position_cache:
-                cached_positions, timestamp = self.position_cache['positions']
-                if current_time - timestamp < self.cache_expiry:
-                    return cached_positions
-                    
-            # Fetch positions
-            positions = await self.exchange.fetch_positions()
-            
-            # Cache positions
-            self.position_cache['positions'] = (positions, current_time)
-            
+            # Check cache first
+            cache_key = "positions"
+            cached_data = await self._get_cached_data(cache_key, ttl=30)  # Cache for 30 seconds
+            if cached_data:
+                return cached_data
+
+            # Use REST API with retry mechanism
+            positions = await self._make_request(self.exchange.fetch_positions)
+            if positions:
+                self._set_cached_data(cache_key, positions)
             return positions
-            
         except Exception as e:
             logger.error(f"Error getting positions: {str(e)}")
             return None
             
     async def get_ticker(self, symbol: str) -> Optional[Dict]:
-        """Get ticker information for a symbol.
-        
-        Args:
-            symbol: Trading pair symbol
-            
-        Returns:
-            Optional[Dict]: Ticker information if successful, None otherwise
-        """
+        """Get ticker information for a symbol."""
         try:
-            if not self._is_initialized:
-                logger.error("Binance service not initialized")
-                return None
-                
-            if self._is_closed:
-                logger.error("Binance service is closed")
-                return None
-                
-            # Fetch ticker
-            ticker = await self.exchange.fetch_ticker(symbol)
-            
-            if not ticker:
-                logger.error(f"Failed to fetch ticker for {symbol}")
-                return None
-                
-            # Format ticker with safe float conversion
-            formatted_ticker = {
-                'last': float(ticker.get('last', 0)) if ticker.get('last') is not None else 0,
-                'bid': float(ticker.get('bid', 0)) if ticker.get('bid') is not None else 0,
-                'ask': float(ticker.get('ask', 0)) if ticker.get('ask') is not None else 0,
-                'high': float(ticker.get('high', 0)) if ticker.get('high') is not None else 0,
-                'low': float(ticker.get('low', 0)) if ticker.get('low') is not None else 0,
-                'volume': float(ticker.get('volume', 0)) if ticker.get('volume') is not None else 0,
-                'timestamp': ticker.get('timestamp', 0)
-            }
-            
-            return formatted_ticker
-            
+            # Check cache first
+            cache_key = f"ticker_{symbol}"
+            cached_data = await self._get_cached_data(cache_key)
+            if cached_data:
+                return cached_data
+
+            # Try to use WebSocket if available
+            if symbol in self._ws_connections and 'ticker' in self._ws_connections[symbol]:
+                ticker = await self._ws_connections[symbol]['ticker']
+                self._set_cached_data(cache_key, ticker)
+                return ticker
+
+            # Fallback to REST API
+            ticker = await self._make_request(self.exchange.fetch_ticker, symbol)
+            if ticker:
+                self._set_cached_data(cache_key, ticker)
+            return ticker
         except Exception as e:
             logger.error(f"Error getting ticker for {symbol}: {str(e)}")
             return None
@@ -332,16 +311,13 @@ class BinanceService:
     async def close(self):
         """Close the Binance service."""
         try:
-            if not self._is_initialized:
-                logger.warning("Binance service was not initialized")
-                return
-                
-            if self._is_closed:
-                logger.warning("Binance service already closed")
-                return
-                
+            # Close all WebSocket connections
+            for symbol in list(self._ws_connections.keys()):
+                for channel in list(self._ws_connections[symbol].keys()):
+                    await self._cleanup_websocket(symbol, channel)
+
             # Clear cache
-            self.clear_cache()
+            self._cache.clear()
             
             # Close exchange
             if self.exchange:
@@ -349,7 +325,6 @@ class BinanceService:
                 
             self._is_closed = True
             logger.info("Binance service closed")
-            
         except Exception as e:
             logger.error(f"Error closing Binance service: {str(e)}")
             
@@ -478,4 +453,144 @@ class BinanceService:
             
         except Exception as e:
             logger.error(f"Error calculating position statistics: {str(e)}")
-            return None 
+            return None
+            
+    async def get_klines(self, symbol: str, timeframe: str = '5m', limit: int = 100) -> Optional[List]:
+        """Get kline/candlestick data for a symbol."""
+        try:
+            # Check cache first
+            cache_key = f"klines_{symbol}_{timeframe}_{limit}"
+            cached_data = await self._get_cached_data(cache_key)
+            if cached_data:
+                return cached_data
+
+            # Use REST API with retry mechanism
+            klines = await self._make_request(
+                self.exchange.fetch_ohlcv,
+                symbol,
+                timeframe=timeframe,
+                limit=limit
+            )
+            if klines:
+                self._set_cached_data(cache_key, klines)
+            return klines
+        except Exception as e:
+            logger.error(f"Error getting klines for {symbol}: {str(e)}")
+            return None
+            
+    async def update_stop_loss(self, symbol: str, stop_price: float, side: str, amount: float) -> bool:
+        """Update stop loss order for a position."""
+        try:
+            # Use REST API with retry mechanism
+            result = await self._make_request(
+                self.exchange.create_order,
+                symbol=symbol,
+                type='STOP_MARKET',
+                side=side,
+                amount=amount,
+                params={'stopPrice': stop_price}
+            )
+            return bool(result)
+        except Exception as e:
+            logger.error(f"Error updating stop loss: {str(e)}")
+            return False
+
+    async def update_take_profit(self, symbol: str, take_profit_price: float, side: str, amount: float) -> bool:
+        """Update take profit order for a position."""
+        try:
+            # Use REST API with retry mechanism
+            result = await self._make_request(
+                self.exchange.create_order,
+                symbol=symbol,
+                type='TAKE_PROFIT_MARKET',
+                side=side,
+                amount=amount,
+                params={'stopPrice': take_profit_price}
+            )
+            return bool(result)
+        except Exception as e:
+            logger.error(f"Error updating take profit: {str(e)}")
+            return False
+
+    async def _sync_time(self) -> None:
+        """Synchronize local time with Binance server time."""
+        try:
+            current_time = time.time()
+            if current_time - self._last_sync_time < self._sync_interval:
+                return
+
+            server_time = await self.exchange.fetch_time()
+            local_time = int(time.time() * 1000)
+            self._time_offset = server_time - local_time
+            self._last_sync_time = current_time
+            logger.info(f"Time synchronized. Offset: {self._time_offset}ms")
+        except Exception as e:
+            logger.error(f"Error synchronizing time: {str(e)}")
+
+    async def _make_request(self, func, *args, **kwargs):
+        """Make a request with retry mechanism and time synchronization."""
+        retries = 0
+        last_error = None
+
+        while retries < self._max_retries:
+            try:
+                # Sync time before making request
+                await self._sync_time()
+                
+                # Add timestamp to request if needed
+                if 'params' in kwargs and 'timestamp' in kwargs['params']:
+                    kwargs['params']['timestamp'] = int(time.time() * 1000) + self._time_offset
+                
+                result = await func(*args, **kwargs)
+                return result
+            except Exception as e:
+                last_error = e
+                retries += 1
+                
+                if 'timestamp' in str(e).lower():
+                    # If timestamp error, sync time and retry immediately
+                    await self._sync_time()
+                    continue
+                
+                if retries < self._max_retries:
+                    delay = min(self._retry_delay * (2 ** (retries - 1)), self._max_retry_delay)
+                    logger.warning(f"Request failed, retrying in {delay}s (attempt {retries}/{self._max_retries})")
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error(f"Request failed after {retries} attempts: {str(last_error)}")
+                    raise last_error
+
+    async def _get_cached_data(self, key: str, ttl: int = None) -> Optional[Any]:
+        """Get data from cache if available and not expired."""
+        if key in self._cache:
+            data, timestamp = self._cache[key]
+            if time.time() - timestamp < (ttl or self._cache_ttl):
+                return data
+        return None
+
+    def _set_cached_data(self, key: str, data: Any) -> None:
+        """Store data in cache with timestamp."""
+        self._cache[key] = (data, time.time())
+
+    async def _setup_websocket(self, symbol: str, channel: str) -> None:
+        """Setup WebSocket connection for a symbol and channel."""
+        try:
+            if symbol not in self._ws_connections:
+                self._ws_connections[symbol] = {}
+            
+            if channel not in self._ws_connections[symbol]:
+                ws = await self.exchange.watch_ticker(symbol)
+                self._ws_connections[symbol][channel] = ws
+                logger.info(f"WebSocket connection established for {symbol} {channel}")
+        except Exception as e:
+            logger.error(f"Error setting up WebSocket for {symbol} {channel}: {str(e)}")
+
+    async def _cleanup_websocket(self, symbol: str, channel: str) -> None:
+        """Cleanup WebSocket connection."""
+        try:
+            if symbol in self._ws_connections and channel in self._ws_connections[symbol]:
+                await self._ws_connections[symbol][channel].close()
+                del self._ws_connections[symbol][channel]
+                logger.info(f"WebSocket connection closed for {symbol} {channel}")
+        except Exception as e:
+            logger.error(f"Error cleaning up WebSocket for {symbol} {channel}: {str(e)}") 
