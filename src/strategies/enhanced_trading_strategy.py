@@ -236,7 +236,7 @@ class EnhancedTradingStrategy:
                 'volatility': btc_volatility.get('volatility', 0),
                 'volume': df['volume'].iloc[-1] / df['volume'].mean(),
                 'price_action': {
-                    'breakout_direction': 'up' if df['close'].iloc[-1] > df['BB_UPPER'].iloc[-1] else 'down' if df['close'].iloc[-1] < df['BB_LOWER'].iloc[-1] else ''
+                    'breakout_direction': 'up' if df['close'].iloc[-1] > df['BB_upper'].iloc[-1] else 'down' if df['close'].iloc[-1] < df['BB_lower'].iloc[-1] else ''
                 }
             }
             
@@ -672,14 +672,33 @@ class EnhancedTradingStrategy:
             if position_amt < 0:  # Short position
                 price_change = -price_change
                 
+            # Determine position side
+            position_side = 'LONG' if position_amt > 0 else 'SHORT'
+                
             # Check stop loss
             stop_loss = position.get('stopLossPrice')
             if stop_loss:
                 if position_amt > 0 and current_price <= float(stop_loss):
                     logger.info(f"Stop loss triggered for long position at {current_price}")
+                    # Send stop loss notification
+                    await self.telegram_service.send_stop_loss_notification(
+                        symbol=position['info']['symbol'],
+                        position_side=position_side,
+                        entry_price=entry_price,
+                        stop_price=float(stop_loss),
+                        pnl_percent=price_change
+                    )
                     return True
                 elif position_amt < 0 and current_price >= float(stop_loss):
                     logger.info(f"Stop loss triggered for short position at {current_price}")
+                    # Send stop loss notification
+                    await self.telegram_service.send_stop_loss_notification(
+                        symbol=position['info']['symbol'],
+                        position_side=position_side,
+                        entry_price=entry_price,
+                        stop_price=float(stop_loss),
+                        pnl_percent=price_change
+                    )
                     return True
                     
             # Check take profit
@@ -687,9 +706,25 @@ class EnhancedTradingStrategy:
             if take_profit:
                 if position_amt > 0 and current_price >= float(take_profit):
                     logger.info(f"Take profit triggered for long position at {current_price}")
+                    # Send take profit notification
+                    await self.telegram_service.send_take_profit_notification(
+                        symbol=position['info']['symbol'],
+                        position_side=position_side,
+                        entry_price=entry_price,
+                        tp_price=float(take_profit),
+                        pnl_percent=price_change
+                    )
                     return True
                 elif position_amt < 0 and current_price <= float(take_profit):
                     logger.info(f"Take profit triggered for short position at {current_price}")
+                    # Send take profit notification
+                    await self.telegram_service.send_take_profit_notification(
+                        symbol=position['info']['symbol'],
+                        position_side=position_side,
+                        entry_price=entry_price,
+                        tp_price=float(take_profit),
+                        pnl_percent=price_change
+                    )
                     return True
                     
             # Check trend reversal
@@ -1783,11 +1818,9 @@ class EnhancedTradingStrategy:
             # Case 2: Existing position - manage the position
             # Check if we should close the position
             if await self.should_close_position(position, position['entryPrice']):
+                # Position will be closed by should_close_position method
+                # and appropriate notifications will be sent
                 await self.binance_service.close_position(symbol)
-                await self.telegram_service.send_message(
-                    f"🔴 Position closed for {symbol}\n"
-                    f"Reason: Market conditions unfavorable"
-                )
                 return
                 
             # Check if we should update stops
@@ -1909,11 +1942,9 @@ class EnhancedTradingStrategy:
                     if symbol:
                         # Check if we should close the position
                         if await self.should_close_position(position, position.get('entryPrice', 0)):
+                            # Position will be closed by should_close_position method
+                            # and appropriate notifications will be sent
                             await self.binance_service.close_position(symbol)
-                            await self.telegram_service.send_message(
-                                f"🔴 Position closed for {symbol}\n"
-                                f"Reason: Market conditions unfavorable"
-                            )
                         
         except Exception as e:
             logger.error(f"Error monitoring positions: {str(e)}")
