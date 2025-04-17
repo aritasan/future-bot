@@ -3,7 +3,7 @@ Enhanced trading strategy implementation.
 """
 
 import logging
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 import pandas as pd
 import numpy as np
 import time
@@ -20,7 +20,7 @@ class EnhancedTradingStrategy:
     """Enhanced trading strategy with multiple indicators and risk management."""
     
     def __init__(self, config: Dict, binance_service: BinanceService, indicator_service: IndicatorService, telegram_service: TelegramService):
-        """Initialize the strategy.
+        """Initialize the trading strategy.
         
         Args:
             config: Configuration dictionary
@@ -32,7 +32,12 @@ class EnhancedTradingStrategy:
         self.binance_service = binance_service
         self.indicator_service = indicator_service
         self.telegram_service = telegram_service
-        self.sentiment_service = None
+        self._is_running = False
+        self._monitoring_tasks = []
+        self._last_dca_time = {}
+        self._dca_history = {}
+        self._last_trailing_stop_update = {}  # Track last trailing stop update time per symbol
+        self._trailing_stop_debounce = 60  # Debounce time in seconds
         
         # Trading parameters
         self.min_volume_ratio = 1.2  # Tỷ lệ volume tối thiểu so với trung bình
@@ -91,10 +96,6 @@ class EnhancedTradingStrategy:
             {'profit': 0.02, 'trail_percent': 0.008, 'atr_multiplier': 1.2},  # 2% profit - 0.8% trail
             {'profit': 0.03, 'trail_percent': 0.01, 'atr_multiplier': 1.5}    # 3% profit - 1.0% trail
         ]
-        
-        # Initialize state
-        self._dca_history = {}  # Track DCA history per position
-        self._last_dca_time = {}  # Track last DCA time per position
         
     async def initialize(self) -> bool:
         """Initialize the strategy.
@@ -1377,6 +1378,12 @@ class EnhancedTradingStrategy:
                 logger.error(f"Invalid price data for {symbol}")
                 return None
                 
+            # Check if the position is in loss (for DCA, we want to DCA when in loss)
+            unrealized_pnl = float(position.get('unrealizedPnl', 0))
+            if unrealized_pnl > 0:
+                logger.info(f"Skipping DCA for {symbol} - position is profitable")
+                return None
+                
             # Determine position side
             position_side = position['info'].get('positionSide', 'LONG')
             is_long = position_side == 'LONG'
@@ -1521,6 +1528,14 @@ class EnhancedTradingStrategy:
     async def _update_trailing_stop(self, symbol: str, position: Dict) -> bool:
         """Update trailing stop for a position based on market analysis."""
         try:
+            # Check if we've updated this symbol's trailing stop recently
+            current_time = time.time()
+            if symbol in self._last_trailing_stop_update:
+                last_update = self._last_trailing_stop_update[symbol]
+                if current_time - last_update < self._trailing_stop_debounce:
+                    logger.info(f"Skipping trailing stop update for {symbol} - too soon since last update")
+                    return False
+            
             # Get position details from the new structure
             position_amt = float(position.get('info', {}).get('positionAmt', 0))
             if position_amt == 0:
@@ -1531,6 +1546,12 @@ class EnhancedTradingStrategy:
             entry_price = float(position.get('entryPrice', 0))
             if not mark_price or not entry_price:
                 logger.error(f"Invalid price data for {symbol}")
+                return False
+                
+            # Check if the position is profitable
+            unrealized_pnl = float(position.get('unrealizedPnl', 0))
+            if unrealized_pnl <= 0:
+                logger.info(f"Skipping trailing stop update for {symbol} - position is not profitable")
                 return False
                 
             # Determine position side
@@ -1580,6 +1601,17 @@ class EnhancedTradingStrategy:
             precision = self.config['trading']['price_precision']
             new_stop = round(new_stop, precision)
             
+            # Cancel existing stop loss orders before creating a new one
+            existing_stop_orders = await self._get_stop_loss_orders(symbol)
+            if existing_stop_orders:
+                logger.info(f"Canceling {len(existing_stop_orders)} existing stop loss orders for {symbol}")
+                for order in existing_stop_orders:
+                    order_id = order.get('id')
+                    if order_id:
+                        success = await self.binance_service.cancel_order(symbol, order_id)
+                        if not success:
+                            logger.warning(f"Failed to cancel stop loss order {order_id} for {symbol}")
+            
             # Update stop loss order
             success = await self.binance_service.update_stop_loss(
                 symbol=symbol,
@@ -1591,6 +1623,14 @@ class EnhancedTradingStrategy:
             
             if success:
                 logger.info(f"Updated trailing stop for {symbol} to {new_stop}")
+                # Update the last update time
+                self._last_trailing_stop_update[symbol] = current_time
+                # Send Telegram notification
+                await self.telegram_service.send_trailing_stop_notification(
+                    symbol=symbol,
+                    new_stop=new_stop,
+                    position_side=position_side
+                )
             else:
                 logger.error(f"Failed to update trailing stop for {symbol}")
                 
@@ -1621,12 +1661,36 @@ class EnhancedTradingStrategy:
                     return float(order['stopPrice'])
                     
             return None
-            
         except Exception as e:
             logger.error(f"Error getting current stop loss: {str(e)}")
             return None
             
-    
+    async def _get_stop_loss_orders(self, symbol: str) -> List[Dict]:
+        """Get all stop loss orders for a symbol.
+        
+        Args:
+            symbol: Trading pair symbol
+            
+        Returns:
+            List[Dict]: List of stop loss orders or empty list if none found
+        """
+        try:
+            # Get open orders
+            orders = await self.binance_service.get_open_orders(symbol)
+            if not orders:
+                return []
+                
+            # Filter stop loss orders
+            stop_orders = []
+            for order in orders:
+                if order['type'].lower() in ['stop_loss', 'stop_market']:
+                    stop_orders.append(order)
+                    
+            return stop_orders
+        except Exception as e:
+            logger.error(f"Error getting stop loss orders: {str(e)}")
+            return []
+
     def calculate_stop_loss(self, current_price: float, side: str, dca_level: int = 0) -> float:
         """Calculate stop loss price based on DCA level.
         
@@ -1843,8 +1907,14 @@ class EnhancedTradingStrategy:
                 if position and float(position.get('contracts', 0)) > 0:
                     symbol = position.get('symbol')
                     if symbol:
-                        await self._update_trailing_stop(symbol, position)
-                    
+                        # Check if we should close the position
+                        if await self.should_close_position(position, position.get('entryPrice', 0)):
+                            await self.binance_service.close_position(symbol)
+                            await self.telegram_service.send_message(
+                                f"🔴 Position closed for {symbol}\n"
+                                f"Reason: Market conditions unfavorable"
+                            )
+                        
         except Exception as e:
             logger.error(f"Error monitoring positions: {str(e)}")
             
@@ -1859,9 +1929,15 @@ class EnhancedTradingStrategy:
                 if position and float(position.get('contracts', 0)) > 0:
                     symbol = position.get('symbol')
                     if symbol:
+                        # Check if the position is in loss (for DCA, we want to DCA when in loss)
+                        unrealized_pnl = float(position.get('unrealizedPnl', 0))
+                        if unrealized_pnl > 0:
+                            logger.info(f"Skipping DCA for {symbol} - position is profitable")
+                            continue  # Skip this position but continue with others
+                            
                         dca_result = await self._handle_dca(symbol, position)
                         if dca_result:
-                            await self.telegram_service.send_order_notification(dca_result)
+                            await self.telegram_service.send_dca_notification(dca_result)
                         
         except Exception as e:
             logger.error(f"Error monitoring DCA: {str(e)}")
@@ -1877,6 +1953,11 @@ class EnhancedTradingStrategy:
                 if position and float(position.get('contracts', 0)) > 0:
                     symbol = position.get('symbol')
                     if symbol:
+                        # Check if the position is profitable
+                        unrealized_pnl = float(position.get('unrealizedPnl', 0))
+                        if unrealized_pnl <= 0:
+                            logger.info(f"Skipping trailing stop update for {symbol} - position is not profitable")
+                            continue  # Skip this position but continue with others
                         await self._update_trailing_stop(symbol, position)
                     
         except Exception as e:
