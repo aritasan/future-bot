@@ -64,7 +64,8 @@ class BinanceService:
                 'options': {
                     'defaultType': 'future',
                     'adjustForTimeDifference': True,
-                    'recvWindow': 60000  # Increase recvWindow to 60 seconds
+                    'recvWindow': 60000,  # Increase recvWindow to 60 seconds
+                    'warnOnFetchOpenOrdersWithoutSymbol': False  # Acknowledge warning about fetching open orders without symbol
                 }
             })
             
