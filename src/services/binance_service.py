@@ -542,6 +542,41 @@ class BinanceService:
             logger.error(f"Error updating take profit: {str(e)}")
             return False
 
+    async def cancel_order(self, symbol: str, order_id: str) -> bool:
+        """Cancel an order by its ID.
+        
+        Args:
+            symbol: Trading pair symbol
+            order_id: Order ID to cancel
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            if not self._is_initialized:
+                logger.error("Binance service not initialized")
+                return False
+                
+            if self._is_closed:
+                logger.error("Binance service is closed")
+                return False
+                
+            # Use REST API with retry mechanism
+            result = await self._make_request(
+                self.exchange.cancel_order,
+                id=order_id,
+                symbol=symbol
+            )
+            
+            # Clear cache for open orders
+            cache_key = f"open_orders_{symbol}"
+            self._cache.pop(cache_key, None)
+            
+            return bool(result)
+        except Exception as e:
+            logger.error(f"Error canceling order {order_id} for {symbol}: {str(e)}")
+            return False
+
     async def _sync_time(self) -> None:
         """Synchronize local time with Binance server time."""
         try:
