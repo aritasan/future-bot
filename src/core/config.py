@@ -95,10 +95,19 @@ DEFAULT_TIMEFRAME = "5m"
 DEFAULT_LEVERAGE = 10
 MAX_LEVERAGE = 20
 MIN_ORDER_SIZE = 10  # USDT
+PRICE_PRECISION = 8  # Number of decimal places for price values
 
 # Risk management
 MAX_CORRELATION = 0.7    # Maximum allowed correlation between positions
 MAX_VOLATILITY = 0.02    # Maximum allowed volatility (2%)
+
+# Risk management parameters
+BASE_STOP_DISTANCE = float(os.getenv("BASE_STOP_DISTANCE", "0.02"))  # 2% base stop distance
+VOLATILITY_MULTIPLIER = float(os.getenv("VOLATILITY_MULTIPLIER", "1.5"))  # Volatility adjustment factor
+TREND_MULTIPLIER = float(os.getenv("TREND_MULTIPLIER", "1.2"))  # Trend strength adjustment factor
+TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "2.0"))  # Risk:Reward ratio
+DCA_MULTIPLIER = float(os.getenv("DCA_MULTIPLIER", "0.5"))  # DCA size relative to initial position
+ATR_MULTIPLIER = float(os.getenv("ATR_MULTIPLIER", "1.5"))  # ATR multiplier for dynamic stops
 
 def load_config() -> Dict[str, Any]:
     """Load configuration from environment variables."""
@@ -141,7 +150,16 @@ def load_config() -> Dict[str, Any]:
             'default_leverage': DEFAULT_LEVERAGE,
             'max_leverage': MAX_LEVERAGE,
             'min_order_size': MIN_ORDER_SIZE,
-            'max_correlation': MAX_CORRELATION
+            'max_correlation': MAX_CORRELATION,
+            'price_precision': PRICE_PRECISION
+        },
+        'risk_management': {
+            'base_stop_distance': BASE_STOP_DISTANCE,
+            'volatility_multiplier': VOLATILITY_MULTIPLIER,
+            'trend_multiplier': TREND_MULTIPLIER,
+            'take_profit_multiplier': TAKE_PROFIT_MULTIPLIER,
+            'dca_multiplier': DCA_MULTIPLIER,
+            'atr_multiplier': ATR_MULTIPLIER
         },
         'cache': {
             'price_ttl': PRICE_CACHE_TTL,

@@ -268,6 +268,17 @@ class BinanceService:
         except Exception as e:
             logger.error(f"Error getting ticker for {symbol}: {str(e)}")
             return None
+
+    async def get_current_price(self, symbol: str) -> Optional[float]:
+        """Get current price for a symbol."""
+        try:
+            ticker = await self.get_ticker(symbol)
+            if ticker and 'last' in ticker:
+                return float(ticker['last'])
+            return None
+        except Exception as e:
+            logger.error(f"Error getting current price for {symbol}: {str(e)}")
+            return None
             
     async def fetch_ohlcv(self, symbol: str, timeframe: str = '1h', limit: int = 100) -> Optional[List]:
         """Fetch OHLCV data for a symbol.
@@ -482,17 +493,32 @@ class BinanceService:
             logger.error(f"Error getting klines for {symbol}: {str(e)}")
             return None
             
-    async def update_stop_loss(self, symbol: str, stop_price: float, side: str, amount: float) -> bool:
-        """Update stop loss order for a position."""
+    async def update_stop_loss(self, symbol: str, stop_price: float, side: str, position_side: str = None, amount: float = None) -> bool:
+        """Update stop loss order for a position.
+        
+        Args:
+            symbol: Trading pair symbol
+            stop_price: New stop loss price
+            side: Order side (BUY/SELL)
+            position_side: Position side (LONG/SHORT)
+            amount: Order amount (optional)
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
         try:
             # Use REST API with retry mechanism
+            params = {'stopPrice': stop_price}
+            if position_side:
+                params['positionSide'] = position_side
+                
             result = await self._make_request(
                 self.exchange.create_order,
                 symbol=symbol,
                 type='STOP_MARKET',
                 side=side,
                 amount=amount,
-                params={'stopPrice': stop_price}
+                params=params
             )
             return bool(result)
         except Exception as e:
@@ -628,4 +654,42 @@ class BinanceService:
             
         except Exception as e:
             logger.error(f"Error getting markets: {str(e)}")
+            return None
+
+    async def get_open_orders(self, symbol: str = None) -> Optional[List[Dict]]:
+        """Get open orders for a symbol or all symbols.
+        
+        Args:
+            symbol: Trading pair symbol (optional)
+            
+        Returns:
+            Optional[List[Dict]]: List of open orders or None if error
+        """
+        try:
+            if not self._is_initialized:
+                logger.error("Binance service not initialized")
+                return None
+                
+            if self._is_closed:
+                logger.error("Binance service is closed")
+                return None
+                
+            # Check cache first
+            cache_key = f"open_orders_{symbol if symbol else 'all'}"
+            cached_data = await self._get_cached_data(cache_key, ttl=30)  # Cache for 30 seconds
+            if cached_data:
+                return cached_data
+                
+            # Use REST API with retry mechanism
+            if symbol:
+                orders = await self._make_request(self.exchange.fetch_open_orders, symbol)
+            else:
+                orders = await self._make_request(self.exchange.fetch_open_orders)
+                
+            if orders:
+                self._set_cached_data(cache_key, orders)
+            return orders
+            
+        except Exception as e:
+            logger.error(f"Error getting open orders: {str(e)}")
             return None 

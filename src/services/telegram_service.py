@@ -704,4 +704,62 @@ class TelegramService:
             raise
         except Exception as e:
             logger.error(f"Error waiting for trading resume: {str(e)}")
-            raise 
+            raise
+
+    async def send_dca_notification(self, dca_details: Dict) -> bool:
+        """Send DCA execution notification.
+        
+        Args:
+            dca_details: Dictionary containing DCA execution details
+            
+        Returns:
+            bool: True if notification sent successfully, False otherwise
+        """
+        try:
+            if not self._is_initialized or self._is_closed:
+                logger.error("Telegram service not initialized or closed")
+                return False
+                
+            message = (
+                f"💰 <b>DCA Executed</b>\n\n"
+                f"Symbol: {dca_details['symbol']}\n"
+                f"Amount: {dca_details['dca_amount']:.8f}\n"
+                f"New Entry: {dca_details['new_entry_price']:.8f}\n"
+                f"Price Drop: {dca_details['price_drop']:.2f}%\n"
+                f"Order ID: {dca_details['order_id']}"
+            )
+            
+            return await self.send_message(message)
+            
+        except Exception as e:
+            logger.error(f"Error sending DCA notification: {str(e)}")
+            return False
+            
+    async def send_trailing_stop_notification(self, symbol: str, new_stop: float, position_side: str) -> bool:
+        """Send trailing stop update notification.
+        
+        Args:
+            symbol: Trading pair symbol
+            new_stop: New stop loss price
+            position_side: Position side (LONG/SHORT)
+            
+        Returns:
+            bool: True if notification sent successfully, False otherwise
+        """
+        try:
+            if not self._is_initialized or self._is_closed:
+                logger.error("Telegram service not initialized or closed")
+                return False
+                
+            message = (
+                f"🛑 <b>Trailing Stop Updated</b>\n\n"
+                f"Symbol: {symbol}\n"
+                f"Position: {position_side}\n"
+                f"New Stop: {new_stop:.8f}"
+            )
+            
+            return await self.send_message(message)
+            
+        except Exception as e:
+            logger.error(f"Error sending trailing stop notification: {str(e)}")
+            return False 

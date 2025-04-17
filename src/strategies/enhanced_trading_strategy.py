@@ -228,38 +228,55 @@ class EnhancedTradingStrategy:
                 altcoin_correlation, sentiment
             )
             
-            # Check trend conflicts
-            # if self.check_trend_conflicts(timeframe_analysis):
-            #     # logger.info(f"Trend conflicts detected for {symbol}")
-            #     return None
-                
-            # Check volume condition
-            if not self.check_volume_condition(df):
-                # logger.info(f"Volume condition not met for {symbol}")
-                return None
-                
-            # Check volatility condition
-            if not self.check_volatility_condition(df):
-                logger.info(f"Volatility condition not met for {symbol}")
-                return None
-                
-            # Check ADX condition
-            if not self.check_adx_condition(df):
-                # logger.info(f"ADX condition not met for {symbol}")
-                return None
-                
-            # Check Bollinger condition
-            if not self.check_bollinger_condition(df):
-                # logger.info(f"Bollinger condition not met for {symbol}")
-                return None
-                
-            # Determine position type based on signal score
-            logger.info(f"{symbol} signal_score: {signal_score}")
-            if signal_score > 0.6:  # Strong buy signal
-                position_type = 'buy'
-            elif signal_score < -0.6:  # Strong sell signal
-                position_type = 'sell'
+            # Prepare market conditions for strategy-specific checks
+            market_conditions = {
+                'trend': timeframe_analysis.get('trend', ''),
+                'trend_strength': timeframe_analysis.get('trend_strength', 0),
+                'volatility': btc_volatility.get('volatility', 0),
+                'volume': df['volume'].iloc[-1] / df['volume'].mean(),
+                'price_action': {
+                    'breakout_direction': 'up' if df['close'].iloc[-1] > df['BB_UPPER'].iloc[-1] else 'down' if df['close'].iloc[-1] < df['BB_LOWER'].iloc[-1] else ''
+                }
+            }
+            
+            # Check strategy-specific signals
+            trend_signal = self._check_trend_following_signal(symbol, market_conditions)
+            breakout_signal = self._check_breakout_signal(symbol, market_conditions)
+            
+            # If either strategy generates a valid signal, use it
+            strategy_signal = trend_signal or breakout_signal
+            if strategy_signal:
+                signal_score = strategy_signal['signal_score']
+                position_type = strategy_signal['side']
+                should_trade = strategy_signal['should_trade']
             else:
+                # Determine position type based on signal score
+                logger.info(f"{symbol} signal_score: {signal_score}")
+                if signal_score > 0.6:  # Strong buy signal
+                    position_type = 'buy'
+                    should_trade = True
+                elif signal_score < -0.6:  # Strong sell signal
+                    position_type = 'sell'
+                    should_trade = True
+                else:
+                    should_trade = False
+                    return None
+                
+            # Check conditions
+            if not self.check_volume_condition(df):
+                print(f"Volume condition not met for {symbol}")
+                return None
+                
+            if not self.check_volatility_condition(df):
+                print(f"Volatility condition not met for {symbol}")
+                return None
+                
+            if not self.check_adx_condition(df):
+                print(f"ADX condition not met for {symbol}")
+                return None
+                
+            if not self.check_bollinger_condition(df):
+                print(f"Bollinger condition not met for {symbol}")
                 return None
                 
             # Calculate position size
@@ -284,7 +301,8 @@ class EnhancedTradingStrategy:
                 'timeframe_analysis': timeframe_analysis,
                 'btc_volatility': btc_volatility,
                 'altcoin_correlation': altcoin_correlation,
-                'sentiment': sentiment
+                'sentiment': sentiment,
+                'should_trade': should_trade
             }
             
         except Exception as e:
@@ -420,19 +438,42 @@ class EnhancedTradingStrategy:
             current_price = df['close'].iloc[-1]
             atr = df['ATR'].iloc[-1]
             
-            # Calculate support/resistance levels
+            # Calculate support/resistance levels using recent price action
             recent_lows = df['low'].rolling(window=20).min()
             recent_highs = df['high'].rolling(window=20).max()
             
-            # Calculate volatility-based stop distance
+            # Calculate volume profile
+            volume_profile = df['volume'].rolling(window=20).mean()
+            volume_ratio = volume_profile.iloc[-1] / volume_profile.mean()
+            
+            # Calculate trend strength using EMA
+            ema20 = df['close'].ewm(span=20).mean()
+            ema50 = df['close'].ewm(span=50).mean()
+            trend_strength = abs(ema20.iloc[-1] - ema50.iloc[-1]) / current_price * 100
+            
+            # Calculate volatility
             volatility = df['close'].pct_change().std() * 100
-            base_atr_multiplier = 3.0  # Base ATR multiplier
+            
+            # Base ATR multiplier with adjustments
+            base_atr_multiplier = 3.0  # Base multiplier
             
             # Adjust ATR multiplier based on volatility
             if volatility > 3:  # High volatility
                 base_atr_multiplier = 3.5
             elif volatility < 1:  # Low volatility
                 base_atr_multiplier = 2.5
+                
+            # Adjust ATR multiplier based on trend strength
+            if trend_strength > 2:  # Strong trend
+                base_atr_multiplier *= 1.2
+            elif trend_strength < 0.5:  # Weak trend
+                base_atr_multiplier *= 0.8
+                
+            # Adjust ATR multiplier based on volume
+            if volume_ratio > 1.5:  # High volume
+                base_atr_multiplier *= 1.1
+            elif volume_ratio < 0.5:  # Low volume
+                base_atr_multiplier *= 0.9
             
             if position_type == 'buy':
                 # For long positions
@@ -498,74 +539,99 @@ class EnhancedTradingStrategy:
             current_price = df['close'].iloc[-1]
             atr = df['ATR'].iloc[-1]
             
-            # Calculate volatility-based TP distance
+            # Calculate Fibonacci levels
+            recent_high = df['high'].rolling(window=20).max().iloc[-1]
+            recent_low = df['low'].rolling(window=20).min().iloc[-1]
+            price_range = recent_high - recent_low
+            
+            fib_618 = recent_low + price_range * 0.618
+            fib_100 = recent_high
+            fib_1618 = recent_high + price_range * 0.618
+            
+            # Calculate trend strength using EMA
+            ema20 = df['close'].ewm(span=20).mean()
+            ema50 = df['close'].ewm(span=50).mean()
+            trend_strength = abs(ema20.iloc[-1] - ema50.iloc[-1]) / current_price * 100
+            
+            # Calculate volatility
             volatility = df['close'].pct_change().std() * 100
-            base_atr_multiplier = 5.0  # Base ATR multiplier
+            
+            # Base ATR multiplier with adjustments
+            base_atr_multiplier = 5.0  # Base multiplier for TP
             
             # Adjust ATR multiplier based on volatility
             if volatility > 3:  # High volatility
                 base_atr_multiplier = 6.0
             elif volatility < 1:  # Low volatility
                 base_atr_multiplier = 4.0
-            
-            # Calculate trend strength
-            ema20 = df['close'].ewm(span=20).mean()
-            ema50 = df['close'].ewm(span=50).mean()
-            trend_strength = abs(ema20.iloc[-1] - ema50.iloc[-1]) / current_price * 100
-            
-            # Adjust TP based on trend strength
+                
+            # Adjust ATR multiplier based on trend strength
             if trend_strength > 2:  # Strong trend
-                base_atr_multiplier *= 1.3
+                base_atr_multiplier *= 1.2
             elif trend_strength < 0.5:  # Weak trend
-                base_atr_multiplier *= 0.9
+                base_atr_multiplier *= 0.8
             
             if position_type == 'buy':
-                take_profit = current_price + (base_atr_multiplier * atr)
+                # For long positions
+                base_tp = current_price + (base_atr_multiplier * atr)
+                
+                # Consider Fibonacci levels for long positions
+                if base_tp < fib_618:
+                    base_tp = fib_618
+                elif base_tp > fib_1618:
+                    base_tp = fib_1618
                 
                 # Ensure minimum distance from current price for trailing stop
                 min_distance = current_price * 0.03  # 3% minimum distance
-                if take_profit - current_price < min_distance:
-                    take_profit = current_price + min_distance
+                if base_tp - current_price < min_distance:
+                    base_tp = current_price + min_distance
                     
                 # Ensure take profit is not too far (max 10% from current price)
                 max_distance = current_price * 0.10
-                if take_profit - current_price > max_distance:
-                    take_profit = current_price + max_distance
+                if base_tp - current_price > max_distance:
+                    base_tp = current_price + max_distance
                 
             else:
-                take_profit = current_price - (base_atr_multiplier * atr)
+                # For short positions
+                base_tp = current_price - (base_atr_multiplier * atr)
                 
-                # Ensure minimum distance from current price
+                # Consider Fibonacci levels for short positions
+                if base_tp > fib_618:
+                    base_tp = fib_618
+                elif base_tp < (current_price - price_range * 0.618):
+                    base_tp = current_price - price_range * 0.618
+                
+                # Ensure minimum distance from current price for trailing stop
                 min_distance = current_price * 0.03  # 3% minimum distance
-                if current_price - take_profit < min_distance:
-                    take_profit = current_price - min_distance
+                if current_price - base_tp < min_distance:
+                    base_tp = current_price - min_distance
                     
                 # Ensure take profit is not too far (max 10% from current price)
                 max_distance = current_price * 0.10
-                if current_price - take_profit > max_distance:
-                    take_profit = current_price - max_distance
+                if current_price - base_tp > max_distance:
+                    base_tp = current_price - max_distance
             
             # Round to symbol precision
             if symbol and self.binance_service:
                 markets = await self.binance_service.get_markets()
                 if markets and symbol in markets:
                     precision = markets[symbol]['precision']['price']
-                    take_profit = round(take_profit, int(precision))
+                    base_tp = round(base_tp, int(precision))
             
             # Validate final take profit value
-            if take_profit <= 0:
-                logger.error(f"Invalid take profit calculated: {take_profit}")
-                return current_price * 1.02 if position_type == 'buy' else current_price * 0.98
+            if base_tp <= 0:
+                logger.error(f"Invalid take profit calculated: {base_tp}")
+                return current_price * 1.03 if position_type == 'buy' else current_price * 0.97
             
-            return take_profit
+            return base_tp
             
         except Exception as e:
             logger.error(f"Error calculating take profit: {str(e)}")
             # Return a safe default value
             if position_type == 'buy':
-                return current_price * 1.02  # 2% above current price
+                return current_price * 1.03  # 3% above current price
             else:
-                return current_price * 0.98  # 2% below current price
+                return current_price * 0.97  # 3% below current price
             
     async def close(self):
         """Close the strategy and clear cache."""
@@ -577,55 +643,78 @@ class EnhancedTradingStrategy:
             logger.error(f"Error closing strategy: {str(e)}")
             
     async def should_close_position(self, position: Dict, current_price: float) -> bool:
-        """Check if a position should be closed.
+        """Check if a position should be closed based on various conditions.
         
         Args:
-            position: Position information
+            position: Position details
             current_price: Current market price
             
         Returns:
             bool: True if position should be closed, False otherwise
         """
         try:
-            # Get historical data and indicators
-            df = await self.indicator_service.calculate_indicators(position["symbol"])
-            if df is None or df.empty:
+            if 'info' not in position:
+                logger.error("Invalid position structure")
                 return False
                 
+            # Get position details
+            position_amt = float(position['info'].get('positionAmt', '0'))
+            if position_amt == 0:
+                return False
+                
+            entry_price = float(position['info'].get('entryPrice', '0'))
+            if not entry_price:
+                return False
+                
+            # Calculate price change
+            price_change = ((current_price - entry_price) / entry_price) * 100
+            if position_amt < 0:  # Short position
+                price_change = -price_change
+                
             # Check stop loss
-            if position["side"] == "BUY":
-                if current_price <= position["stop_loss"]:
+            stop_loss = position.get('stopLossPrice')
+            if stop_loss:
+                if position_amt > 0 and current_price <= float(stop_loss):
+                    logger.info(f"Stop loss triggered for long position at {current_price}")
                     return True
-            else:
-                if current_price >= position["stop_loss"]:
+                elif position_amt < 0 and current_price >= float(stop_loss):
+                    logger.info(f"Stop loss triggered for short position at {current_price}")
                     return True
                     
             # Check take profit
-            if position["side"] == "BUY":
-                if current_price >= position["take_profit"]:
+            take_profit = position.get('takeProfitPrice')
+            if take_profit:
+                if position_amt > 0 and current_price >= float(take_profit):
+                    logger.info(f"Take profit triggered for long position at {current_price}")
                     return True
-            else:
-                if current_price <= position["take_profit"]:
+                elif position_amt < 0 and current_price <= float(take_profit):
+                    logger.info(f"Take profit triggered for short position at {current_price}")
                     return True
                     
             # Check trend reversal
-            current_trend = self.get_trend(df)
-            if position["side"] == "BUY" and current_trend == "DOWN":
+            df = await self.indicator_service.calculate_indicators(position['info']['symbol'])
+            if df is not None:
+                current_trend = self.get_trend(df)
+                if position_amt > 0 and current_trend == "DOWN":
+                    logger.info(f"Trend reversal detected for long position")
+                    return True
+                elif position_amt < 0 and current_trend == "UP":
+                    logger.info(f"Trend reversal detected for short position")
+                    return True
+                    
+            # Check sentiment
+            sentiment = await self.analyze_market_sentiment(position['info']['symbol'])
+            if position_amt > 0 and sentiment["trend"] == "BEARISH":
+                logger.info(f"Bearish sentiment detected for long position")
                 return True
-            elif position["side"] == "SELL" and current_trend == "UP":
-                return True
-                
-            # Check sentiment change
-            sentiment = await self.sentiment_service.analyze_sentiment(position["symbol"])
-            if position["side"] == "BUY" and sentiment["trend"] == "BEARISH":
-                return True
-            elif position["side"] == "SELL" and sentiment["trend"] == "BULLISH":
+            elif position_amt < 0 and sentiment["trend"] == "BULLISH":
+                logger.info(f"Bullish sentiment detected for short position")
                 return True
                 
             return False
             
         except Exception as e:
-            logger.error(f"Error checking position close: {str(e)}")
+            logger.error(f"Error checking if position should be closed: {str(e)}")
             return False
             
     async def should_update_stops(self, position: Dict, current_price: float) -> bool:
@@ -667,41 +756,68 @@ class EnhancedTradingStrategy:
             logger.error(f"Error checking stop update: {str(e)}")
             return False
             
-    async def calculate_new_stops(self, position: Dict, current_price: float) -> Dict:
+    async def calculate_new_stops(self, position: Dict, current_price: float) -> Dict[str, float]:
         """Calculate new stop loss and take profit levels.
         
         Args:
-            position: Position information
+            position: Position details
             current_price: Current market price
             
         Returns:
-            Dict: New stop loss and take profit levels
+            Dict[str, float]: Dictionary containing new stop loss and take profit levels
         """
         try:
-            # Get historical data and indicators
-            df = await self.indicator_service.calculate_indicators(position["symbol"])
-            if df is None or df.empty:
-                return position
+            if 'info' not in position:
+                logger.error("Invalid position structure")
+                return {}
                 
-            atr = df["ATR"].iloc[-1]
+            # Get position details
+            position_amt = float(position['info'].get('positionAmt', '0'))
+            if position_amt == 0:
+                return {}
+                
+            entry_price = float(position['info'].get('entryPrice', '0'))
+            if not entry_price:
+                return {}
+                
+            # Get market conditions
+            market_conditions = await self._get_market_conditions(position['info']['symbol'])
+            if not market_conditions:
+                return {}
+                
+            # Calculate ATR-based stop distance
+            atr = market_conditions.get('atr', 0)
+            if not atr:
+                return {}
+                
+            # Calculate stop distance based on volatility
+            volatility = market_conditions['volatility']
+            base_stop_distance = self.config['risk_management']['base_stop_distance']
+            volatility_multiplier = 1 + (volatility * self.config['risk_management']['volatility_multiplier'])
+            stop_distance = base_stop_distance * volatility_multiplier
             
-            # Calculate new stops
-            if position["side"] == "BUY":
-                new_stop_loss = self.calculate_trailing_stop(current_price, atr, "BUY")
-                new_take_profit = self.calculate_take_profit(df, current_price)
-            else:
-                new_stop_loss = self.calculate_trailing_stop(current_price, atr, "SELL")
-                new_take_profit = self.calculate_take_profit(df, current_price)
+            # Adjust stop distance based on trend strength
+            trend_strength = market_conditions['trend_strength']
+            trend_multiplier = 1 + (trend_strength * self.config['risk_management']['trend_multiplier'])
+            stop_distance *= trend_multiplier
+            
+            # Calculate new stop loss
+            if position_amt > 0:  # Long position
+                new_stop_loss = current_price - (stop_distance * current_price)
+                new_take_profit = current_price + (stop_distance * current_price * self.config['risk_management']['take_profit_multiplier'])
+            else:  # Short position
+                new_stop_loss = current_price + (stop_distance * current_price)
+                new_take_profit = current_price - (stop_distance * current_price * self.config['risk_management']['take_profit_multiplier'])
                 
             return {
-                "stop_loss": new_stop_loss,
-                "take_profit": new_take_profit
+                'stop_loss': new_stop_loss,
+                'take_profit': new_take_profit
             }
             
         except Exception as e:
             logger.error(f"Error calculating new stops: {str(e)}")
-            return position
-            
+            return {}
+
     def get_trend(self, df: pd.DataFrame) -> str:
         """Get current trend direction.
         
@@ -858,37 +974,6 @@ class EnhancedTradingStrategy:
             logger.error(f"Error calculating trailing stop: {str(e)}")
             return current_price
             
-    async def calculate_dynamic_correlation(self, symbol: str, window: int = 20) -> float:
-        """Calculate dynamic correlation between altcoin and BTC.
-        
-        Args:
-            symbol: Altcoin symbol
-            window: Correlation window
-            
-        Returns:
-            float: Correlation coefficient
-        """
-        try:
-            # Get BTC and altcoin data
-            btc_df = await self.indicator_service.calculate_indicators("BTC/USDT", "5m", window)
-            alt_df = await self.indicator_service.calculate_indicators(symbol, "5m", window)
-            
-            if btc_df is None or alt_df is None or btc_df.empty or alt_df.empty:
-                return 0.0
-                
-            # Calculate returns
-            btc_returns = btc_df["close"].pct_change().dropna()
-            alt_returns = alt_df["close"].pct_change().dropna()
-            
-            # Calculate correlation
-            correlation = btc_returns.corr(alt_returns)
-            
-            return correlation
-            
-        except Exception as e:
-            logger.error(f"Error calculating dynamic correlation: {str(e)}")
-            return 0.0
-            
     async def calculate_signal_score(self, df: pd.DataFrame, timeframe_analysis: Dict, 
                                    btc_volatility: Dict, altcoin_correlation: Dict,
                                    sentiment: Dict) -> float:
@@ -914,8 +999,8 @@ class EnhancedTradingStrategy:
             
             # Calculate trend score
             if timeframe_analysis:
-                trend_strength = timeframe_analysis.get('trend_strength', 0)
-                trend_direction = timeframe_analysis.get('trend_direction', 0)
+                trend_strength = timeframe_analysis.get('strength', 0)
+                trend_direction = timeframe_analysis.get('trend', 0)
                 trend_score = (trend_strength * trend_direction) / 100.0
                 
             # Calculate volume score
@@ -1265,135 +1350,91 @@ class EnhancedTradingStrategy:
             'data_points': 0
         }
 
-    async def _handle_dca(self, symbol: str, position: dict) -> Dict:
-        """Handle DCA for a position with enhanced market analysis.
+    async def _handle_dca(self, symbol: str, position: Dict) -> Optional[Dict]:
+        """Handle Dollar Cost Averaging (DCA) for a position.
         
         Args:
             symbol: Trading pair symbol
-            position: Current position details
+            position: Position details
             
         Returns:
-            Dict: DCA execution details or None if no DCA needed
+            Dict with DCA execution details or None if no DCA needed
         """
         try:
-            # Get current price and position details
-            current_price = float(await self.binance_service.get_current_price(symbol))
-            entry_price = float(position['entryPrice'])
-            position_size = float(position['positionAmt'])
+            # Get position details from the position structure
+            if 'info' not in position:
+                logger.error(f"Invalid position structure for {symbol}")
+                return None
+                
+            position_amt = float(position['info'].get('positionAmt', '0'))
+            if position_amt == 0:
+                logger.info(f"No position found for {symbol}")
+                return None
+                
+            mark_price = float(position['info'].get('markPrice', '0'))
+            entry_price = float(position['info'].get('entryPrice', '0'))
+            if not mark_price or not entry_price:
+                logger.error(f"Invalid price data for {symbol}")
+                return None
+                
+            # Determine position side
+            position_side = position['info'].get('positionSide', 'LONG')
+            is_long = position_side == 'LONG'
             
             # Calculate price drop percentage
-            price_drop = (entry_price - current_price) / entry_price if position_size > 0 else (current_price - entry_price) / entry_price
-            
+            price_drop = ((entry_price - mark_price) / entry_price) * 100 if is_long else \
+                        ((mark_price - entry_price) / entry_price) * 100
+                        
             # Get market conditions
             market_conditions = await self._get_market_conditions(symbol)
             if not market_conditions:
+                logger.error(f"Could not get market conditions for {symbol}")
                 return None
                 
             # Check if DCA is favorable
-            if not self._is_dca_favorable(market_conditions, price_drop):
-                logger.info(f"DCA not favorable for {symbol} at {price_drop:.2%} drop")
+            if not self._is_dca_favorable(price_drop, market_conditions):
+                logger.info(f"DCA not favorable for {symbol} - Price drop: {price_drop:.2f}%")
                 return None
                 
-            # Get DCA history for this position
-            dca_history = self._dca_history.get(symbol, [])
-            last_dca_time = self._last_dca_time.get(symbol, 0)
-            current_time = time.time()
+            # Calculate DCA amount based on position size and risk
+            base_amount = abs(position_amt)
+            dca_amount = base_amount * self.config['risk_management']['dca_multiplier']
             
-            # Check DCA conditions
-            if (len(dca_history) >= self.dca_settings['max_dca_attempts'] or
-                current_time - last_dca_time < self.dca_settings['min_time_between_dca']):
+            # Round to appropriate precision
+            precision = self.config['trading']['quantity_precision']
+            dca_amount = round(dca_amount, precision)
+            
+            # Execute DCA order
+            order = await self.binance_service.place_order(
+                symbol=symbol,
+                side='BUY' if is_long else 'SELL',
+                order_type='MARKET',
+                quantity=dca_amount,
+                position_side=position_side
+            )
+            
+            if not order:
+                logger.error(f"Failed to execute DCA order for {symbol}")
                 return None
                 
-            # Find applicable DCA level
-            dca_level = None
-            for level in self.dca_settings['base_levels']:
-                if price_drop >= level['drop']:
-                    # Check if level has been used too many times
-                    level_uses = sum(1 for dca in dca_history if dca['level'] == level)
-                    if level_uses < level['max_uses']:
-                        dca_level = level
-                        break
-                        
-            if not dca_level:
-                return None
-                
-            # Calculate dynamic multiplier based on market conditions
-            base_multiplier = dca_level['multiplier']
-            dynamic_multiplier = base_multiplier
+            # Calculate new average entry price
+            total_position = base_amount + dca_amount
+            new_entry = ((entry_price * base_amount) + (mark_price * dca_amount)) / total_position
             
-            # Adjust multiplier based on market conditions
-            if market_conditions['volatility'] > 0.02:  # High volatility
-                dynamic_multiplier *= self.dca_settings['dynamic_adjustment']['volatility_factor']
-            if market_conditions['trend_strength'] > 0.7:  # Strong trend
-                dynamic_multiplier *= self.dca_settings['dynamic_adjustment']['trend_factor']
-            if market_conditions['volume_ratio'] > 1.5:  # High volume
-                dynamic_multiplier *= self.dca_settings['dynamic_adjustment']['volume_factor']
-                
-            # Cap the multiplier
-            dynamic_multiplier = min(dynamic_multiplier, self.dca_settings['max_total_multiplier'])
+            logger.info(f"Executed DCA for {symbol} - Amount: {dca_amount}, New Entry: {new_entry:.8f}")
             
-            # Calculate new position size
-            new_size = abs(position_size) * dynamic_multiplier
-            
-            # Place DCA order
-            side = 'buy' if position_size > 0 else 'sell'
-            order = await self.binance_service.place_order({
+            return {
                 'symbol': symbol,
-                'side': side,
-                'type': 'market',
-                'amount': new_size - abs(position_size),
-                'price': current_price
-            })
-            
-            if order:
-                # Update DCA history
-                dca_history.append({
-                    'time': current_time,
-                    'price': current_price,
-                    'size': new_size - abs(position_size),
-                    'level': dca_level,
-                    'multiplier': dynamic_multiplier
-                })
-                self._dca_history[symbol] = dca_history
-                self._last_dca_time[symbol] = current_time
-                
-                # Calculate new average entry price
-                total_cost = (abs(position_size) * entry_price) + ((new_size - abs(position_size)) * current_price)
-                new_entry_price = total_cost / new_size
-                
-                # Update stop loss and take profit
-                new_stop_loss = await self._calculate_stop_loss(symbol, new_entry_price, side)
-                new_take_profit = await self._calculate_take_profit(symbol, new_entry_price, side)
-                
-                # Send notification
-                await self.telegram_service.send_message(
-                    f"🔄 DCA executed for {symbol}\n"
-                    f"Price drop: {price_drop:.2%}\n"
-                    f"New size: {new_size:.8f}\n"
-                    f"New entry: {new_entry_price:.8f}\n"
-                    f"New SL: {new_stop_loss:.8f}\n"
-                    f"New TP: {new_take_profit:.8f}\n"
-                    f"Market conditions:\n"
-                    f"Volatility: {market_conditions['volatility']:.2%}\n"
-                    f"Trend: {market_conditions['trend']}\n"
-                    f"Volume: {market_conditions['volume_ratio']:.2f}x"
-                )
-                
-                return {
-                    'order': order,
-                    'new_entry_price': new_entry_price,
-                    'new_size': new_size,
-                    'stop_loss': new_stop_loss,
-                    'take_profit': new_take_profit,
-                    'market_conditions': market_conditions
-                }
-                
-            return None
+                'dca_amount': dca_amount,
+                'new_entry_price': new_entry,
+                'price_drop': price_drop,
+                'order_id': order.get('orderId')
+            }
             
         except Exception as e:
             logger.error(f"Error handling DCA: {str(e)}")
             return None
-            
+
     async def _get_market_conditions(self, symbol: str) -> Dict:
         """Get current market conditions for DCA decision making.
         
@@ -1435,12 +1476,12 @@ class EnhancedTradingStrategy:
             logger.error(f"Error getting market conditions: {str(e)}")
             return {}
             
-    def _is_dca_favorable(self, market_conditions: Dict, price_drop: float) -> bool:
+    def _is_dca_favorable(self, price_drop: float, market_conditions: Dict) -> bool:
         """Check if market conditions are favorable for DCA.
         
         Args:
-            market_conditions: Current market conditions
             price_drop: Current price drop percentage
+            market_conditions: Current market conditions
             
         Returns:
             bool: True if conditions are favorable for DCA
@@ -1453,7 +1494,7 @@ class EnhancedTradingStrategy:
             # Get conditions
             trend = market_conditions.get('trend')
             volatility = market_conditions.get('volatility')
-            volume = market_conditions.get('volume')
+            volume = market_conditions.get('volume', '')
             atr = market_conditions.get('atr', 0)
             volume_ratio = market_conditions.get('volume_ratio', 0)
             
@@ -1477,105 +1518,88 @@ class EnhancedTradingStrategy:
             logger.error(f"Error checking DCA favorability: {str(e)}")
             return False
 
-    async def _update_trailing_stop(self, symbol: str, position: dict) -> bool:
-        """Update trailing stop for a position with enhanced market analysis.
-        
-        Args:
-            symbol: Trading pair symbol
-            position: Current position details
-            
-        Returns:
-            bool: True if trailing stop was updated, False otherwise
-        """
+    async def _update_trailing_stop(self, symbol: str, position: Dict) -> bool:
+        """Update trailing stop for a position based on market analysis."""
         try:
-            # Get current price and position details
-            current_price = float(await self.binance_service.get_current_price(symbol))
-            entry_price = float(position['entryPrice'])
-            position_size = float(position['positionAmt'])
-            
-            # Calculate unrealized profit percentage
-            profit_pct = (current_price - entry_price) / entry_price if position_size > 0 else (entry_price - current_price) / entry_price
-            
-            # Get market conditions
-            market_conditions = await self._get_market_conditions(symbol)
-            if not market_conditions:
+            # Get position details from the new structure
+            position_amt = float(position.get('info', {}).get('positionAmt', 0))
+            if position_amt == 0:
+                logger.info(f"No position found for {symbol}")
                 return False
                 
-            # Get current ATR
-            atr = market_conditions.get('atr', 0)
+            mark_price = float(position.get('markPrice', 0))
+            entry_price = float(position.get('entryPrice', 0))
+            if not mark_price or not entry_price:
+                logger.error(f"Invalid price data for {symbol}")
+                return False
+                
+            # Determine position side
+            position_side = position.get('positionSide', 'LONG')
+            is_long = position_side == 'LONG'
+            
+            # Get current market conditions
+            market_data = await self.binance_service.get_market_data(symbol)
+            if not market_data:
+                logger.error(f"Could not get market data for {symbol}")
+                return False
+                
+            # Calculate ATR for dynamic stop loss
+            atr = await self.indicator_service.calculate_atr(symbol)
             if not atr:
+                logger.error(f"Could not calculate ATR for {symbol}")
                 return False
                 
-            # Find applicable trailing stop level
-            trailing_level = None
-            for level in self.trailing_settings:
-                if profit_pct >= level['profit']:
-                    trailing_level = level
-                    break
+            # Calculate new stop loss based on market conditions
+            volatility = market_data.get('volatility', 0)
+            trend_strength = market_data.get('trend_strength', 0)
+            
+            # Adjust ATR multiplier based on volatility and trend strength
+            atr_multiplier = self.config['risk_management']['atr_multiplier']
+            if volatility > 0.02:  # High volatility
+                atr_multiplier *= 1.2
+            if trend_strength > 0.7:  # Strong trend
+                atr_multiplier *= 1.1
+                
+            # Calculate new stop loss
+            if is_long:
+                new_stop = mark_price - (atr * atr_multiplier)
+                # Only update if new stop is higher than current stop
+                current_stop = await self._get_current_stop_loss(symbol)
+                if current_stop and new_stop <= current_stop:
+                    logger.info(f"New stop loss {new_stop} not more favorable than current {current_stop}")
+                    return False
+            else:
+                new_stop = mark_price + (atr * atr_multiplier)
+                # Only update if new stop is lower than current stop
+                current_stop = await self._get_current_stop_loss(symbol)
+                if current_stop and new_stop >= current_stop:
+                    logger.info(f"New stop loss {new_stop} not more favorable than current {current_stop}")
+                    return False
                     
-            if not trailing_level:
-                return False
-                
-            # Calculate dynamic trailing stop based on ATR and market conditions
-            base_trail = trailing_level['trail_percent']
-            atr_trail = (atr / current_price) * trailing_level['atr_multiplier']
+            # Round to appropriate precision
+            precision = self.config['trading']['price_precision']
+            new_stop = round(new_stop, precision)
             
-            # Adjust trail based on market conditions
-            if market_conditions['volatility'] > 0.02:  # High volatility
-                atr_trail *= 1.2
-            if market_conditions['trend_strength'] > 0.7:  # Strong trend
-                atr_trail *= 1.1
-                
-            # Use the larger of base trail and ATR trail
-            final_trail = max(base_trail, atr_trail)
-            
-            # Calculate new stop loss price
-            if position_size > 0:  # Long position
-                new_stop_price = current_price * (1 - final_trail)
-            else:  # Short position
-                new_stop_price = current_price * (1 + final_trail)
-                
-            # Get current stop loss price
-            current_stop_price = await self._get_current_stop_loss(symbol)
-            if not current_stop_price:
-                return False
-                
-            # Only update if new stop loss is better (higher for long, lower for short)
-            should_update = (
-                (position_size > 0 and new_stop_price > current_stop_price) or
-                (position_size < 0 and new_stop_price < current_stop_price)
+            # Update stop loss order
+            success = await self.binance_service.update_stop_loss(
+                symbol=symbol,
+                stop_price=new_stop,
+                side='SELL' if is_long else 'BUY',
+                position_side=position_side,
+                amount=abs(position_amt)  # Add the position amount
             )
             
-            if should_update:
-                # Update stop loss order
-                side = 'sell' if position_size > 0 else 'buy'
-                updated = await self.binance_service.update_stop_loss(
-                    symbol=symbol,
-                    stop_price=new_stop_price,
-                    side=side,
-                    amount=abs(position_size)
-                )
+            if success:
+                logger.info(f"Updated trailing stop for {symbol} to {new_stop}")
+            else:
+                logger.error(f"Failed to update trailing stop for {symbol}")
                 
-                if updated:
-                    # Send notification
-                    await self.telegram_service.send_message(
-                        f"🔄 Trailing stop updated for {symbol}\n"
-                        f"Profit: {profit_pct:.2%}\n"
-                        f"New stop: {new_stop_price:.8f}\n"
-                        f"Trail: {final_trail:.2%}\n"
-                        f"Market conditions:\n"
-                        f"Volatility: {market_conditions['volatility']:.2%}\n"
-                        f"Trend: {market_conditions['trend']}\n"
-                        f"ATR: {atr:.8f}"
-                    )
-                    return True
-                    
-            return False
+            return success
             
         except Exception as e:
             logger.error(f"Error updating trailing stop: {str(e)}")
             return False
-            
+
     async def _get_current_stop_loss(self, symbol: str) -> float:
         """Get current stop loss price for a symbol.
         
@@ -1663,4 +1687,284 @@ class EnhancedTradingStrategy:
                 
         except Exception as e:
             logger.error(f"Error calculating take profit: {str(e)}")
+            return None
+
+    async def process_trading_signals(self, signals: Dict) -> None:
+        """Process trading signals and execute trades with enhanced risk management.
+        
+        Args:
+            signals: Dictionary containing trading signals and analysis
+        """
+        try:
+            symbol = signals.get('symbol')
+            if not symbol:
+                return
+                
+            # Get current position
+            position = await self.binance_service.get_position(symbol)
+            
+            # Case 1: No existing position - check if we should open a new position
+            if not position:
+                # Check if we should trade based on signals
+                if signals.get('should_trade', False):
+                    # Get market conditions
+                    market_conditions = await self._get_market_conditions(symbol)
+                    if not market_conditions:
+                        return
+                        
+                    # Execute new trade
+                    await self._execute_trade(symbol, signals, market_conditions)
+                return
+                
+            # Case 2: Existing position - manage the position
+            # Check if we should close the position
+            if await self.should_close_position(position, position['entryPrice']):
+                await self.binance_service.close_position(symbol)
+                await self.telegram_service.send_message(
+                    f"🔴 Position closed for {symbol}\n"
+                    f"Reason: Market conditions unfavorable"
+                )
+                return
+                
+            # Check if we should update stops
+            if await self.should_update_stops(position, position['entryPrice']):
+                # Calculate new stops
+                new_stops = await self.calculate_new_stops(position, position['entryPrice'])
+                if new_stops:
+                    # Update stop loss and take profit
+                    await self.binance_service.update_stop_loss(
+                        symbol=symbol,
+                        stop_price=new_stops['stop_loss'],
+                        side='sell' if position['positionAmt'] > 0 else 'buy',
+                        amount=abs(float(position['positionAmt']))
+                    )
+                    await self.binance_service.update_take_profit(
+                        symbol=symbol,
+                        take_profit=new_stops['take_profit'],
+                        side='sell' if position['positionAmt'] > 0 else 'buy',
+                        amount=abs(float(position['positionAmt']))
+                    )
+                    
+            # Check for DCA opportunity
+            dca_result = await self._handle_dca(symbol, position)
+            if dca_result:
+                # DCA was executed, update position tracking
+                self._last_dca_time[symbol] = time.time()
+                self._dca_history[symbol] = dca_result.get('dca_history', [])
+                
+            # Update trailing stop if needed
+            if await self._update_trailing_stop(symbol, position):
+                # Trailing stop was updated, no need for further action
+                return
+                
+        except Exception as e:
+            logger.error(f"Error processing trading signals: {str(e)}")
+            
+    async def _execute_trade(self, symbol: str, signal: Dict, market_conditions: Dict) -> None:
+        """Execute a trade based on the signal and market conditions.
+        
+        Args:
+            symbol: Trading pair symbol
+            signal: Trade signal details
+            market_conditions: Current market conditions
+        """
+        try:
+            # Calculate position size
+            position_size = await self._calculate_position_size(symbol, signal)
+            if not position_size:
+                return
+                
+            # Get historical data for stop loss and take profit calculation
+            df = await self.indicator_service.calculate_indicators(symbol)
+            if df is None or df.empty:
+                logger.error(f"Failed to get historical data for {symbol}")
+                return
+                
+            # Calculate stop loss and take profit
+            stop_loss = await self._calculate_stop_loss(df, signal['side'], symbol)
+            take_profit = await self._calculate_take_profit(df, signal['side'], symbol)
+            
+            if not stop_loss or not take_profit:
+                return
+                
+            # Place the order
+            order = await self.binance_service.place_order({
+                'symbol': symbol,
+                'side': signal['side'],
+                'type': 'market',
+                'amount': position_size,
+                'price': signal['price'],
+                'stop_loss': stop_loss,
+                'take_profit': take_profit
+            })
+            
+            if order:
+                # Send notification
+                await self.telegram_service.send_order_notification(order)
+                
+                # Update position tracking
+                logger.info(f"Order placed for {symbol}: {order}")
+                
+        except Exception as e:
+            logger.error(f"Error executing trade: {str(e)}")
+            
+    async def start_monitoring_tasks(self) -> None:
+        """Start all monitoring tasks."""
+        try:
+            self._is_running = True
+            self._monitoring_tasks = [
+                asyncio.create_task(self._monitor_positions()),
+                asyncio.create_task(self._monitor_dca()),
+                asyncio.create_task(self._monitor_trailing_stops())
+            ]
+            logger.info("Monitoring tasks started successfully")
+        except Exception as e:
+            logger.error(f"Error starting monitoring tasks: {str(e)}")
+            
+    async def stop_monitoring_tasks(self) -> None:
+        """Stop all monitoring tasks."""
+        try:
+            self._is_running = False
+            for task in self._monitoring_tasks:
+                task.cancel()
+            await asyncio.gather(*self._monitoring_tasks, return_exceptions=True)
+            logger.info("Monitoring tasks stopped successfully")
+        except Exception as e:
+            logger.error(f"Error stopping monitoring tasks: {str(e)}")
+            
+    async def _monitor_positions(self) -> None:
+        """Monitor open positions and update trailing stops."""
+        try:
+            positions = await self.binance_service.get_positions()
+            if not positions:
+                return
+                
+            for position in positions:
+                if position and float(position.get('contracts', 0)) > 0:
+                    symbol = position.get('symbol')
+                    if symbol:
+                        await self._update_trailing_stop(symbol, position)
+                    
+        except Exception as e:
+            logger.error(f"Error monitoring positions: {str(e)}")
+            
+    async def _monitor_dca(self) -> None:
+        """Monitor positions for DCA opportunities."""
+        try:
+            positions = await self.binance_service.get_positions()
+            if not positions:
+                return
+                
+            for position in positions:
+                if position and float(position.get('contracts', 0)) > 0:
+                    symbol = position.get('symbol')
+                    if symbol:
+                        dca_result = await self._handle_dca(symbol, position)
+                        if dca_result:
+                            await self.telegram_service.send_order_notification(dca_result)
+                        
+        except Exception as e:
+            logger.error(f"Error monitoring DCA: {str(e)}")
+            
+    async def _monitor_trailing_stops(self) -> None:
+        """Monitor and update trailing stops for all positions."""
+        try:
+            positions = await self.binance_service.get_positions()
+            if not positions:
+                return
+                
+            for position in positions:
+                if position and float(position.get('contracts', 0)) > 0:
+                    symbol = position.get('symbol')
+                    if symbol:
+                        await self._update_trailing_stop(symbol, position)
+                    
+        except Exception as e:
+            logger.error(f"Error monitoring trailing stops: {str(e)}")
+            
+    def _check_trend_following_signal(self, symbol: str, market_conditions: Dict) -> Optional[Dict]:
+        """Check if trend following conditions are met and generate a trading signal.
+        
+        Args:
+            symbol: Trading pair symbol
+            market_conditions: Current market conditions
+            
+        Returns:
+            Optional[Dict]: Trading signal if conditions are met, None otherwise
+        """
+        try:
+            # Get trend direction
+            trend = market_conditions.get('trend', '')
+            if not trend:
+                return None
+                
+            # Get trend strength
+            trend_strength = market_conditions.get('trend_strength', 0)
+            if trend_strength < 0.6:  # Require strong trend
+                return None
+                
+            # Get volatility
+            volatility = market_conditions.get('volatility', 0)
+            if volatility > 0.8:  # Avoid extremely volatile markets
+                return None
+                
+            # Create trading signal
+            signal = {
+                'symbol': symbol,
+                'strategy': 'trend_following',
+                'side': 'buy' if trend == 'uptrend' else 'sell',
+                'signal_score': 0.8 if trend == 'uptrend' else -0.8,
+                'should_trade': True
+            }
+            
+            return signal
+            
+        except Exception as e:
+            logger.error(f"Error checking trend following conditions: {str(e)}")
+            return None
+            
+    def _check_breakout_signal(self, symbol: str, market_conditions: Dict) -> Optional[Dict]:
+        """Check if breakout conditions are met and generate a trading signal.
+        
+        Args:
+            symbol: Trading pair symbol
+            market_conditions: Current market conditions
+            
+        Returns:
+            Optional[Dict]: Trading signal if conditions are met, None otherwise
+        """
+        try:
+            # Get volatility
+            volatility = market_conditions.get('volatility', 0)
+            if volatility < 0.4:  # Require some volatility for breakouts
+                return None
+                
+            # Get volume
+            volume = market_conditions.get('volume', 0)
+            if volume < 0.6:  # Require decent volume for breakouts
+                return None
+                
+            # Get price action
+            price_action = market_conditions.get('price_action', {})
+            if not price_action:
+                return None
+                
+            # Check for breakout
+            breakout_direction = price_action.get('breakout_direction', '')
+            if not breakout_direction:
+                return None
+                
+            # Create trading signal
+            signal = {
+                'symbol': symbol,
+                'strategy': 'breakout',
+                'side': 'buy' if breakout_direction == 'up' else 'sell',
+                'signal_score': 0.7 if breakout_direction == 'up' else -0.7,
+                'should_trade': True
+            }
+            
+            return signal
+            
+        except Exception as e:
+            logger.error(f"Error checking breakout conditions: {str(e)}")
             return None

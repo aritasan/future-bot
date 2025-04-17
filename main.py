@@ -94,16 +94,14 @@ async def process_symbol(
                     await asyncio.sleep(60)
                     continue
 
-                # Process trading signals
+                # Generate trading signals
                 signals = await strategy.generate_signals(symbol, indicator_service)
                 if signals is not None:
                     try:
-                        # Place order and send notification
-                        order = await binance_service.place_order(signals)
-                        if order:
-                            await telegram_service.send_order_notification(order)
+                        # Process trading signals with enhanced risk management
+                        await strategy.process_trading_signals(signals)
                     except Exception as e:
-                        logger.error(f"Error placing order for {symbol}: {str(e)}")
+                        logger.error(f"Error processing signals for {symbol}: {str(e)}")
                         health_monitor.record_error()
                         continue
 
@@ -295,6 +293,10 @@ async def main():
         telegram_task = asyncio.create_task(telegram_service.run())
         tasks.append(telegram_task)
         logger.info("Telegram service task started")
+        
+        # Start monitoring tasks for the trading strategy
+        await strategy.start_monitoring_tasks()
+        logger.info("Trading strategy monitoring tasks started")
         
         # Start processing trading pairs
         try:

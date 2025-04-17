@@ -509,3 +509,35 @@ class IndicatorService:
         except Exception as e:
             logger.error(f"Error getting cache stats: {str(e)}")
             return {} 
+
+    async def calculate_atr(self, symbol: str, timeframe: str = "5m", limit: int = 100) -> Optional[float]:
+        """Calculate Average True Range for a symbol.
+        
+        Args:
+            symbol: Trading pair symbol
+            timeframe: Timeframe for calculation
+            limit: Number of candles to use
+            
+        Returns:
+            Optional[float]: ATR value or None if error
+        """
+        try:
+            # Get historical data
+            df = await self.get_historical_data(symbol, timeframe, limit)
+            if df is None or df.empty:
+                logger.error(f"Failed to get historical data for {symbol}")
+                return None
+                
+            # Calculate ATR
+            df = self._calculate_atr(df)
+            
+            # Return the latest ATR value
+            if 'ATR' in df.columns:
+                return float(df['ATR'].iloc[-1])
+            else:
+                logger.error(f"ATR not calculated for {symbol}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error calculating ATR for {symbol}: {str(e)}")
+            return None 
