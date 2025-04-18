@@ -438,69 +438,41 @@ class EnhancedTradingStrategy:
         """Calculate stop loss price with enhanced market analysis."""
         try:
             current_price = df['close'].iloc[-1]
-            atr = df['ATR'].iloc[-1]
             
             # Ensure we have valid values
-            if current_price <= 0 or atr <= 0:
-                logger.error(f"Invalid current price or ATR for {symbol}: price={current_price}, atr={atr}")
+            if current_price <= 0:
+                logger.error(f"Invalid current price for {symbol}: {current_price}")
                 return None
-            
-            # Calculate support/resistance levels using recent price action
-            recent_lows = df['low'].rolling(window=20).min()
-            recent_highs = df['high'].rolling(window=20).max()
-            
-            # Calculate volume profile
-            volume_profile = df['volume'].rolling(window=20).mean()
-            volume_ratio = volume_profile.iloc[-1] / volume_profile.mean()
-            
-            # Calculate trend strength using EMA
-            ema20 = df['close'].ewm(span=20).mean()
-            ema50 = df['close'].ewm(span=50).mean()
-            trend_strength = abs(ema20.iloc[-1] - ema50.iloc[-1]) / current_price * 100
             
             # Calculate volatility
             volatility = df['close'].pct_change().std() * 100
             
-            # Base ATR multiplier with adjustments
-            base_atr_multiplier = 3.0  # Base multiplier
+            # Base stop loss percentage
+            base_stop_percent = 2.0  # 2% base stop loss
             
-            # Adjust ATR multiplier based on volatility
+            # Adjust stop loss percentage based on volatility
             if volatility > 3:  # High volatility
-                base_atr_multiplier = 3.5
+                base_stop_percent = 3.0
             elif volatility < 1:  # Low volatility
-                base_atr_multiplier = 2.5
-                
-            # Adjust ATR multiplier based on trend strength
-            if trend_strength > 2:  # Strong trend
-                base_atr_multiplier *= 1.2
+                base_stop_percent = 1.5
                 
             # Calculate stop loss based on position type
             if position_type == 'buy':
                 # For long positions, stop loss is below current price
-                stop_loss = current_price - (atr * base_atr_multiplier)
+                stop_loss = current_price * (1 - base_stop_percent/100)
                 
                 # Ensure stop loss is not too close to current price (min 1% away)
                 min_distance = current_price * 0.01
                 if current_price - stop_loss < min_distance:
                     stop_loss = current_price - min_distance
-                    
-                # Ensure stop loss is not below recent lows
-                recent_low = recent_lows.iloc[-1]
-                if stop_loss < recent_low:
-                    stop_loss = recent_low * 0.995  # 0.5% below recent low
             else:
                 # For short positions, stop loss is above current price
-                stop_loss = current_price + (atr * base_atr_multiplier)
+                stop_loss = current_price * (1 + base_stop_percent/100)
                 
                 # Ensure stop loss is not too close to current price (min 1% away)
                 min_distance = current_price * 0.01
                 if stop_loss - current_price < min_distance:
                     stop_loss = current_price + min_distance
-                    
-                # Ensure stop loss is not above recent highs
-                recent_high = recent_highs.iloc[-1]
-                if stop_loss > recent_high:
-                    stop_loss = recent_high * 1.005  # 0.5% above recent high
                     
             # Ensure stop loss is not zero or negative
             if stop_loss <= 0:
@@ -522,69 +494,41 @@ class EnhancedTradingStrategy:
         """Calculate take profit price with enhanced market analysis."""
         try:
             current_price = df['close'].iloc[-1]
-            atr = df['ATR'].iloc[-1]
             
             # Ensure we have valid values
-            if current_price <= 0 or atr <= 0:
-                logger.error(f"Invalid current price or ATR for {symbol}: price={current_price}, atr={atr}")
+            if current_price <= 0:
+                logger.error(f"Invalid current price for {symbol}: {current_price}")
                 return None
-            
-            # Calculate support/resistance levels using recent price action
-            recent_lows = df['low'].rolling(window=20).min()
-            recent_highs = df['high'].rolling(window=20).max()
-            
-            # Calculate volume profile
-            volume_profile = df['volume'].rolling(window=20).mean()
-            volume_ratio = volume_profile.iloc[-1] / volume_profile.mean()
-            
-            # Calculate trend strength using EMA
-            ema20 = df['close'].ewm(span=20).mean()
-            ema50 = df['close'].ewm(span=50).mean()
-            trend_strength = abs(ema20.iloc[-1] - ema50.iloc[-1]) / current_price * 100
             
             # Calculate volatility
             volatility = df['close'].pct_change().std() * 100
             
-            # Base ATR multiplier with adjustments
-            base_atr_multiplier = 4.0  # Base multiplier
+            # Base take profit percentage
+            base_tp_percent = 4.0  # 4% base take profit
             
-            # Adjust ATR multiplier based on volatility
+            # Adjust take profit percentage based on volatility
             if volatility > 3:  # High volatility
-                base_atr_multiplier = 4.5
+                base_tp_percent = 6.0
             elif volatility < 1:  # Low volatility
-                base_atr_multiplier = 3.5
-                
-            # Adjust ATR multiplier based on trend strength
-            if trend_strength > 2:  # Strong trend
-                base_atr_multiplier *= 1.2
+                base_tp_percent = 3.0
                 
             # Calculate take profit based on position type
             if position_type == 'buy':
                 # For long positions, take profit is above current price
-                take_profit = current_price + (atr * base_atr_multiplier)
+                take_profit = current_price * (1 + base_tp_percent/100)
                 
                 # Ensure take profit is not too close to current price (min 2% away)
                 min_distance = current_price * 0.02
                 if take_profit - current_price < min_distance:
                     take_profit = current_price + min_distance
-                    
-                # Ensure take profit is not above recent highs
-                recent_high = recent_highs.iloc[-1]
-                if take_profit > recent_high:
-                    take_profit = recent_high * 1.01  # 1% above recent high
             else:
                 # For short positions, take profit is below current price
-                take_profit = current_price - (atr * base_atr_multiplier)
+                take_profit = current_price * (1 - base_tp_percent/100)
                 
                 # Ensure take profit is not too close to current price (min 2% away)
                 min_distance = current_price * 0.02
                 if current_price - take_profit < min_distance:
                     take_profit = current_price - min_distance
-                    
-                # Ensure take profit is not below recent lows
-                recent_low = recent_lows.iloc[-1]
-                if take_profit < recent_low:
-                    take_profit = recent_low * 0.99  # 1% below recent low
                     
             # Ensure take profit is not zero or negative
             if take_profit <= 0:

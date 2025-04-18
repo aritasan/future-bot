@@ -105,10 +105,6 @@ class BinanceService:
                 logger.error("Binance service not initialized")
                 return None
                 
-            if self._is_closed:
-                logger.error("Binance service is closed")
-                return None
-                
             # Check for duplicate orders
             order_key = f"{order_params['symbol']}_{order_params['side']}_{order_params['type']}"
             if order_key in self.order_cache:
@@ -126,83 +122,180 @@ class BinanceService:
             # Determine position side
             position_side = 'LONG' if order_params['side'] == 'buy' else 'SHORT'
             
+            # Check current position
+            try:
+                position = await self.get_position(order_params['symbol'])
+                position_amt = float(position.get('positionAmt', 0)) if position else 0
+                has_position = position_amt != 0
+                
+                # Log position details
+                logger.debug(f"Position check for {order_params['symbol']}:")
+                logger.debug(f"- Position amount: {position_amt}")
+                logger.debug(f"- Has position: {has_position}")
+                
+                # Get market info for tick size
+                market_info = await self.exchange.fetch_markets()
+                symbol_info = next((m for m in market_info if m['symbol'] == order_params['symbol']), None)
+                
+                if symbol_info:
+                    # Get tick size from market info
+                    tick_size = None
+                    if 'precision' in symbol_info and 'price' in symbol_info['precision']:
+                        tick_size = 10 ** -symbol_info['precision']['price']
+                        logger.debug(f"Tick size for {order_params['symbol']}: {tick_size}")
+                    
+                    # Round price to tick size if provided
+                    if 'price' in order_params and tick_size:
+                        order_params['price'] = round(order_params['price'] / tick_size) * tick_size
+                        logger.debug(f"Rounded price to tick size: {order_params['price']}")
+                
+                # Determine if we need reduceOnly based on actual position
+                need_reduce_only = False
+                
+                # Case 1: Existing position in opposite direction
+                if has_position:
+                    is_long_position = position_amt > 0
+                    is_long_order = order_params['side'] == 'buy'
+                    if is_long_position != is_long_order:
+                        need_reduce_only = True
+                        logger.info(f"Opposite position detected for {order_params['symbol']}, using reduceOnly")
+                
+                # Case 2: Force reduceOnly if specified in params
+                if order_params.get('reduceOnly'):
+                    need_reduce_only = True
+                    logger.info(f"reduceOnly forced by parameters for {order_params['symbol']}")
+                
+            except Exception as e:
+                logger.error(f"Error checking position for {order_params['symbol']}: {str(e)}")
+                need_reduce_only = False
+                
             # Prepare order parameters
             params = {
                 'positionSide': position_side
             }
             
-            # Add reduceOnly if specified
-            if order_params.get('reduceOnly'):
+            # Add reduceOnly only if needed
+            if need_reduce_only:
                 params['reduceOnly'] = True
                 
-            # Place the main order
-            order = await self.exchange.create_order(
-                symbol=order_params['symbol'],
-                type=order_params['type'],
-                side=order_params['side'],
-                amount=order_params['amount'],
-                price=order_params.get('price'),
-                params=params
-            )
-            
-            logger.info(f"Order placed: {order}")
-            
-            # Cache the order
-            self.order_cache[order_key] = {
-                'order': order,
-                'timestamp': time.time()
-            }
-            
-            # Place stop loss order if specified
-            if 'stop_loss' in order_params:
-                sl_side = 'sell' if order_params['side'] == 'buy' else 'buy'
-                sl_price = float(order_params['stop_loss'])
+            # Log final order parameters
+            logger.debug(f"Final order parameters for {order_params['symbol']}:")
+            logger.debug(f"- Type: {order_params['type']}")
+            logger.debug(f"- Side: {order_params['side']}")
+            logger.debug(f"- Amount: {order_params['amount']}")
+            logger.debug(f"- Price: {order_params.get('price', 'market')}")
+            logger.debug(f"- Additional params: {params}")
                 
-                try:
-                    sl_order = await self.exchange.create_order(
-                        symbol=order_params['symbol'],
-                        type='STOP_MARKET',
-                        side=sl_side,
-                        amount=order_params['amount'],
-                        params={
-                            'positionSide': position_side,
-                            'stopPrice': sl_price,
-                            'reduceOnly': True
-                        }
-                    )
-                    logger.info(f"Stop loss order placed: {sl_order}")
-                    order['stop_loss'] = sl_order
-                except Exception as e:
-                    logger.error(f"Failed to place stop loss order: {str(e)}")
-                    # Continue with main order even if stop loss fails
-                    return order
+            # Place the main order with retry mechanism
+            max_retries = 3
+            retry_count = 0
+            last_error = None
             
-            # Place take profit order if specified
-            if 'take_profit' in order_params:
-                tp_side = 'sell' if order_params['side'] == 'buy' else 'buy'
-                tp_price = float(order_params['take_profit'])
+            while retry_count < max_retries:
+                try:
+                    order = await self.exchange.create_order(
+                        symbol=order_params['symbol'],
+                        type=order_params['type'],
+                        side=order_params['side'],
+                        amount=order_params['amount'],
+                        price=order_params.get('price'),
+                        params=params
+                    )
+                    
+                    logger.info(f"Order placed: {order}")
+                    
+                    # Cache the order
+                    self.order_cache[order_key] = {
+                        'order': order,
+                        'timestamp': time.time()
+                    }
+                    
+                    # Place stop loss order if specified
+                    if 'stop_loss' in order_params:
+                        sl_side = 'sell' if order_params['side'] == 'buy' else 'buy'
+                        sl_price = float(order_params['stop_loss'])
+                        
+                        # Round stop loss to tick size if available
+                        if tick_size:
+                            sl_price = round(sl_price / tick_size) * tick_size
+                        
+                        try:
+                            sl_order = await self.exchange.create_order(
+                                symbol=order_params['symbol'],
+                                type='STOP_MARKET',
+                                side=sl_side,
+                                amount=order_params['amount'],
+                                params={
+                                    'positionSide': position_side,
+                                    'stopPrice': sl_price,
+                                    'reduceOnly': True
+                                }
+                            )
+                            logger.info(f"Stop loss order placed: {sl_order}")
+                            order['stop_loss'] = sl_order
+                        except Exception as e:
+                            logger.error(f"Failed to place stop loss order: {str(e)}")
+                            return order
+                    
+                    # Place take profit order if specified
+                    if 'take_profit' in order_params:
+                        tp_side = 'sell' if order_params['side'] == 'buy' else 'buy'
+                        tp_price = float(order_params['take_profit'])
+                        
+                        # Round take profit to tick size if available
+                        if tick_size:
+                            tp_price = round(tp_price / tick_size) * tick_size
+                        
+                        try:
+                            tp_order = await self.exchange.create_order(
+                                symbol=order_params['symbol'],
+                                type='TAKE_PROFIT_MARKET',
+                                side=tp_side,
+                                amount=order_params['amount'],
+                                params={
+                                    'positionSide': position_side,
+                                    'stopPrice': tp_price,
+                                    'reduceOnly': True
+                                }
+                            )
+                            logger.info(f"Take profit order placed: {tp_order}")
+                            order['take_profit'] = tp_order
+                        except Exception as e:
+                            logger.error(f"Failed to place take profit order: {str(e)}")
+                            return order
+                    
+                    return order
+                    
+                except Exception as e:
+                    last_error = e
+                    error_msg = str(e)
+                    
+                    # Log detailed error information
+                    logger.debug(f"Error details for {order_params['symbol']} (attempt {retry_count + 1}):")
+                    logger.debug(f"- Error message: {error_msg}")
+                    logger.debug(f"- Current params: {params}")
+                    
+                    # Handle specific error codes
+                    if '-4400' in error_msg:  # Futures Trading Quantitative Rules violated
+                        logger.warning(f"Quantitative rules violated for {order_params['symbol']}, retrying with reduceOnly")
+                        params['reduceOnly'] = True
+                        retry_count += 1
+                        await asyncio.sleep(2)  # Longer delay for -4400 errors
+                        continue
+                    elif '-1106' in error_msg:  # Parameter 'reduceonly' sent when not required
+                        logger.warning(f"reduceOnly parameter not required for {order_params['symbol']}, retrying without it")
+                        if 'reduceOnly' in params:
+                            del params['reduceOnly']
+                        retry_count += 1
+                        await asyncio.sleep(1)
+                        continue
+                        
+                    break
+                    
+            if last_error:
+                logger.error(f"Error placing order after {retry_count} retries: {str(last_error)}")
+                return None
                 
-                try:
-                    tp_order = await self.exchange.create_order(
-                        symbol=order_params['symbol'],
-                        type='TAKE_PROFIT_MARKET',
-                        side=tp_side,
-                        amount=order_params['amount'],
-                        params={
-                            'positionSide': position_side,
-                            'stopPrice': tp_price,
-                            'reduceOnly': True
-                        }
-                    )
-                    logger.info(f"Take profit order placed: {tp_order}")
-                    order['take_profit'] = tp_order
-                except Exception as e:
-                    logger.error(f"Failed to place take profit order: {str(e)}")
-                    # Continue with main order even if take profit fails
-                    return order
-            
-            return order
-            
         except Exception as e:
             logger.error(f"Error placing order: {str(e)}")
             return None
@@ -638,11 +731,13 @@ class BinanceService:
             local_time = int(time.time() * 1000)
             self._time_offset = server_time - local_time
             self._last_sync_time = current_time
-            logger.info(f"Time synchronized. Offset: {self._time_offset}ms")
             
-            # Set recvWindow to a higher value to avoid timestamp errors
-            if hasattr(self.exchange, 'options') and 'recvWindow' in self.exchange.options:
+            # Increase recvWindow to avoid timestamp errors
+            if hasattr(self.exchange, 'options'):
                 self.exchange.options['recvWindow'] = 60000  # 60 seconds
+                logger.info(f"Time synchronized. Offset: {self._time_offset}ms, recvWindow: 60s")
+            else:
+                logger.warning("Exchange options not available for recvWindow adjustment")
                 
         except Exception as e:
             logger.error(f"Error synchronizing time: {str(e)}")
@@ -660,12 +755,11 @@ class BinanceService:
                 await self._sync_time()
                 
                 # Add timestamp to request if needed
-                if 'params' in kwargs and 'timestamp' in kwargs['params']:
-                    kwargs['params']['timestamp'] = int(time.time() * 1000) + self._time_offset
-                
-                # Add recvWindow to all requests to avoid timestamp errors
-                if 'params' in kwargs and 'recvWindow' not in kwargs['params']:
-                    kwargs['params']['recvWindow'] = 60000  # 60 seconds
+                if 'params' in kwargs:
+                    if 'timestamp' not in kwargs['params']:
+                        kwargs['params']['timestamp'] = int(time.time() * 1000) + self._time_offset
+                    if 'recvWindow' not in kwargs['params']:
+                        kwargs['params']['recvWindow'] = 60000  # 60 seconds
                 
                 result = await func(*args, **kwargs)
                 return result
@@ -673,9 +767,8 @@ class BinanceService:
                 last_error = e
                 retries += 1
                 
-                if 'timestamp' in str(e).lower() or 'recvwindow' in str(e).lower():
-                    # If timestamp error, sync time and retry immediately
-                    logger.warning(f"Timestamp error detected: {str(e)}. Syncing time and retrying...")
+                if '-1021' in str(e):  # Timestamp error
+                    logger.warning(f"Timestamp error detected: {str(e)}. Forcing time sync...")
                     self._last_sync_time = 0  # Force sync on next attempt
                     await self._sync_time()
                     continue
