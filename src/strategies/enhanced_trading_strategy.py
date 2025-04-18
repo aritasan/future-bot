@@ -97,6 +97,14 @@ class EnhancedTradingStrategy:
             {'profit': 0.03, 'trail_percent': 0.01, 'atr_multiplier': 1.5}    # 3% profit - 1.0% trail
         ]
         
+        # Trade tracking variables
+        self._last_trade_time = {}
+        self._last_trade_price = {}
+        self._last_trade_side = {}
+        self._last_trade_amount = {}
+        self._last_trade_stop_loss = {}
+        self._last_trade_take_profit = {}
+        
     async def initialize(self) -> bool:
         """Initialize the strategy.
         
@@ -288,8 +296,8 @@ class EnhancedTradingStrategy:
                 return None
                 
             # Calculate stop loss and take profit
-            stop_loss = await self._calculate_stop_loss(df, position_type, symbol)
-            take_profit = await self._calculate_take_profit(df, position_type, symbol)
+            stop_loss = await self._calculate_stop_loss(symbol, df, position_type, current_price, df['atr'].iloc[-1])
+            take_profit = await self._calculate_take_profit(symbol, df, position_type, current_price, stop_loss)
             
             return {
                 'symbol': symbol,
@@ -434,116 +442,70 @@ class EnhancedTradingStrategy:
             logger.error(f"Error checking breakout: {str(e)}")
             return False
             
-    async def _calculate_stop_loss(self, df: pd.DataFrame, position_type: str = 'buy', symbol: str = None) -> float:
-        """Calculate stop loss price with enhanced market analysis."""
+    async def _calculate_stop_loss(self, symbol: str, df: pd.DataFrame, position_type: str, current_price: float, atr: float) -> float:
+        """Calculate stop loss based on market conditions and risk parameters."""
         try:
-            current_price = df['close'].iloc[-1]
+            # Get market conditions
+            market_data = self.market_data.get(symbol, {})
+            volatility = market_data.get('volatility', 0)
+            trend_strength = market_data.get('trend_strength', 0)
             
-            # Ensure we have valid values
-            if current_price <= 0:
-                logger.error(f"Invalid current price for {symbol}: {current_price}")
-                return None
+            # Calculate base stop distance using ATR
+            base_stop = atr * self.config.ATR_MULTIPLIER
             
-            # Calculate volatility
-            volatility = df['close'].pct_change().std() * 100
-            
-            # Base stop loss percentage
-            base_stop_percent = 2.0  # 2% base stop loss
-            
-            # Adjust stop loss percentage based on volatility
-            if volatility > 3:  # High volatility
-                base_stop_percent = 3.0
-            elif volatility < 1:  # Low volatility
-                base_stop_percent = 1.5
+            # Adjust stop distance based on market conditions
+            if volatility > 0.02:  # High volatility
+                base_stop *= self.config.VOLATILITY_MULTIPLIER
+            if trend_strength > 0.7:  # Strong trend
+                base_stop *= self.config.TREND_MULTIPLIER
                 
-            # Calculate stop loss based on position type
-            if position_type == 'buy':
-                # For long positions, stop loss is below current price
-                stop_loss = current_price * (1 - base_stop_percent/100)
-                
-                # Ensure stop loss is not too close to current price (min 1% away)
-                min_distance = current_price * 0.01
-                if current_price - stop_loss < min_distance:
-                    stop_loss = current_price - min_distance
+            # Calculate stop loss price
+            if position_type == 'LONG':
+                stop_loss = current_price * (1 - base_stop)
             else:
-                # For short positions, stop loss is above current price
-                stop_loss = current_price * (1 + base_stop_percent/100)
+                stop_loss = current_price * (1 + base_stop)
                 
-                # Ensure stop loss is not too close to current price (min 1% away)
-                min_distance = current_price * 0.01
-                if stop_loss - current_price < min_distance:
-                    stop_loss = current_price + min_distance
-                    
-            # Ensure stop loss is not zero or negative
-            if stop_loss <= 0:
-                logger.error(f"Calculated invalid stop loss for {symbol}: {stop_loss}")
-                return None
+            # Ensure stop loss is not too close to current price
+            min_stop_distance = current_price * self.config.BASE_STOP_DISTANCE
+            if position_type == 'LONG':
+                stop_loss = max(stop_loss, current_price - min_stop_distance)
+            else:
+                stop_loss = min(stop_loss, current_price + min_stop_distance)
                 
             # Round to appropriate precision
-            precision = self.config['trading']['price_precision']
-            stop_loss = round(stop_loss, precision)
+            stop_loss = round(stop_loss, self.config.PRICE_PRECISION)
             
-            logger.info(f"Calculated stop loss for {symbol}: {stop_loss}")
+            self.logger.info(f"Calculated stop loss for {symbol} {position_type}: {stop_loss} (current price: {current_price})")
             return stop_loss
             
         except Exception as e:
-            logger.error(f"Error calculating stop loss: {str(e)}")
+            self.logger.error(f"Error calculating stop loss: {str(e)}")
             return None
 
-    async def _calculate_take_profit(self, df: pd.DataFrame, position_type: str = 'buy', symbol: str = None) -> float:
-        """Calculate take profit price with enhanced market analysis."""
+    async def _calculate_take_profit(self, symbol: str, df: pd.DataFrame, position_type: str, current_price: float, stop_loss: float) -> float:
+        """Calculate take profit based on risk:reward ratio and market conditions."""
         try:
-            current_price = df['close'].iloc[-1]
-            
-            # Ensure we have valid values
-            if current_price <= 0:
-                logger.error(f"Invalid current price for {symbol}: {current_price}")
+            if not stop_loss:
                 return None
-            
-            # Calculate volatility
-            volatility = df['close'].pct_change().std() * 100
-            
-            # Base take profit percentage
-            base_tp_percent = 4.0  # 4% base take profit
-            
-            # Adjust take profit percentage based on volatility
-            if volatility > 3:  # High volatility
-                base_tp_percent = 6.0
-            elif volatility < 1:  # Low volatility
-                base_tp_percent = 3.0
                 
-            # Calculate take profit based on position type
-            if position_type == 'buy':
-                # For long positions, take profit is above current price
-                take_profit = current_price * (1 + base_tp_percent/100)
-                
-                # Ensure take profit is not too close to current price (min 2% away)
-                min_distance = current_price * 0.02
-                if take_profit - current_price < min_distance:
-                    take_profit = current_price + min_distance
+            # Calculate base take profit using risk:reward ratio
+            risk_distance = abs(current_price - stop_loss)
+            take_profit_distance = risk_distance * self.config.TAKE_PROFIT_MULTIPLIER
+            
+            # Calculate take profit price
+            if position_type == 'LONG':
+                take_profit = current_price + take_profit_distance
             else:
-                # For short positions, take profit is below current price
-                take_profit = current_price * (1 - base_tp_percent/100)
-                
-                # Ensure take profit is not too close to current price (min 2% away)
-                min_distance = current_price * 0.02
-                if current_price - take_profit < min_distance:
-                    take_profit = current_price - min_distance
-                    
-            # Ensure take profit is not zero or negative
-            if take_profit <= 0:
-                logger.error(f"Calculated invalid take profit for {symbol}: {take_profit}")
-                return None
+                take_profit = current_price - take_profit_distance
                 
             # Round to appropriate precision
-            precision = self.config['trading']['price_precision']
-            take_profit = round(take_profit, precision)
+            take_profit = round(take_profit, self.config.PRICE_PRECISION)
             
-            logger.info(f"Calculated take profit for {symbol}: {take_profit}")
+            self.logger.info(f"Calculated take profit for {symbol} {position_type}: {take_profit} (current price: {current_price})")
             return take_profit
             
         except Exception as e:
-            logger.error(f"Error calculating take profit: {str(e)}")
+            self.logger.error(f"Error calculating take profit: {str(e)}")
             return None
 
     async def close(self):
@@ -1595,68 +1557,6 @@ class EnhancedTradingStrategy:
             logger.error(f"Error getting stop loss orders: {str(e)}")
             return []
 
-    def calculate_stop_loss(self, current_price: float, side: str, dca_level: int = 0) -> float:
-        """Calculate stop loss price based on DCA level.
-        
-        Args:
-            current_price: Current market price
-            side: Trade side (buy/sell)
-            dca_level: Current DCA level (0-2)
-            
-        Returns:
-            float: Stop loss price
-        """
-        try:
-            # Base risk percentage from config
-            risk_percentage = self.config['trading']['risk_percentage']
-            
-            # Adjust risk based on DCA level
-            # Level 0 (initial): 100% risk
-            # Level 1 (first DCA): 150% risk
-            # Level 2 (second DCA): 200% risk
-            risk_multiplier = 1.0 + (dca_level * 0.5)
-            adjusted_risk = risk_percentage * risk_multiplier
-            
-            if side == 'buy':
-                return current_price * (1 - adjusted_risk)
-            else:
-                return current_price * (1 + adjusted_risk)
-                
-        except Exception as e:
-            logger.error(f"Error calculating stop loss: {str(e)}")
-            return None
-
-    def calculate_take_profit(self, current_price: float, side: str, dca_level: int = 0) -> float:
-        """Calculate take profit price based on DCA level.
-        
-        Args:
-            current_price: Current market price
-            side: Trade side (buy/sell)
-            dca_level: Current DCA level (0-2)
-            
-        Returns:
-            float: Take profit price
-        """
-        try:
-            # Base reward percentage from config
-            reward_percentage = self.config['trading']['reward_percentage']
-            
-            # Adjust reward based on DCA level
-            # Level 0 (initial): 100% reward
-            # Level 1 (first DCA): 75% reward
-            # Level 2 (second DCA): 50% reward
-            reward_multiplier = 1.0 - (dca_level * 0.25)
-            adjusted_reward = reward_percentage * reward_multiplier
-            
-            if side == 'buy':
-                return current_price * (1 + adjusted_reward)
-            else:
-                return current_price * (1 - adjusted_reward)
-                
-        except Exception as e:
-            logger.error(f"Error calculating take profit: {str(e)}")
-            return None
-
     async def process_trading_signals(self, signals: Dict) -> None:
         """Process trading signals and execute trades with enhanced risk management.
         
@@ -1748,8 +1648,8 @@ class EnhancedTradingStrategy:
                 return
                 
             # Calculate stop loss and take profit
-            stop_loss = await self._calculate_stop_loss(df, signal['side'], symbol)
-            take_profit = await self._calculate_take_profit(df, signal['side'], symbol)
+            stop_loss = await self._calculate_stop_loss(symbol, df, signal['side'], current_price, df['atr'].iloc[-1])
+            take_profit = await self._calculate_take_profit(symbol, df, signal['side'], current_price, stop_loss)
             
             if not stop_loss or not take_profit:
                 logger.error(f"Invalid stop loss or take profit calculated for {symbol}")

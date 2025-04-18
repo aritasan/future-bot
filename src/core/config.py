@@ -9,7 +9,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Trading parameters
-ORDER_RISK_PERCENT = float(os.getenv("ORDER_RISK_PERCENT", "1.0"))  # 100% risk per trade
 MAX_DRAWDOWN = float(os.getenv("MAX_DRAWDOWN", "10.0"))  # 10% max drawdown
 ATR_PERIOD = int(os.getenv("ATR_PERIOD", "14"))
 MAX_ORDERS_PER_SYMBOL = int(os.getenv("MAX_ORDERS_PER_SYMBOL", "3"))
@@ -132,7 +131,6 @@ def load_config() -> Dict[str, Any]:
             }
         },
         'trading': {
-            'order_risk_percent': ORDER_RISK_PERCENT,
             'max_drawdown': MAX_DRAWDOWN,
             'atr_period': ATR_PERIOD,
             'max_orders_per_symbol': MAX_ORDERS_PER_SYMBOL,

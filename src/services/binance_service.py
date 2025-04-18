@@ -83,219 +83,105 @@ class BinanceService:
             return False
             
     async def place_order(self, order_params: Dict) -> Optional[Dict]:
-        """
-        Place an order on Binance.
-        
-        Args:
-            order_params (Dict): Order parameters including:
-                - symbol: Trading pair symbol
-                - side: 'buy' or 'sell'
-                - type: Order type (e.g., 'market', 'limit')
-                - amount: Order amount
-                - price: Order price (for limit orders)
-                - stop_loss: Stop loss price (optional)
-                - take_profit: Take profit price (optional)
-                - reduceOnly: Whether the order should only reduce position (optional)
-                
-        Returns:
-            Optional[Dict]: Order details if successful, None otherwise
-        """
+        """Place an order with enhanced error handling and retry logic."""
         try:
-            if not self._is_initialized:
-                logger.error("Binance service not initialized")
+            symbol = order_params.get('symbol')
+            side = order_params.get('side')
+            order_type = order_params.get('type', 'market')
+            amount = order_params.get('amount')
+            price = order_params.get('price')
+            stop_loss = order_params.get('stop_loss')
+            take_profit = order_params.get('take_profit')
+            reduce_only = order_params.get('reduceOnly', False)
+            
+            # Validate required parameters
+            if not all([symbol, side, amount]):
+                logger.error(f"Missing required parameters for order: {order_params}")
                 return None
                 
-            # Check for duplicate orders
-            order_key = f"{order_params['symbol']}_{order_params['side']}_{order_params['type']}"
-            if order_key in self.order_cache:
-                cached_order = self.order_cache[order_key]
-                if time.time() - cached_order['timestamp'] < 60:  # 1 minute cache
-                    logger.info(f"Duplicate order detected for {order_key}")
-                    return cached_order['order']
-                    
             # Get current market price if not provided
-            if 'price' not in order_params and order_params['type'] == 'limit':
-                current_price = await self.get_current_price(order_params['symbol'])
-                if current_price:
-                    order_params['price'] = current_price
-                    
-            # Determine position side
-            position_side = 'LONG' if order_params['side'] == 'buy' else 'SHORT'
-            
-            # Check current position
-            try:
-                position = await self.get_position(order_params['symbol'])
-                position_amt = float(position.get('positionAmt', 0)) if position else 0
-                has_position = position_amt != 0
-                
-                # Log position details
-                logger.debug(f"Position check for {order_params['symbol']}:")
-                logger.debug(f"- Position amount: {position_amt}")
-                logger.debug(f"- Has position: {has_position}")
-                
-                # Get market info for tick size
-                market_info = await self.exchange.fetch_markets()
-                symbol_info = next((m for m in market_info if m['symbol'] == order_params['symbol']), None)
-                
-                if symbol_info:
-                    # Get tick size from market info
-                    tick_size = None
-                    if 'precision' in symbol_info and 'price' in symbol_info['precision']:
-                        tick_size = 10 ** -symbol_info['precision']['price']
-                        logger.debug(f"Tick size for {order_params['symbol']}: {tick_size}")
-                    
-                    # Round price to tick size if provided
-                    if 'price' in order_params and tick_size:
-                        order_params['price'] = round(order_params['price'] / tick_size) * tick_size
-                        logger.debug(f"Rounded price to tick size: {order_params['price']}")
-                
-                # Determine if we need reduceOnly based on actual position
-                need_reduce_only = False
-                
-                # Case 1: Existing position in opposite direction
-                if has_position:
-                    is_long_position = position_amt > 0
-                    is_long_order = order_params['side'] == 'buy'
-                    if is_long_position != is_long_order:
-                        need_reduce_only = True
-                        logger.info(f"Opposite position detected for {order_params['symbol']}, using reduceOnly")
-                
-                # Case 2: Force reduceOnly if specified in params
-                if order_params.get('reduceOnly'):
-                    need_reduce_only = True
-                    logger.info(f"reduceOnly forced by parameters for {order_params['symbol']}")
-                
-            except Exception as e:
-                logger.error(f"Error checking position for {order_params['symbol']}: {str(e)}")
-                need_reduce_only = False
+            if not price and order_type == 'limit':
+                ticker = await self.get_ticker(symbol)
+                if not ticker:
+                    logger.error(f"Failed to get ticker for {symbol}")
+                    return None
+                price = ticker.get('last')
                 
             # Prepare order parameters
             params = {
-                'positionSide': position_side
+                'symbol': symbol,
+                'side': side,
+                'type': order_type.upper(),
+                'quantity': amount
             }
             
-            # Add reduceOnly only if needed
-            if need_reduce_only:
+            # Add price for limit orders
+            if order_type == 'limit' and price:
+                params['price'] = price
+                params['timeInForce'] = 'GTC'
+                
+            # Add reduceOnly parameter only if it's True
+            if reduce_only:
                 params['reduceOnly'] = True
                 
-            # Log final order parameters
-            logger.debug(f"Final order parameters for {order_params['symbol']}:")
-            logger.debug(f"- Type: {order_params['type']}")
-            logger.debug(f"- Side: {order_params['side']}")
-            logger.debug(f"- Amount: {order_params['amount']}")
-            logger.debug(f"- Price: {order_params.get('price', 'market')}")
-            logger.debug(f"- Additional params: {params}")
-                
-            # Place the main order with retry mechanism
-            max_retries = 3
-            retry_count = 0
-            last_error = None
+            # Place the order
+            order = await self.exchange.create_order(**params)
             
-            while retry_count < max_retries:
-                try:
-                    order = await self.exchange.create_order(
-                        symbol=order_params['symbol'],
-                        type=order_params['type'],
-                        side=order_params['side'],
-                        amount=order_params['amount'],
-                        price=order_params.get('price'),
-                        params=params
-                    )
-                    
-                    logger.info(f"Order placed: {order}")
-                    
-                    # Cache the order
-                    self.order_cache[order_key] = {
-                        'order': order,
-                        'timestamp': time.time()
-                    }
-                    
-                    # Place stop loss order if specified
-                    if 'stop_loss' in order_params:
-                        sl_side = 'sell' if order_params['side'] == 'buy' else 'buy'
-                        sl_price = float(order_params['stop_loss'])
-                        
-                        # Round stop loss to tick size if available
-                        if tick_size:
-                            sl_price = round(sl_price / tick_size) * tick_size
-                        
-                        try:
-                            sl_order = await self.exchange.create_order(
-                                symbol=order_params['symbol'],
-                                type='STOP_MARKET',
-                                side=sl_side,
-                                amount=order_params['amount'],
-                                params={
-                                    'positionSide': position_side,
-                                    'stopPrice': sl_price,
-                                    'reduceOnly': True
-                                }
-                            )
-                            logger.info(f"Stop loss order placed: {sl_order}")
-                            order['stop_loss'] = sl_order
-                        except Exception as e:
-                            logger.error(f"Failed to place stop loss order: {str(e)}")
-                            return order
-                    
-                    # Place take profit order if specified
-                    if 'take_profit' in order_params:
-                        tp_side = 'sell' if order_params['side'] == 'buy' else 'buy'
-                        tp_price = float(order_params['take_profit'])
-                        
-                        # Round take profit to tick size if available
-                        if tick_size:
-                            tp_price = round(tp_price / tick_size) * tick_size
-                        
-                        try:
-                            tp_order = await self.exchange.create_order(
-                                symbol=order_params['symbol'],
-                                type='TAKE_PROFIT_MARKET',
-                                side=tp_side,
-                                amount=order_params['amount'],
-                                params={
-                                    'positionSide': position_side,
-                                    'stopPrice': tp_price,
-                                    'reduceOnly': True
-                                }
-                            )
-                            logger.info(f"Take profit order placed: {tp_order}")
-                            order['take_profit'] = tp_order
-                        except Exception as e:
-                            logger.error(f"Failed to place take profit order: {str(e)}")
-                            return order
-                    
-                    return order
-                    
-                except Exception as e:
-                    last_error = e
-                    error_msg = str(e)
-                    
-                    # Log detailed error information
-                    logger.debug(f"Error details for {order_params['symbol']} (attempt {retry_count + 1}):")
-                    logger.debug(f"- Error message: {error_msg}")
-                    logger.debug(f"- Current params: {params}")
-                    
-                    # Handle specific error codes
-                    if '-4400' in error_msg:  # Futures Trading Quantitative Rules violated
-                        logger.warning(f"Quantitative rules violated for {order_params['symbol']}, retrying with reduceOnly")
-                        params['reduceOnly'] = True
-                        retry_count += 1
-                        await asyncio.sleep(2)  # Longer delay for -4400 errors
-                        continue
-                    elif '-1106' in error_msg:  # Parameter 'reduceonly' sent when not required
-                        logger.warning(f"reduceOnly parameter not required for {order_params['symbol']}, retrying without it")
-                        if 'reduceOnly' in params:
-                            del params['reduceOnly']
-                        retry_count += 1
-                        await asyncio.sleep(1)
-                        continue
-                        
-                    break
-                    
-            if last_error:
-                logger.error(f"Error placing order after {retry_count} retries: {str(last_error)}")
+            if not order:
+                logger.error(f"Failed to place order for {symbol}")
                 return None
                 
+            # Cache the order
+            cache_key = f"{symbol}_{side}_{order_type}"
+            self.order_cache[cache_key] = order
+            
+            # Place stop loss order if provided
+            if stop_loss:
+                try:
+                    # Prepare stop loss parameters
+                    sl_params = {
+                        'symbol': symbol,
+                        'side': 'SELL' if side == 'BUY' else 'BUY',
+                        'type': 'STOP_MARKET',
+                        'quantity': amount,
+                        'stopPrice': stop_loss,
+                        'reduceOnly': True  # Always use reduceOnly for stop loss
+                    }
+                    
+                    # Place stop loss order
+                    sl_order = await self.exchange.create_order(**sl_params)
+                    if sl_order:
+                        logger.info(f"Stop loss order placed: {sl_order}")
+                    else:
+                        logger.error(f"Failed to place stop loss order for {symbol}")
+                except Exception as e:
+                    logger.error(f"Error placing stop loss order: {str(e)}")
+                    
+            # Place take profit order if provided
+            if take_profit:
+                try:
+                    # Prepare take profit parameters
+                    tp_params = {
+                        'symbol': symbol,
+                        'side': 'SELL' if side == 'BUY' else 'BUY',
+                        'type': 'TAKE_PROFIT_MARKET',
+                        'quantity': amount,
+                        'stopPrice': take_profit,
+                        'reduceOnly': True  # Always use reduceOnly for take profit
+                    }
+                    
+                    # Place take profit order
+                    tp_order = await self.exchange.create_order(**tp_params)
+                    if tp_order:
+                        logger.info(f"Take profit order placed: {tp_order}")
+                    else:
+                        logger.error(f"Failed to place take profit order for {symbol}")
+                except Exception as e:
+                    logger.error(f"Error placing take profit order: {str(e)}")
+                    
+            logger.info(f"Order placed: {order}")
+            return order
+            
         except Exception as e:
             logger.error(f"Error placing order: {str(e)}")
             return None
@@ -396,9 +282,16 @@ class BinanceService:
     async def get_current_price(self, symbol: str) -> Optional[float]:
         """Get current price for a symbol."""
         try:
-            ticker = await self.get_ticker(symbol)
+            # Always fetch fresh data from REST API
+            ticker = await self._make_request(self.exchange.fetch_ticker, symbol)
             if ticker and 'last' in ticker:
-                return float(ticker['last'])
+                price = float(ticker['last'])
+                # Validate price
+                if price <= 0:
+                    logger.error(f"Invalid price {price} for {symbol}")
+                    return None
+                logger.info(f"Current price for {symbol}: {price}")
+                return price
             return None
         except Exception as e:
             logger.error(f"Error getting current price for {symbol}: {str(e)}")
