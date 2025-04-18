@@ -1826,7 +1826,7 @@ class EnhancedTradingStrategy:
         """
         try:
             # Calculate position size
-            position_size = await self._calculate_position_size(symbol, signal)
+            position_size = await self._calculate_position_size(symbol, self.config['trading']['risk_per_trade'], signal['price'])
             if not position_size:
                 return
                 
