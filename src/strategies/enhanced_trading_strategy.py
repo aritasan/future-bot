@@ -451,13 +451,13 @@ class EnhancedTradingStrategy:
             trend = market_conditions.get('trend', 'DOWN')
             
             # Calculate base stop distance using ATR
-            base_stop = atr * self.config.ATR_MULTIPLIER
+            base_stop = atr * self.config['risk_management']['atr_multiplier']
             
             # Adjust stop distance based on market conditions
             if volatility == 'HIGH':  # High volatility
-                base_stop *= self.config.VOLATILITY_MULTIPLIER
+                base_stop *= self.config['risk_management']['volatility_multiplier']
             if trend == 'UP' and position_type == 'LONG' or trend == 'DOWN' and position_type == 'SHORT':  # Strong trend
-                base_stop *= self.config.TREND_MULTIPLIER
+                base_stop *= self.config['risk_management']['trend_multiplier']
                 
             # Calculate stop loss price
             if position_type == 'LONG':
@@ -466,14 +466,14 @@ class EnhancedTradingStrategy:
                 stop_loss = current_price * (1 + base_stop)
                 
             # Ensure stop loss is not too close to current price
-            min_stop_distance = current_price * self.config.BASE_STOP_DISTANCE
+            min_stop_distance = current_price * self.config['risk_management']['base_stop_distance']
             if position_type == 'LONG':
                 stop_loss = max(stop_loss, current_price - min_stop_distance)
             else:
                 stop_loss = min(stop_loss, current_price + min_stop_distance)
                 
             # Round to appropriate precision
-            stop_loss = round(stop_loss, self.config.PRICE_PRECISION)
+            stop_loss = round(stop_loss, self.config['trading']['price_precision'])
             
             logger.info(f"Calculated stop loss for {symbol} {position_type}: {stop_loss} (current price: {current_price})")
             return stop_loss
@@ -490,7 +490,7 @@ class EnhancedTradingStrategy:
                 
             # Calculate base take profit using risk:reward ratio
             risk_distance = abs(current_price - stop_loss)
-            take_profit_distance = risk_distance * self.config.TAKE_PROFIT_MULTIPLIER
+            take_profit_distance = risk_distance * self.config['risk_management']['take_profit_multiplier']
             
             # Calculate take profit price
             if position_type == 'LONG':
@@ -499,7 +499,7 @@ class EnhancedTradingStrategy:
                 take_profit = current_price - take_profit_distance
                 
             # Round to appropriate precision
-            take_profit = round(take_profit, self.config.PRICE_PRECISION)
+            take_profit = round(take_profit, self.config['trading']['price_precision'])
             
             logger.info(f"Calculated take profit for {symbol} {position_type}: {take_profit} (current price: {current_price})")
             return take_profit
@@ -827,7 +827,7 @@ class EnhancedTradingStrategy:
         """
         try:
             # Calculate base trailing stop
-            base_stop = atr * 1.5  # Tighter than initial stop
+            base_stop = atr * self.config['risk_management']['atr_multiplier']  # Use ATR multiplier from config
             
             # Adjust for position type
             if position_type == "BUY":
