@@ -83,19 +83,20 @@ class BinanceService:
             return False
             
     async def place_order(self, order_params: Dict) -> Optional[Dict]:
-        """Place an order on Binance.
+        """
+        Place an order on Binance.
         
         Args:
-            order_params: Order parameters including:
-                - symbol: Trading pair
-                - side: buy/sell
-                - type: market/limit/stop
+            order_params (Dict): Order parameters including:
+                - symbol: Trading pair symbol
+                - side: 'buy' or 'sell'
+                - type: Order type (e.g., 'market', 'limit')
                 - amount: Order amount
-                - price: Order price (for limit/stop orders)
+                - price: Order price (for limit orders)
                 - stop_loss: Stop loss price (optional)
                 - take_profit: Take profit price (optional)
-                - reduceOnly: Whether the order is reduce-only (for SL/TP)
-            
+                - reduceOnly: Whether the order should only reduce position (optional)
+                
         Returns:
             Optional[Dict]: Order details if successful, None otherwise
         """
@@ -109,38 +110,48 @@ class BinanceService:
                 return None
                 
             # Check for duplicate orders
-            order_key = f"{order_params['symbol']}_{order_params['amount']}_{order_params.get('type', 'market')}"
+            order_key = f"{order_params['symbol']}_{order_params['side']}_{order_params['type']}"
             if order_key in self.order_cache:
-                cached_order, timestamp = self.order_cache[order_key]
-                if datetime.now() - timestamp < self.cache_expiry:
-                    logger.warning("Duplicate order detected")
-                    return None
+                cached_order = self.order_cache[order_key]
+                if time.time() - cached_order['timestamp'] < 60:  # 1 minute cache
+                    logger.info(f"Duplicate order detected for {order_key}")
+                    return cached_order['order']
                     
-            # Get current market price
-            ticker = await self.exchange.fetch_ticker(order_params['symbol'])
-            current_price = float(ticker['last'])
+            # Get current market price if not provided
+            if 'price' not in order_params and order_params['type'] == 'limit':
+                current_price = await self.get_current_price(order_params['symbol'])
+                if current_price:
+                    order_params['price'] = current_price
+                    
+            # Determine position side
+            position_side = 'LONG' if order_params['side'] == 'buy' else 'SHORT'
             
-            # Set position side based on order side
-            position_side = "LONG" if order_params['side'] == 'buy' else "SHORT"
-            
-            # Base params for main order
+            # Prepare order parameters
             params = {
-                'positionSide': position_side,
-                **order_params.get('params', {})
+                'positionSide': position_side
             }
             
-            # Place main order
+            # Add reduceOnly if specified
+            if order_params.get('reduceOnly'):
+                params['reduceOnly'] = True
+                
+            # Place the main order
             order = await self.exchange.create_order(
                 symbol=order_params['symbol'],
-                type=order_params.get('type', 'market'),
+                type=order_params['type'],
                 side=order_params['side'],
                 amount=order_params['amount'],
                 price=order_params.get('price'),
                 params=params
             )
             
-            # Cache main order
-            self.order_cache[order_key] = (order, datetime.now())
+            logger.info(f"Order placed: {order}")
+            
+            # Cache the order
+            self.order_cache[order_key] = {
+                'order': order,
+                'timestamp': time.time()
+            }
             
             # Place stop loss order if specified
             if 'stop_loss' in order_params:
@@ -528,7 +539,16 @@ class BinanceService:
         """
         try:
             # Use REST API with retry mechanism
-            params = {'stopPrice': stop_price}
+            params = {
+                'stopPrice': stop_price
+            }
+            
+            # Only add reduceOnly if we're in a position that requires it
+            # Check if we have an open position for this symbol
+            position = await self.get_position(symbol)
+            if position and float(position.get('positionAmt', 0)) != 0:
+                params['reduceOnly'] = True
+            
             if position_side:
                 params['positionSide'] = position_side
                 
@@ -549,13 +569,23 @@ class BinanceService:
         """Update take profit order for a position."""
         try:
             # Use REST API with retry mechanism
+            params = {
+                'stopPrice': take_profit_price
+            }
+            
+            # Only add reduceOnly if we're in a position that requires it
+            # Check if we have an open position for this symbol
+            position = await self.get_position(symbol)
+            if position and float(position.get('positionAmt', 0)) != 0:
+                params['reduceOnly'] = True
+                
             result = await self._make_request(
                 self.exchange.create_order,
                 symbol=symbol,
                 type='TAKE_PROFIT_MARKET',
                 side=side,
                 amount=amount,
-                params={'stopPrice': take_profit_price}
+                params=params
             )
             return bool(result)
         except Exception as e:
@@ -778,21 +808,29 @@ class BinanceService:
                 logger.warning(f"No position found for {symbol}")
                 return False
                 
-            # Determine side based on position
-            side = 'sell' if position.get('side') == 'long' else 'buy'
-            amount = abs(float(position.get('contracts', 0)))
-            
-            if amount <= 0:
-                logger.warning(f"Invalid position amount for {symbol}: {amount}")
+            # Get position amount
+            position_amt = float(position.get('positionAmt', 0))
+            if position_amt == 0:
+                logger.warning(f"No position amount for {symbol}")
                 return False
                 
+            # Determine side based on position amount
+            side = 'sell' if position_amt > 0 else 'buy'
+            amount = abs(position_amt)
+            
+            # Get position side
+            position_side = position.get('positionSide', 'LONG' if position_amt > 0 else 'SHORT')
+            
             # Create market order to close position
             order_params = {
                 'symbol': symbol,
                 'side': side,
                 'type': 'market',
                 'amount': amount,
-                'reduceOnly': True
+                'params': {
+                    'reduceOnly': True,
+                    'positionSide': position_side
+                }
             }
             
             # Place order

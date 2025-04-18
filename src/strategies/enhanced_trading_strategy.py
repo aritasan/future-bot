@@ -440,6 +440,11 @@ class EnhancedTradingStrategy:
             current_price = df['close'].iloc[-1]
             atr = df['ATR'].iloc[-1]
             
+            # Ensure we have valid values
+            if current_price <= 0 or atr <= 0:
+                logger.error(f"Invalid current price or ATR for {symbol}: price={current_price}, atr={atr}")
+                return None
+            
             # Calculate support/resistance levels using recent price action
             recent_lows = df['low'].rolling(window=20).min()
             recent_highs = df['high'].rolling(window=20).max()
@@ -468,72 +473,50 @@ class EnhancedTradingStrategy:
             # Adjust ATR multiplier based on trend strength
             if trend_strength > 2:  # Strong trend
                 base_atr_multiplier *= 1.2
-            elif trend_strength < 0.5:  # Weak trend
-                base_atr_multiplier *= 0.8
                 
-            # Adjust ATR multiplier based on volume
-            if volume_ratio > 1.5:  # High volume
-                base_atr_multiplier *= 1.1
-            elif volume_ratio < 0.5:  # Low volume
-                base_atr_multiplier *= 0.9
-            
+            # Calculate stop loss based on position type
             if position_type == 'buy':
-                # For long positions
-                base_sl = current_price - (base_atr_multiplier * atr)
-                support = recent_lows.iloc[-1]
+                # For long positions, stop loss is below current price
+                stop_loss = current_price - (atr * base_atr_multiplier)
                 
-                # Use the more conservative stop (further from price)
-                stop_loss = min(base_sl, support * 0.995)
-                
-                # Ensure minimum distance from current price for DCA
-                min_distance = current_price * 0.015  # 1.5% minimum distance
+                # Ensure stop loss is not too close to current price (min 1% away)
+                min_distance = current_price * 0.01
                 if current_price - stop_loss < min_distance:
                     stop_loss = current_price - min_distance
                     
-                # Ensure stop loss is not too far (max 5% from current price)
-                max_distance = current_price * 0.05
-                if current_price - stop_loss > max_distance:
-                    stop_loss = current_price - max_distance
-                
+                # Ensure stop loss is not below recent lows
+                recent_low = recent_lows.iloc[-1]
+                if stop_loss < recent_low:
+                    stop_loss = recent_low * 0.995  # 0.5% below recent low
             else:
-                # For short positions
-                base_sl = current_price + (base_atr_multiplier * atr)
-                resistance = recent_highs.iloc[-1]
+                # For short positions, stop loss is above current price
+                stop_loss = current_price + (atr * base_atr_multiplier)
                 
-                # Use the more conservative stop (further from price)
-                stop_loss = max(base_sl, resistance * 1.005)
-                
-                # Ensure minimum distance from current price for DCA
-                min_distance = current_price * 0.015  # 1.5% minimum distance
+                # Ensure stop loss is not too close to current price (min 1% away)
+                min_distance = current_price * 0.01
                 if stop_loss - current_price < min_distance:
                     stop_loss = current_price + min_distance
                     
-                # Ensure stop loss is not too far (max 5% from current price)
-                max_distance = current_price * 0.05
-                if stop_loss - current_price > max_distance:
-                    stop_loss = current_price + max_distance
-            
-            # Round to symbol precision
-            if symbol and self.binance_service:
-                markets = await self.binance_service.get_markets()
-                if markets and symbol in markets:
-                    precision = markets[symbol]['precision']['price']
-                    stop_loss = round(stop_loss, int(precision))
-            
-            # Validate final stop loss value
+                # Ensure stop loss is not above recent highs
+                recent_high = recent_highs.iloc[-1]
+                if stop_loss > recent_high:
+                    stop_loss = recent_high * 1.005  # 0.5% above recent high
+                    
+            # Ensure stop loss is not zero or negative
             if stop_loss <= 0:
-                logger.error(f"Invalid stop loss calculated: {stop_loss}")
-                return current_price * 0.985 if position_type == 'buy' else current_price * 1.015
+                logger.error(f"Calculated invalid stop loss for {symbol}: {stop_loss}")
+                return None
+                
+            # Round to appropriate precision
+            precision = self.config['trading']['price_precision']
+            stop_loss = round(stop_loss, precision)
             
+            logger.info(f"Calculated stop loss for {symbol}: {stop_loss}")
             return stop_loss
             
         except Exception as e:
             logger.error(f"Error calculating stop loss: {str(e)}")
-            # Return a safe default value
-            if position_type == 'buy':
-                return current_price * 0.985  # 1.5% below current price
-            else:
-                return current_price * 1.015  # 1.5% above current price
+            return None
 
     async def _calculate_take_profit(self, df: pd.DataFrame, position_type: str = 'buy', symbol: str = None) -> float:
         """Calculate take profit price with enhanced market analysis."""
@@ -541,14 +524,18 @@ class EnhancedTradingStrategy:
             current_price = df['close'].iloc[-1]
             atr = df['ATR'].iloc[-1]
             
-            # Calculate Fibonacci levels
-            recent_high = df['high'].rolling(window=20).max().iloc[-1]
-            recent_low = df['low'].rolling(window=20).min().iloc[-1]
-            price_range = recent_high - recent_low
+            # Ensure we have valid values
+            if current_price <= 0 or atr <= 0:
+                logger.error(f"Invalid current price or ATR for {symbol}: price={current_price}, atr={atr}")
+                return None
             
-            fib_618 = recent_low + price_range * 0.618
-            fib_100 = recent_high
-            fib_1618 = recent_high + price_range * 0.618
+            # Calculate support/resistance levels using recent price action
+            recent_lows = df['low'].rolling(window=20).min()
+            recent_highs = df['high'].rolling(window=20).max()
+            
+            # Calculate volume profile
+            volume_profile = df['volume'].rolling(window=20).mean()
+            volume_ratio = volume_profile.iloc[-1] / volume_profile.mean()
             
             # Calculate trend strength using EMA
             ema20 = df['close'].ewm(span=20).mean()
@@ -559,82 +546,62 @@ class EnhancedTradingStrategy:
             volatility = df['close'].pct_change().std() * 100
             
             # Base ATR multiplier with adjustments
-            base_atr_multiplier = 5.0  # Base multiplier for TP
+            base_atr_multiplier = 4.0  # Base multiplier
             
             # Adjust ATR multiplier based on volatility
             if volatility > 3:  # High volatility
-                base_atr_multiplier = 6.0
+                base_atr_multiplier = 4.5
             elif volatility < 1:  # Low volatility
-                base_atr_multiplier = 4.0
+                base_atr_multiplier = 3.5
                 
             # Adjust ATR multiplier based on trend strength
             if trend_strength > 2:  # Strong trend
                 base_atr_multiplier *= 1.2
-            elif trend_strength < 0.5:  # Weak trend
-                base_atr_multiplier *= 0.8
-            
+                
+            # Calculate take profit based on position type
             if position_type == 'buy':
-                # For long positions
-                base_tp = current_price + (base_atr_multiplier * atr)
+                # For long positions, take profit is above current price
+                take_profit = current_price + (atr * base_atr_multiplier)
                 
-                # Consider Fibonacci levels for long positions
-                if base_tp < fib_618:
-                    base_tp = fib_618
-                elif base_tp > fib_1618:
-                    base_tp = fib_1618
-                
-                # Ensure minimum distance from current price for trailing stop
-                min_distance = current_price * 0.03  # 3% minimum distance
-                if base_tp - current_price < min_distance:
-                    base_tp = current_price + min_distance
+                # Ensure take profit is not too close to current price (min 2% away)
+                min_distance = current_price * 0.02
+                if take_profit - current_price < min_distance:
+                    take_profit = current_price + min_distance
                     
-                # Ensure take profit is not too far (max 10% from current price)
-                max_distance = current_price * 0.10
-                if base_tp - current_price > max_distance:
-                    base_tp = current_price + max_distance
-                
+                # Ensure take profit is not above recent highs
+                recent_high = recent_highs.iloc[-1]
+                if take_profit > recent_high:
+                    take_profit = recent_high * 1.01  # 1% above recent high
             else:
-                # For short positions
-                base_tp = current_price - (base_atr_multiplier * atr)
+                # For short positions, take profit is below current price
+                take_profit = current_price - (atr * base_atr_multiplier)
                 
-                # Consider Fibonacci levels for short positions
-                if base_tp > fib_618:
-                    base_tp = fib_618
-                elif base_tp < (current_price - price_range * 0.618):
-                    base_tp = current_price - price_range * 0.618
-                
-                # Ensure minimum distance from current price for trailing stop
-                min_distance = current_price * 0.03  # 3% minimum distance
-                if current_price - base_tp < min_distance:
-                    base_tp = current_price - min_distance
+                # Ensure take profit is not too close to current price (min 2% away)
+                min_distance = current_price * 0.02
+                if current_price - take_profit < min_distance:
+                    take_profit = current_price - min_distance
                     
-                # Ensure take profit is not too far (max 10% from current price)
-                max_distance = current_price * 0.10
-                if current_price - base_tp > max_distance:
-                    base_tp = current_price - max_distance
+                # Ensure take profit is not below recent lows
+                recent_low = recent_lows.iloc[-1]
+                if take_profit < recent_low:
+                    take_profit = recent_low * 0.99  # 1% below recent low
+                    
+            # Ensure take profit is not zero or negative
+            if take_profit <= 0:
+                logger.error(f"Calculated invalid take profit for {symbol}: {take_profit}")
+                return None
+                
+            # Round to appropriate precision
+            precision = self.config['trading']['price_precision']
+            take_profit = round(take_profit, precision)
             
-            # Round to symbol precision
-            if symbol and self.binance_service:
-                markets = await self.binance_service.get_markets()
-                if markets and symbol in markets:
-                    precision = markets[symbol]['precision']['price']
-                    base_tp = round(base_tp, int(precision))
-            
-            # Validate final take profit value
-            if base_tp <= 0:
-                logger.error(f"Invalid take profit calculated: {base_tp}")
-                return current_price * 1.03 if position_type == 'buy' else current_price * 0.97
-            
-            return base_tp
+            logger.info(f"Calculated take profit for {symbol}: {take_profit}")
+            return take_profit
             
         except Exception as e:
             logger.error(f"Error calculating take profit: {str(e)}")
-            # Return a safe default value
-            if position_type == 'buy':
-                return current_price * 1.03  # 3% above current price
-            else:
-                return current_price * 0.97  # 3% below current price
-            
+            return None
+
     async def close(self):
         """Close the strategy and clear cache."""
         try:
@@ -644,72 +611,71 @@ class EnhancedTradingStrategy:
         except Exception as e:
             logger.error(f"Error closing strategy: {str(e)}")
             
-    async def should_close_position(self, position: Dict, current_price: float) -> bool:
-        """Check if a position should be closed based on various conditions.
+    async def should_close_position(self, position: dict) -> bool:
+        """Check if position should be closed based on various conditions.
         
         Args:
             position: Position details
-            current_price: Current market price
             
         Returns:
             bool: True if position should be closed, False otherwise
         """
         try:
-            if 'info' not in position:
-                logger.error("Invalid position structure")
-                return False
-                
-            # Get position details
-            position_amt = float(position['info'].get('positionAmt', '0'))
-            if position_amt == 0:
-                return False
-                
-            entry_price = float(position['info'].get('entryPrice', '0'))
-            if not entry_price:
-                return False
-                
+            symbol = position['symbol']
+            entry_price = float(position['entryPrice'])
+            current_price = float(position['markPrice'])
+            position_amt = float(position['info']['positionAmt'])
+            
             # Calculate price change
-            price_change = ((current_price - entry_price) / entry_price) * 100
-            if position_amt > 0:  # Long position
-                price_change = -price_change  # Invert for long positions
+            price_change = (current_price - entry_price) / entry_price
+            if position_amt < 0:  # For short positions, invert the price change
+                price_change = -price_change
                 
-            # Check if price change exceeds stop loss
-            stop_loss = float(position['info'].get('stopLoss', '0'))
-            if stop_loss and current_price <= stop_loss:
-                logger.info(f"Stop loss triggered at {current_price}")
-                return True
-                
-            # Check if price change exceeds take profit
-            take_profit = float(position['info'].get('takeProfit', '0'))
-            if take_profit and current_price >= take_profit:
-                logger.info(f"Take profit triggered at {current_price}")
-                return True
-                
+            # Check stop loss
+            stop_loss = float(position.get('stopLoss', 0))
+            if stop_loss > 0:
+                if (position_amt > 0 and current_price <= stop_loss) or \
+                   (position_amt < 0 and current_price >= stop_loss):
+                    logger.info(f"Stop loss triggered for {symbol} at {current_price}")
+                    return True
+                    
+            # Check take profit
+            take_profit = float(position.get('takeProfit', 0))
+            if take_profit > 0:
+                if (position_amt > 0 and current_price >= take_profit) or \
+                   (position_amt < 0 and current_price <= take_profit):
+                    logger.info(f"Take profit triggered for {symbol} at {current_price}")
+                    return True
+                    
             # Check trend reversal
-            df = await self.indicator_service.calculate_indicators(position['info']['symbol'])
-            if df is not None:
-                current_trend = self.get_trend(df)
-                if position_amt > 0 and current_trend == "DOWN":
-                    logger.info(f"Trend reversal detected for long position")
-                    return True
-                elif position_amt < 0 and current_trend == "UP":
-                    logger.info(f"Trend reversal detected for short position")
-                    return True
+            try:
+                # Get current trend
+                trend = await self._get_market_trend(symbol)
+                if trend:
+                    # If trend has reversed from our position
+                    if (position_amt > 0 and trend == 'bearish') or \
+                       (position_amt < 0 and trend == 'bullish'):
+                        logger.info(f"Trend reversal detected for {symbol}: {trend}")
+                        return True
+            except Exception as e:
+                logger.error(f"Error checking trend for {symbol}: {str(e)}")
                 
-            # Check sentiment
-            sentiment = await self.analyze_market_sentiment(position['info']['symbol'])
-            if sentiment:
-                if position_amt > 0 and sentiment["trend"] == "BEARISH":
-                    logger.info(f"Bearish sentiment detected for long position")
-                    return True
-                elif position_amt < 0 and sentiment["trend"] == "BULLISH":
-                    logger.info(f"Bullish sentiment detected for short position")
-                    return True
+            # Check market sentiment
+            try:
+                sentiment = await self._get_market_sentiment(symbol)
+                if sentiment:
+                    # If sentiment is strongly against our position
+                    if (position_amt > 0 and sentiment < -0.7) or \
+                       (position_amt < 0 and sentiment > 0.7):
+                        logger.info(f"Strong market sentiment against position for {symbol}: {sentiment}")
+                        return True
+            except Exception as e:
+                logger.error(f"Error checking sentiment for {symbol}: {str(e)}")
                 
             return False
             
         except Exception as e:
-            logger.error(f"Error checking if position should be closed: {str(e)}")
+            logger.error(f"Error in should_close_position: {str(e)}")
             return False
             
     async def should_update_stops(self, position: Dict, current_price: float) -> bool:
@@ -1776,7 +1742,7 @@ class EnhancedTradingStrategy:
                 
             # Case 2: Existing position - manage the position
             # Check if we should close the position
-            if await self.should_close_position(position, position['entryPrice']):
+            if await self.should_close_position(position):
                 # Position will be closed by should_close_position method
                 # and appropriate notifications will be sent
                 await self.binance_service.close_position(symbol)
@@ -1817,23 +1783,24 @@ class EnhancedTradingStrategy:
             logger.error(f"Error processing trading signals: {str(e)}")
             
     async def _execute_trade(self, symbol: str, signal: Dict, market_conditions: Dict) -> None:
-        """Execute a trade based on the signal and market conditions.
-        
-        Args:
-            symbol: Trading pair symbol
-            signal: Trade signal details
-            market_conditions: Current market conditions
-        """
+        """Execute a trade based on the signal and market conditions."""
         try:
+            # Get current price
+            current_price = await self.binance_service.get_current_price(symbol)
+            if not current_price:
+                logger.error(f"Could not get current price for {symbol}")
+                return
+                
             # Calculate position size
-            position_size = await self._calculate_position_size(symbol, self.config['trading']['risk_per_trade'], signal['price'])
+            position_size = await self._calculate_position_size(symbol, self.config['trading']['risk_per_trade'], current_price)
             if not position_size:
+                logger.error(f"Invalid position size calculated for {symbol}")
                 return
                 
             # Get historical data for stop loss and take profit calculation
             df = await self.indicator_service.calculate_indicators(symbol)
             if df is None or df.empty:
-                logger.error(f"Failed to get historical data for {symbol}")
+                logger.error(f"Could not get historical data for {symbol}")
                 return
                 
             # Calculate stop loss and take profit
@@ -1841,25 +1808,52 @@ class EnhancedTradingStrategy:
             take_profit = await self._calculate_take_profit(df, signal['side'], symbol)
             
             if not stop_loss or not take_profit:
+                logger.error(f"Invalid stop loss or take profit calculated for {symbol}")
                 return
                 
+            # Check if we need to use reduceOnly
+            # If we already have a position in the opposite direction, we need to use reduceOnly
+            position = await self.binance_service.get_position(symbol)
+            use_reduce_only = False
+            if position and float(position.get('positionAmt', 0)) != 0:
+                position_side = position.get('positionSide', 'LONG')
+                is_long_position = position_side == 'LONG'
+                is_long_signal = signal['side'] == 'buy'
+                
+                # If we're trying to open a position in the opposite direction, use reduceOnly
+                if is_long_position != is_long_signal:
+                    use_reduce_only = True
+                    logger.info(f"Using reduceOnly for {symbol} - opening position in opposite direction")
+                
             # Place the order
-            order = await self.binance_service.place_order({
+            order_params = {
                 'symbol': symbol,
                 'side': signal['side'],
                 'type': 'market',
                 'amount': position_size,
-                'price': signal['price'],
+                'price': signal.get('price'),
                 'stop_loss': stop_loss,
                 'take_profit': take_profit
-            })
+            }
+            
+            # Add reduceOnly if needed
+            if use_reduce_only:
+                order_params['reduceOnly'] = True
+                
+            order = await self.binance_service.place_order(order_params)
             
             if order:
                 # Send notification
                 await self.telegram_service.send_order_notification(order)
                 
                 # Update position tracking
-                logger.info(f"Order placed for {symbol}: {order}")
+                self._last_trade_time[symbol] = time.time()
+                self._last_trade_price[symbol] = current_price
+                self._last_trade_side[symbol] = signal['side']
+                
+                logger.info(f"Trade executed for {symbol}: {order}")
+            else:
+                logger.error(f"Failed to execute trade for {symbol}")
                 
         except Exception as e:
             logger.error(f"Error executing trade: {str(e)}")
@@ -1900,7 +1894,7 @@ class EnhancedTradingStrategy:
                     symbol = position.get('symbol')
                     if symbol:
                         # Check if we should close the position
-                        if await self.should_close_position(position, position.get('entryPrice', 0)):
+                        if await self.should_close_position(position):
                             # Position will be closed by should_close_position method
                             # and appropriate notifications will be sent
                             await self.binance_service.close_position(symbol)
@@ -2038,4 +2032,93 @@ class EnhancedTradingStrategy:
             
         except Exception as e:
             logger.error(f"Error checking breakout conditions: {str(e)}")
+            return None
+
+    async def _get_market_trend(self, symbol: str) -> str:
+        """Get the current market trend for a symbol.
+        
+        Args:
+            symbol: Trading pair symbol
+            
+        Returns:
+            str: 'bullish', 'bearish', or None if unable to determine
+        """
+        try:
+            # Get historical data
+            df = await self.indicator_service.calculate_indicators(symbol)
+            if df is None or df.empty:
+                return None
+                
+            # Calculate trend using multiple indicators
+            rsi = df['RSI'].iloc[-1]
+            macd = df['MACD'].iloc[-1]
+            macd_signal = df['MACD_SIGNAL'].iloc[-1]
+            ema20 = df['EMA_FAST'].iloc[-1]
+            ema50 = df['EMA_SLOW'].iloc[-1]
+            close = df['close'].iloc[-1]
+            
+            # Count bullish signals
+            bullish_signals = 0
+            if rsi > 50:
+                bullish_signals += 1
+            if macd > macd_signal:
+                bullish_signals += 1
+            if close > ema20:
+                bullish_signals += 1
+            if ema20 > ema50:
+                bullish_signals += 1
+                
+            # Determine trend based on majority of signals
+            if bullish_signals >= 3:
+                return 'bullish'
+            elif bullish_signals <= 1:
+                return 'bearish'
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error getting market trend for {symbol}: {str(e)}")
+            return None
+            
+    async def _get_market_sentiment(self, symbol: str) -> float:
+        """Get the current market sentiment for a symbol.
+        
+        Args:
+            symbol: Trading pair symbol
+            
+        Returns:
+            float: Sentiment score between -1 (bearish) and 1 (bullish), or None if unable to determine
+        """
+        try:
+            # Get historical data
+            df = await self.indicator_service.calculate_indicators(symbol)
+            if df is None or df.empty:
+                return None
+                
+            # Calculate sentiment using multiple factors
+            rsi = df['RSI'].iloc[-1]
+            macd = df['MACD'].iloc[-1]
+            macd_signal = df['MACD_SIGNAL'].iloc[-1]
+            volume = df['volume'].iloc[-1]
+            avg_volume = df['volume'].rolling(20).mean().iloc[-1]
+            
+            # Normalize RSI to -1 to 1 range
+            rsi_sentiment = (rsi - 50) / 50
+            
+            # Calculate MACD sentiment
+            macd_sentiment = 1 if macd > macd_signal else -1
+            
+            # Calculate volume sentiment
+            volume_sentiment = 1 if volume > avg_volume else -1
+            
+            # Combine sentiments with weights
+            sentiment = (
+                0.4 * rsi_sentiment +
+                0.4 * macd_sentiment +
+                0.2 * volume_sentiment
+            )
+            
+            return sentiment
+            
+        except Exception as e:
+            logger.error(f"Error getting market sentiment for {symbol}: {str(e)}")
             return None
