@@ -296,7 +296,7 @@ class EnhancedTradingStrategy:
                 return None
                 
             # Calculate stop loss and take profit
-            stop_loss = await self._calculate_stop_loss(symbol, df, position_type, current_price, df['atr'].iloc[-1])
+            stop_loss = await self._calculate_stop_loss(symbol, df, position_type, current_price, df['ATR'].iloc[-1])
             take_profit = await self._calculate_take_profit(symbol, df, position_type, current_price, stop_loss)
             
             return {
@@ -475,11 +475,11 @@ class EnhancedTradingStrategy:
             # Round to appropriate precision
             stop_loss = round(stop_loss, self.config.PRICE_PRECISION)
             
-            self.logger.info(f"Calculated stop loss for {symbol} {position_type}: {stop_loss} (current price: {current_price})")
+            logger.info(f"Calculated stop loss for {symbol} {position_type}: {stop_loss} (current price: {current_price})")
             return stop_loss
             
         except Exception as e:
-            self.logger.error(f"Error calculating stop loss: {str(e)}")
+            logger.error(f"Error calculating stop loss: {str(e)}")
             return None
 
     async def _calculate_take_profit(self, symbol: str, df: pd.DataFrame, position_type: str, current_price: float, stop_loss: float) -> float:
@@ -501,11 +501,11 @@ class EnhancedTradingStrategy:
             # Round to appropriate precision
             take_profit = round(take_profit, self.config.PRICE_PRECISION)
             
-            self.logger.info(f"Calculated take profit for {symbol} {position_type}: {take_profit} (current price: {current_price})")
+            logger.info(f"Calculated take profit for {symbol} {position_type}: {take_profit} (current price: {current_price})")
             return take_profit
             
         except Exception as e:
-            self.logger.error(f"Error calculating take profit: {str(e)}")
+            logger.error(f"Error calculating take profit: {str(e)}")
             return None
 
     async def close(self):
@@ -1648,7 +1648,7 @@ class EnhancedTradingStrategy:
                 return
                 
             # Calculate stop loss and take profit
-            stop_loss = await self._calculate_stop_loss(symbol, df, signal['side'], current_price, df['atr'].iloc[-1])
+            stop_loss = await self._calculate_stop_loss(symbol, df, signal['side'], current_price, df['ATR'].iloc[-1])
             take_profit = await self._calculate_take_profit(symbol, df, signal['side'], current_price, stop_loss)
             
             if not stop_loss or not take_profit:
