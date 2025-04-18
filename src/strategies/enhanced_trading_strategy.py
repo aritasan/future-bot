@@ -1274,7 +1274,7 @@ class EnhancedTradingStrategy:
             dca_amount = base_amount * self.config['risk_management']['dca_multiplier']
             
             # Round to appropriate precision
-            precision = self.config['trading']['quantity_precision']
+            precision = self.config['trading']['price_precision']
             dca_amount = round(dca_amount, precision)
             
             # Execute DCA order
