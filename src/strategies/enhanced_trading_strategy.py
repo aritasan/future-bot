@@ -446,17 +446,17 @@ class EnhancedTradingStrategy:
         """Calculate stop loss based on market conditions and risk parameters."""
         try:
             # Get market conditions
-            market_data = self.market_data.get(symbol, {})
-            volatility = market_data.get('volatility', 0)
-            trend_strength = market_data.get('trend_strength', 0)
+            market_conditions = await self._get_market_conditions(symbol)
+            volatility = market_conditions.get('volatility', 'LOW')
+            trend = market_conditions.get('trend', 'DOWN')
             
             # Calculate base stop distance using ATR
             base_stop = atr * self.config.ATR_MULTIPLIER
             
             # Adjust stop distance based on market conditions
-            if volatility > 0.02:  # High volatility
+            if volatility == 'HIGH':  # High volatility
                 base_stop *= self.config.VOLATILITY_MULTIPLIER
-            if trend_strength > 0.7:  # Strong trend
+            if trend == 'UP' and position_type == 'LONG' or trend == 'DOWN' and position_type == 'SHORT':  # Strong trend
                 base_stop *= self.config.TREND_MULTIPLIER
                 
             # Calculate stop loss price
