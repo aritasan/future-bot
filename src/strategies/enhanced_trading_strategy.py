@@ -261,8 +261,8 @@ class EnhancedTradingStrategy:
             else:
                 # Determine position type based on signal score
                 if signal_score > 0.6 or signal_score < -0.6:
-                    logger.info(f"{symbol} signal_score: {signal_score}")
-                if signal_score > 0.6:  # Strong buy signal
+                    print(f"{symbol} signal_score: {signal_score}")
+                if signal_score > 0.5:  # Strong buy signal
                     position_type = 'buy'
                     should_trade = True
                 elif signal_score < -0.6:  # Strong sell signal
@@ -461,9 +461,9 @@ class EnhancedTradingStrategy:
                 
             # Calculate stop loss price
             if position_type == 'LONG':
-                stop_loss = current_price * (1 - base_stop)
+                stop_loss = current_price - base_stop
             else:
-                stop_loss = current_price * (1 + base_stop)
+                stop_loss = current_price + base_stop
                 
             # Ensure stop loss is not too close to current price
             min_stop_distance = current_price * self.config['risk_management']['base_stop_distance']
@@ -488,14 +488,14 @@ class EnhancedTradingStrategy:
             if not stop_loss:
                 return None
                 
-            # Calculate base take profit using risk:reward ratio
-            risk_distance = abs(current_price - stop_loss)
-            take_profit_distance = risk_distance * self.config['risk_management']['take_profit_multiplier']
-            
-            # Calculate take profit price
+            # Calculate risk distance based on position type
             if position_type == 'LONG':
+                risk_distance = current_price - stop_loss
+                take_profit_distance = risk_distance * self.config['risk_management']['take_profit_multiplier']
                 take_profit = current_price + take_profit_distance
             else:
+                risk_distance = stop_loss - current_price
+                take_profit_distance = risk_distance * self.config['risk_management']['take_profit_multiplier']
                 take_profit = current_price - take_profit_distance
                 
             # Round to appropriate precision
@@ -1278,13 +1278,14 @@ class EnhancedTradingStrategy:
             dca_amount = round(dca_amount, precision)
             
             # Execute DCA order
-            order = await self.binance_service.place_order(
-                symbol=symbol,
-                side='BUY' if is_long else 'SELL',
-                order_type='MARKET',
-                quantity=dca_amount,
-                position_side=position_side
-            )
+            order_params = {
+                'symbol': symbol,
+                'side': 'BUY' if is_long else 'SELL',
+                'type': 'MARKET',
+                'amount': dca_amount,
+                'position_side': position_side
+            }
+            order = await self.binance_service.place_order(order_params)
             
             if not order:
                 logger.error(f"Failed to execute DCA order for {symbol}")
@@ -1647,37 +1648,45 @@ class EnhancedTradingStrategy:
                 logger.error(f"Could not get historical data for {symbol}")
                 return
                 
+            # Convert signal side to position type
+            position_type = 'LONG' if signal['side'].upper() == 'BUY' else 'SHORT'
+                
             # Calculate stop loss and take profit
-            stop_loss = await self._calculate_stop_loss(symbol, df, signal['side'], current_price, df['ATR'].iloc[-1])
-            take_profit = await self._calculate_take_profit(symbol, df, signal['side'], current_price, stop_loss)
+            stop_loss = await self._calculate_stop_loss(symbol, df, position_type, current_price, df['ATR'].iloc[-1])
+            take_profit = await self._calculate_take_profit(symbol, df, position_type, current_price, stop_loss)
             
             if not stop_loss or not take_profit:
                 logger.error(f"Invalid stop loss or take profit calculated for {symbol}")
                 return
                 
             # Check if we need to use reduceOnly
-            # If we already have a position in the opposite direction, we need to use reduceOnly
             position = await self.binance_service.get_position(symbol)
             use_reduce_only = False
+            position_side = None
+            
             if position and float(position.get('positionAmt', 0)) != 0:
                 position_side = position.get('positionSide', 'LONG')
                 is_long_position = position_side == 'LONG'
-                is_long_signal = signal['side'] == 'buy'
+                is_long_signal = signal['side'].upper() == 'BUY'
                 
                 # If we're trying to open a position in the opposite direction, use reduceOnly
                 if is_long_position != is_long_signal:
                     use_reduce_only = True
                     logger.info(f"Using reduceOnly for {symbol} - opening position in opposite direction")
+            else:
+                # If no existing position, set position_side based on signal
+                position_side = 'LONG' if signal['side'].upper() == 'BUY' else 'SHORT'
                 
             # Place the order
             order_params = {
                 'symbol': symbol,
-                'side': signal['side'],
-                'type': 'market',
+                'side': signal['side'].upper(),  # Ensure side is uppercase
+                'type': 'MARKET',  # Ensure type is uppercase
                 'amount': position_size,
                 'price': signal.get('price'),
                 'stop_loss': stop_loss,
-                'take_profit': take_profit
+                'take_profit': take_profit,
+                'position_side': position_side
             }
             
             # Add reduceOnly if needed

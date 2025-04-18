@@ -63,8 +63,11 @@ class BinanceService:
                 'options': {
                     'defaultType': 'future',
                     'adjustForTimeDifference': True,
-                    'recvWindow': 60000,  # Increase recvWindow to 60 seconds
-                    'warnOnFetchOpenOrdersWithoutSymbol': False  # Acknowledge warning about fetching open orders without symbol
+                    'recvWindow': 60000,
+                    'defaultTimeInForce': 'GTC',
+                    'createMarketBuyOrderRequiresPrice': False,
+                    'warnOnFetchOpenOrdersWithoutSymbol': False,
+                    'defaultPositionMode': 'hedge'  # Enable hedge mode
                 }
             })
             
@@ -92,7 +95,7 @@ class BinanceService:
             price = order_params.get('price')
             stop_loss = order_params.get('stop_loss')
             take_profit = order_params.get('take_profit')
-            reduce_only = order_params.get('reduceOnly', False)
+            position_side = order_params.get('position_side')
             
             # Validate required parameters
             if not all([symbol, side, amount]):
@@ -107,25 +110,15 @@ class BinanceService:
                     return None
                 price = ticker.get('last')
                 
-            # Prepare order parameters
-            params = {
-                'symbol': symbol,
-                'side': side,
-                'type': order_type.upper(),
-                'quantity': amount
-            }
-            
-            # Add price for limit orders
-            if order_type == 'limit' and price:
-                params['price'] = price
-                params['timeInForce'] = 'GTC'
-                
-            # Add reduceOnly parameter only if it's True
-            if reduce_only:
-                params['reduceOnly'] = True
-                
             # Place the order
-            order = await self.exchange.create_order(**params)
+            order = await self.exchange.create_market_order(
+                symbol=symbol,
+                side=side,
+                amount=amount,
+                params={
+                    "positionSide": position_side
+                }
+            )
             
             if not order:
                 logger.error(f"Failed to place order for {symbol}")
@@ -135,21 +128,30 @@ class BinanceService:
             cache_key = f"{symbol}_{side}_{order_type}"
             self.order_cache[cache_key] = order
             
+            # Xác định position side và order side cho Hedge Mode
+            if side == "buy":
+                position_side = "LONG"
+                close_side = "SELL"
+            else:
+                position_side = "SHORT"
+                close_side = "BUY"
+                
             # Place stop loss order if provided
             if stop_loss:
                 try:
-                    # Prepare stop loss parameters
-                    sl_params = {
-                        'symbol': symbol,
-                        'side': 'SELL' if side == 'BUY' else 'BUY',
-                        'type': 'STOP_MARKET',
-                        'quantity': amount,
-                        'stopPrice': stop_loss,
-                        'reduceOnly': True  # Always use reduceOnly for stop loss
-                    }
-                    
                     # Place stop loss order
-                    sl_order = await self.exchange.create_order(**sl_params)
+                    sl_order = await self.exchange.create_order(
+                        symbol=symbol,
+                        type="STOP_MARKET",
+                        side=close_side,
+                        amount=amount,
+                        params={
+                            "stopPrice": stop_loss,
+                            "positionSide": position_side,
+                            "reduceOnly": True
+                        }
+                    )
+                    
                     if sl_order:
                         logger.info(f"Stop loss order placed: {sl_order}")
                     else:
@@ -160,18 +162,18 @@ class BinanceService:
             # Place take profit order if provided
             if take_profit:
                 try:
-                    # Prepare take profit parameters
-                    tp_params = {
-                        'symbol': symbol,
-                        'side': 'SELL' if side == 'BUY' else 'BUY',
-                        'type': 'TAKE_PROFIT_MARKET',
-                        'quantity': amount,
-                        'stopPrice': take_profit,
-                        'reduceOnly': True  # Always use reduceOnly for take profit
-                    }
-                    
                     # Place take profit order
-                    tp_order = await self.exchange.create_order(**tp_params)
+                    tp_order = await self.exchange.create_order(
+                        symbol=symbol,
+                        type="TAKE_PROFIT_MARKET",
+                        side=close_side,
+                        amount=amount,
+                        params={
+                            "stopPrice": take_profit,
+                            "positionSide": position_side,
+                            "reduceOnly": True
+                        }
+                    )
                     if tp_order:
                         logger.info(f"Take profit order placed: {tp_order}")
                     else:
@@ -184,6 +186,8 @@ class BinanceService:
             
         except Exception as e:
             logger.error(f"Error placing order: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return None
             
     async def get_account_balance(self) -> Optional[Dict]:
