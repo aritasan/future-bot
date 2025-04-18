@@ -53,10 +53,9 @@ class BinanceService:
         """
         try:
             if self._is_initialized:
-                logger.warning("Binance service already initialized")
                 return True
                 
-            # Initialize exchange
+            # Create exchange instance
             self.exchange = ccxt.binance({
                 'apiKey': self.config['api']['binance']['api_key'],
                 'secret': self.config['api']['binance']['api_secret'],
@@ -69,23 +68,18 @@ class BinanceService:
                 }
             })
             
-            # Test connection by loading markets
+            # Load markets
             await self.exchange.load_markets()
             
-            # Test API key by fetching balance
-            try:
-                await self.exchange.fetch_balance()
-            except Exception as e:
-                logger.error(f"Failed to fetch balance: {str(e)}")
-                return False
+            # Sync time
+            await self._sync_time()
             
             self._is_initialized = True
             logger.info("Binance service initialized successfully")
             return True
             
         except Exception as e:
-            logger.error(f"Failed to initialize Binance service: {str(e)}")
-            self._is_initialized = False
+            logger.error(f"Error initializing Binance service: {str(e)}")
             return False
             
     async def place_order(self, order_params: Dict) -> Optional[Dict]:
@@ -244,6 +238,31 @@ class BinanceService:
             return positions
         except Exception as e:
             logger.error(f"Error getting positions: {str(e)}")
+            return None
+            
+    async def get_position(self, symbol: str) -> Optional[Dict]:
+        """Get position for a specific symbol.
+        
+        Args:
+            symbol: Trading pair symbol
+            
+        Returns:
+            Optional[Dict]: Position details if successful, None otherwise
+        """
+        try:
+            # Get all positions
+            positions = await self.get_positions()
+            if not positions:
+                return None
+                
+            # Find position for the specified symbol
+            for position in positions:
+                if position.get('symbol') == symbol and float(position.get('contracts', 0)) != 0:
+                    return position
+                    
+            return None
+        except Exception as e:
+            logger.error(f"Error getting position for {symbol}: {str(e)}")
             return None
             
     async def get_ticker(self, symbol: str) -> Optional[Dict]:
@@ -590,8 +609,15 @@ class BinanceService:
             self._time_offset = server_time - local_time
             self._last_sync_time = current_time
             logger.info(f"Time synchronized. Offset: {self._time_offset}ms")
+            
+            # Set recvWindow to a higher value to avoid timestamp errors
+            if hasattr(self.exchange, 'options') and 'recvWindow' in self.exchange.options:
+                self.exchange.options['recvWindow'] = 60000  # 60 seconds
+                
         except Exception as e:
             logger.error(f"Error synchronizing time: {str(e)}")
+            # Force sync on next request
+            self._last_sync_time = 0
 
     async def _make_request(self, func, *args, **kwargs):
         """Make a request with retry mechanism and time synchronization."""
@@ -607,14 +633,20 @@ class BinanceService:
                 if 'params' in kwargs and 'timestamp' in kwargs['params']:
                     kwargs['params']['timestamp'] = int(time.time() * 1000) + self._time_offset
                 
+                # Add recvWindow to all requests to avoid timestamp errors
+                if 'params' in kwargs and 'recvWindow' not in kwargs['params']:
+                    kwargs['params']['recvWindow'] = 60000  # 60 seconds
+                
                 result = await func(*args, **kwargs)
                 return result
             except Exception as e:
                 last_error = e
                 retries += 1
                 
-                if 'timestamp' in str(e).lower():
+                if 'timestamp' in str(e).lower() or 'recvwindow' in str(e).lower():
                     # If timestamp error, sync time and retry immediately
+                    logger.warning(f"Timestamp error detected: {str(e)}. Syncing time and retrying...")
+                    self._last_sync_time = 0  # Force sync on next attempt
                     await self._sync_time()
                     continue
                 
@@ -728,4 +760,52 @@ class BinanceService:
             
         except Exception as e:
             logger.error(f"Error getting open orders: {str(e)}")
-            return None 
+            return None
+
+    async def close_position(self, symbol: str) -> bool:
+        """Close position for a specific symbol.
+        
+        Args:
+            symbol: Trading pair symbol
+            
+        Returns:
+            bool: True if position closed successfully, False otherwise
+        """
+        try:
+            # Get position details
+            position = await self.get_position(symbol)
+            if not position:
+                logger.warning(f"No position found for {symbol}")
+                return False
+                
+            # Determine side based on position
+            side = 'sell' if position.get('side') == 'long' else 'buy'
+            amount = abs(float(position.get('contracts', 0)))
+            
+            if amount <= 0:
+                logger.warning(f"Invalid position amount for {symbol}: {amount}")
+                return False
+                
+            # Create market order to close position
+            order_params = {
+                'symbol': symbol,
+                'side': side,
+                'type': 'market',
+                'amount': amount,
+                'reduceOnly': True
+            }
+            
+            # Place order
+            result = await self.place_order(order_params)
+            if result:
+                logger.info(f"Position closed for {symbol}: {result}")
+                # Clear position cache
+                self._cache.pop('positions', None)
+                return True
+            else:
+                logger.error(f"Failed to close position for {symbol}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error closing position for {symbol}: {str(e)}")
+            return False 

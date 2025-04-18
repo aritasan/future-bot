@@ -475,6 +475,15 @@ class TelegramService:
                     else:
                         logger.error("Max retries reached for polling")
                         raise
+                except Exception as e:
+                    logger.error(f"Error during polling: {str(e)}")
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        logger.warning(f"Error detected, retrying ({retry_count}/{max_retries})...")
+                        await asyncio.sleep(2)
+                    else:
+                        logger.error("Max retries reached for polling")
+                        raise
             
             # Start sending status updates
             self.status_task = asyncio.create_task(self._send_status_updates())

@@ -252,7 +252,8 @@ class EnhancedTradingStrategy:
                 should_trade = strategy_signal['should_trade']
             else:
                 # Determine position type based on signal score
-                logger.info(f"{symbol} signal_score: {signal_score}")
+                if signal_score > 0.6 or signal_score < -0.6:
+                    logger.info(f"{symbol} signal_score: {signal_score}")
                 if signal_score > 0.6:  # Strong buy signal
                     position_type = 'buy'
                     should_trade = True
@@ -272,9 +273,9 @@ class EnhancedTradingStrategy:
                 print(f"Volatility condition not met for {symbol}")
                 return None
                 
-            if not self.check_adx_condition(df):
-                print(f"ADX condition not met for {symbol}")
-                return None
+            # if not self.check_adx_condition(df):
+            #     print(f"ADX condition not met for {symbol}")
+            #     return None
                 
             if not self.check_bollinger_condition(df):
                 print(f"Bollinger condition not met for {symbol}")
@@ -669,64 +670,21 @@ class EnhancedTradingStrategy:
                 
             # Calculate price change
             price_change = ((current_price - entry_price) / entry_price) * 100
-            if position_amt < 0:  # Short position
-                price_change = -price_change
+            if position_amt > 0:  # Long position
+                price_change = -price_change  # Invert for long positions
                 
-            # Determine position side
-            position_side = 'LONG' if position_amt > 0 else 'SHORT'
+            # Check if price change exceeds stop loss
+            stop_loss = float(position['info'].get('stopLoss', '0'))
+            if stop_loss and current_price <= stop_loss:
+                logger.info(f"Stop loss triggered at {current_price}")
+                return True
                 
-            # Check stop loss
-            stop_loss = position.get('stopLossPrice')
-            if stop_loss:
-                if position_amt > 0 and current_price <= float(stop_loss):
-                    logger.info(f"Stop loss triggered for long position at {current_price}")
-                    # Send stop loss notification
-                    await self.telegram_service.send_stop_loss_notification(
-                        symbol=position['info']['symbol'],
-                        position_side=position_side,
-                        entry_price=entry_price,
-                        stop_price=float(stop_loss),
-                        pnl_percent=price_change
-                    )
-                    return True
-                elif position_amt < 0 and current_price >= float(stop_loss):
-                    logger.info(f"Stop loss triggered for short position at {current_price}")
-                    # Send stop loss notification
-                    await self.telegram_service.send_stop_loss_notification(
-                        symbol=position['info']['symbol'],
-                        position_side=position_side,
-                        entry_price=entry_price,
-                        stop_price=float(stop_loss),
-                        pnl_percent=price_change
-                    )
-                    return True
-                    
-            # Check take profit
-            take_profit = position.get('takeProfitPrice')
-            if take_profit:
-                if position_amt > 0 and current_price >= float(take_profit):
-                    logger.info(f"Take profit triggered for long position at {current_price}")
-                    # Send take profit notification
-                    await self.telegram_service.send_take_profit_notification(
-                        symbol=position['info']['symbol'],
-                        position_side=position_side,
-                        entry_price=entry_price,
-                        tp_price=float(take_profit),
-                        pnl_percent=price_change
-                    )
-                    return True
-                elif position_amt < 0 and current_price <= float(take_profit):
-                    logger.info(f"Take profit triggered for short position at {current_price}")
-                    # Send take profit notification
-                    await self.telegram_service.send_take_profit_notification(
-                        symbol=position['info']['symbol'],
-                        position_side=position_side,
-                        entry_price=entry_price,
-                        tp_price=float(take_profit),
-                        pnl_percent=price_change
-                    )
-                    return True
-                    
+            # Check if price change exceeds take profit
+            take_profit = float(position['info'].get('takeProfit', '0'))
+            if take_profit and current_price >= take_profit:
+                logger.info(f"Take profit triggered at {current_price}")
+                return True
+                
             # Check trend reversal
             df = await self.indicator_service.calculate_indicators(position['info']['symbol'])
             if df is not None:
@@ -737,15 +695,16 @@ class EnhancedTradingStrategy:
                 elif position_amt < 0 and current_trend == "UP":
                     logger.info(f"Trend reversal detected for short position")
                     return True
-                    
+                
             # Check sentiment
             sentiment = await self.analyze_market_sentiment(position['info']['symbol'])
-            if position_amt > 0 and sentiment["trend"] == "BEARISH":
-                logger.info(f"Bearish sentiment detected for long position")
-                return True
-            elif position_amt < 0 and sentiment["trend"] == "BULLISH":
-                logger.info(f"Bullish sentiment detected for short position")
-                return True
+            if sentiment:
+                if position_amt > 0 and sentiment["trend"] == "BEARISH":
+                    logger.info(f"Bearish sentiment detected for long position")
+                    return True
+                elif position_amt < 0 and sentiment["trend"] == "BULLISH":
+                    logger.info(f"Bullish sentiment detected for short position")
+                    return True
                 
             return False
             
