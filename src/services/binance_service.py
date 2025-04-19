@@ -55,10 +55,14 @@ class BinanceService:
             if self._is_initialized:
                 return True
                 
+            # Get API credentials based on mode
+            use_testnet = self.config['api']['binance']['use_testnet']
+            api_config = self.config['api']['binance']['testnet' if use_testnet else 'mainnet']
+            
             # Create exchange instance
             self.exchange = ccxt.binance({
-                'apiKey': self.config['api']['binance']['api_key'],
-                'secret': self.config['api']['binance']['api_secret'],
+                'apiKey': api_config['api_key'],
+                'secret': api_config['api_secret'],
                 'enableRateLimit': True,
                 'options': {
                     'defaultType': 'future',
@@ -68,6 +72,12 @@ class BinanceService:
                     'createMarketBuyOrderRequiresPrice': False,
                     'warnOnFetchOpenOrdersWithoutSymbol': False,
                     'defaultPositionMode': 'hedge'  # Enable hedge mode
+                },
+                'urls': {
+                    'api': {
+                        'public': 'https://testnet.binancefuture.com/fapi/v1' if use_testnet else 'https://fapi.binance.com/fapi/v1',
+                        'private': 'https://testnet.binancefuture.com/fapi/v1' if use_testnet else 'https://fapi.binance.com/fapi/v1',
+                    }
                 }
             })
             
@@ -78,7 +88,7 @@ class BinanceService:
             await self._sync_time()
             
             self._is_initialized = True
-            logger.info("Binance service initialized successfully")
+            logger.info(f"Binance service initialized successfully in {'testnet' if use_testnet else 'mainnet'} mode")
             return True
             
         except Exception as e:
@@ -95,6 +105,7 @@ class BinanceService:
             price = order_params.get('price')
             stop_loss = order_params.get('stop_loss')
             take_profit = order_params.get('take_profit')
+            reduce_only = order_params.get('reduce_only')
             position_side = order_params.get('position_side')
             
             # Validate required parameters
@@ -140,6 +151,7 @@ class BinanceService:
             if stop_loss:
                 try:
                     # Place stop loss order
+                    logger.info(f"Placing stop loss order for {symbol} at {stop_loss}")
                     sl_order = await self.exchange.create_order(
                         symbol=symbol,
                         type="STOP_MARKET",
@@ -147,8 +159,7 @@ class BinanceService:
                         amount=amount,
                         params={
                             "stopPrice": stop_loss,
-                            "positionSide": position_side,
-                            "reduceOnly": True
+                            "positionSide": position_side
                         }
                     )
                     
@@ -157,12 +168,13 @@ class BinanceService:
                     else:
                         logger.error(f"Failed to place stop loss order for {symbol}")
                 except Exception as e:
-                    logger.error(f"Error placing stop loss order: {str(e)}")
+                    logger.error(f"{symbol} Error placing stop loss order: {str(e)}")
                     
             # Place take profit order if provided
             if take_profit:
                 try:
                     # Place take profit order
+                    logger.info(f"Placing take profit order for {symbol} at {take_profit}")
                     tp_order = await self.exchange.create_order(
                         symbol=symbol,
                         type="TAKE_PROFIT_MARKET",
@@ -170,8 +182,7 @@ class BinanceService:
                         amount=amount,
                         params={
                             "stopPrice": take_profit,
-                            "positionSide": position_side,
-                            "reduceOnly": True
+                            "positionSide": position_side
                         }
                     )
                     if tp_order:
@@ -179,15 +190,13 @@ class BinanceService:
                     else:
                         logger.error(f"Failed to place take profit order for {symbol}")
                 except Exception as e:
-                    logger.error(f"Error placing take profit order: {str(e)}")
+                    logger.error(f"{symbol} Error placing take profit order: {str(e)}")
                     
             logger.info(f"Order placed: {order}")
             return order
             
         except Exception as e:
             logger.error(f"Error placing order: {str(e)}")
-            import traceback
-            traceback.print_exc()
             return None
             
     async def get_account_balance(self) -> Optional[Dict]:
@@ -624,18 +633,28 @@ class BinanceService:
             if current_time - self._last_sync_time < self._sync_interval:
                 return
 
-            server_time = await self.exchange.fetch_time()
-            local_time = int(time.time() * 1000)
-            self._time_offset = server_time - local_time
-            self._last_sync_time = current_time
-            
-            # Increase recvWindow to avoid timestamp errors
-            if hasattr(self.exchange, 'options'):
-                self.exchange.options['recvWindow'] = 60000  # 60 seconds
-                logger.info(f"Time synchronized. Offset: {self._time_offset}ms, recvWindow: 60s")
-            else:
-                logger.warning("Exchange options not available for recvWindow adjustment")
-                
+            # Get server time with retry mechanism
+            for attempt in range(3):
+                try:
+                    server_time = await self.exchange.fetch_time()
+                    local_time = int(time.time() * 1000)
+                    self._time_offset = server_time - local_time
+                    self._last_sync_time = current_time
+                    
+                    # Increase recvWindow to avoid timestamp errors
+                    if hasattr(self.exchange, 'options'):
+                        self.exchange.options['recvWindow'] = 60000  # 60 seconds
+                        logger.info(f"Time synchronized. Offset: {self._time_offset}ms, recvWindow: 60s")
+                    else:
+                        logger.warning("Exchange options not available for recvWindow adjustment")
+                    return
+                except Exception as e:
+                    if attempt < 2:
+                        logger.warning(f"Time sync attempt {attempt + 1} failed: {str(e)}")
+                        await asyncio.sleep(1)
+                    else:
+                        raise e
+                    
         except Exception as e:
             logger.error(f"Error synchronizing time: {str(e)}")
             # Force sync on next request

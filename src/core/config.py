@@ -108,73 +108,126 @@ TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "2.0"))  # Ri
 DCA_MULTIPLIER = float(os.getenv("DCA_MULTIPLIER", "0.5"))  # DCA size relative to initial position
 ATR_MULTIPLIER = float(os.getenv("ATR_MULTIPLIER", "1.5"))  # ATR multiplier for dynamic stops
 
+# New risk management parameters
+MIN_STOP_DISTANCE = float(os.getenv("MIN_STOP_DISTANCE", "0.005"))  # 0.5% minimum distance for stop loss
+MIN_TP_DISTANCE = float(os.getenv("MIN_TP_DISTANCE", "0.01"))     # 1% minimum distance for take profit
+TRAILING_STOP_ACTIVATION = float(os.getenv("TRAILING_STOP_ACTIVATION", "0.02"))
+TRAILING_STOP_DISTANCE = float(os.getenv("TRAILING_STOP_DISTANCE", "0.01"))
+DCA_ENABLED = bool(os.getenv("DCA_ENABLED", "true"))
+MAX_DCA_ATTEMPTS = int(os.getenv("MAX_DCA_ATTEMPTS", "3"))
+DCA_DISTANCE = float(os.getenv("DCA_DISTANCE", "0.02"))
+
 def load_config() -> Dict[str, Any]:
-    """Load configuration from environment variables."""
-    config = {
-        'api': {
-            'binance': {
-                'api_key': BINANCE_API_KEY,
-                'api_secret': BINANCE_API_SECRET
+    """Load configuration from environment variables and config file."""
+    try:
+        # Load environment variables
+        config = {
+            'api': {
+                'binance': {
+                    'use_testnet': os.getenv('USE_TESTNET', 'false').lower() == 'true',
+                    'mainnet': {
+                        'api_key': os.getenv('BINANCE_MAINNET_API_KEY'),
+                        'api_secret': os.getenv('BINANCE_MAINNET_API_SECRET')
+                    },
+                    'testnet': {
+                        'api_key': os.getenv('BINANCE_TESTNET_API_KEY'),
+                        'api_secret': os.getenv('BINANCE_TESTNET_API_SECRET')
+                    }
+                },
+                'telegram': {
+                    'bot_token': os.getenv('TELEGRAM_BOT_TOKEN'),
+                    'chat_id': os.getenv('TELEGRAM_CHAT_ID')
+                },
+                'twitter': {
+                    'api_key': TWITTER_API_KEY,
+                    'api_secret': TWITTER_API_SECRET,
+                    'access_token': TWITTER_ACCESS_TOKEN,
+                    'access_token_secret': TWITTER_ACCESS_TOKEN_SECRET
+                },
+                'news': {
+                    'api_key': NEWS_API_KEY
+                }
             },
-            'telegram': {
-                'bot_token': TELEGRAM_BOT_TOKEN,
-                'chat_id': TELEGRAM_CHAT_ID
+            'trading': {
+                'max_drawdown': MAX_DRAWDOWN,
+                'atr_period': ATR_PERIOD,
+                'max_orders_per_symbol': MAX_ORDERS_PER_SYMBOL,
+                'risk_per_trade': RISK_PER_TRADE,
+                'min_volume_ratio': MIN_VOLUME_RATIO,
+                'max_volatility_ratio': MAX_VOLATILITY_RATIO,
+                'min_adx': MIN_ADX,
+                'max_bb_width': MAX_BB_WIDTH,
+                'timeframe_weights': TIMEFRAME_WEIGHTS,
+                'signal_score_weights': SIGNAL_SCORE_WEIGHTS,
+                'drawdown_warning_levels': DRAWDOWN_WARNING_LEVELS,
+                'trading_pairs': TRADING_PAIRS,
+                'timeframes': TIMEFRAMES,
+                'default_timeframe': DEFAULT_TIMEFRAME,
+                'default_leverage': DEFAULT_LEVERAGE,
+                'max_leverage': MAX_LEVERAGE,
+                'min_order_size': MIN_ORDER_SIZE,
+                'max_correlation': MAX_CORRELATION,
+                'price_precision': PRICE_PRECISION,
+                'amount_precision': PRICE_PRECISION,
+                'max_order_size': 1000,
+                'leverage': DEFAULT_LEVERAGE,
+                'position_mode': "hedge",
+                'risk_management': {
+                    'max_position_size': float(os.getenv('MAX_POSITION_SIZE', '0.1')),
+                    'max_leverage': int(os.getenv('MAX_LEVERAGE', '20')),
+                    'risk_per_trade': float(os.getenv('RISK_PER_TRADE', '0.01')),
+                    'min_stop_distance': float(os.getenv('MIN_STOP_DISTANCE', '0.005')),
+                    'take_profit_multiplier': float(os.getenv('TAKE_PROFIT_MULTIPLIER', '2.0'))
+                },
+                'strategy': {
+                    'timeframes': ['5m', '15m', '1h', '4h'],
+                    'indicators': {
+                        'rsi': {'period': 14},
+                        'macd': {'fast': 12, 'slow': 26, 'signal': 9},
+                        'bollinger': {'period': 20, 'std': 2},
+                        'atr': {'period': 14}
+                    }
+                }
             },
-            'twitter': {
-                'api_key': TWITTER_API_KEY,
-                'api_secret': TWITTER_API_SECRET,
-                'access_token': TWITTER_ACCESS_TOKEN,
-                'access_token_secret': TWITTER_ACCESS_TOKEN_SECRET
+            'risk_management': {
+                'base_stop_distance': BASE_STOP_DISTANCE,
+                'volatility_multiplier': VOLATILITY_MULTIPLIER,
+                'trend_multiplier': TREND_MULTIPLIER,
+                'take_profit_multiplier': TAKE_PROFIT_MULTIPLIER,
+                'dca_multiplier': DCA_MULTIPLIER,
+                'atr_multiplier': ATR_MULTIPLIER,
+                'risk_per_trade': RISK_PER_TRADE,
+                'max_drawdown': MAX_DRAWDOWN,
+                'max_open_positions': 5,
+                'stop_loss_multiplier': 1.5,
+                'min_stop_distance': MIN_STOP_DISTANCE,
+                'min_tp_distance': MIN_TP_DISTANCE,
+                'trailing_stop_activation': TRAILING_STOP_ACTIVATION,
+                'trailing_stop_distance': TRAILING_STOP_DISTANCE,
+                'dca_enabled': DCA_ENABLED,
+                'max_dca_attempts': MAX_DCA_ATTEMPTS,
+                'dca_distance': DCA_DISTANCE,
+                'dca_multiplier': DCA_MULTIPLIER
             },
-            'news': {
-                'api_key': NEWS_API_KEY
+            'cache': {
+                'price_ttl': PRICE_CACHE_TTL,
+                'position_ttl': POSITION_CACHE_TTL
+            },
+            'circuit_breaker': {
+                'failure_threshold': FAILURE_THRESHOLD,
+                'reset_timeout': RESET_TIMEOUT
+            },
+            'health_monitor': {
+                'cpu_threshold': CPU_THRESHOLD,
+                'memory_threshold': MEMORY_THRESHOLD,
+                'disk_threshold': DISK_THRESHOLD
+            },
+            'model': {
+                'dir': MODEL_DIR,
+                'positions_file': POSITIONS_FILE
             }
-        },
-        'trading': {
-            'max_drawdown': MAX_DRAWDOWN,
-            'atr_period': ATR_PERIOD,
-            'max_orders_per_symbol': MAX_ORDERS_PER_SYMBOL,
-            'risk_per_trade': RISK_PER_TRADE,
-            'min_volume_ratio': MIN_VOLUME_RATIO,
-            'max_volatility_ratio': MAX_VOLATILITY_RATIO,
-            'min_adx': MIN_ADX,
-            'max_bb_width': MAX_BB_WIDTH,
-            'timeframe_weights': TIMEFRAME_WEIGHTS,
-            'signal_score_weights': SIGNAL_SCORE_WEIGHTS,
-            'drawdown_warning_levels': DRAWDOWN_WARNING_LEVELS,
-            'trading_pairs': TRADING_PAIRS,
-            'timeframes': TIMEFRAMES,
-            'default_timeframe': DEFAULT_TIMEFRAME,
-            'default_leverage': DEFAULT_LEVERAGE,
-            'max_leverage': MAX_LEVERAGE,
-            'min_order_size': MIN_ORDER_SIZE,
-            'max_correlation': MAX_CORRELATION,
-            'price_precision': PRICE_PRECISION
-        },
-        'risk_management': {
-            'base_stop_distance': BASE_STOP_DISTANCE,
-            'volatility_multiplier': VOLATILITY_MULTIPLIER,
-            'trend_multiplier': TREND_MULTIPLIER,
-            'take_profit_multiplier': TAKE_PROFIT_MULTIPLIER,
-            'dca_multiplier': DCA_MULTIPLIER,
-            'atr_multiplier': ATR_MULTIPLIER
-        },
-        'cache': {
-            'price_ttl': PRICE_CACHE_TTL,
-            'position_ttl': POSITION_CACHE_TTL
-        },
-        'circuit_breaker': {
-            'failure_threshold': FAILURE_THRESHOLD,
-            'reset_timeout': RESET_TIMEOUT
-        },
-        'health_monitor': {
-            'cpu_threshold': CPU_THRESHOLD,
-            'memory_threshold': MEMORY_THRESHOLD,
-            'disk_threshold': DISK_THRESHOLD
-        },
-        'model': {
-            'dir': MODEL_DIR,
-            'positions_file': POSITIONS_FILE
         }
-    }
-    return config 
+        return config
+    except Exception as e:
+        print(f"Error loading configuration: {e}")
+        return {} 

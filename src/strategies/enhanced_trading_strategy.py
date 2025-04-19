@@ -262,7 +262,7 @@ class EnhancedTradingStrategy:
                 # Determine position type based on signal score
                 if signal_score > 0.6 or signal_score < -0.6:
                     print(f"{symbol} signal_score: {signal_score}")
-                if signal_score > 0.5:  # Strong buy signal
+                if signal_score > 0.6:  # Strong buy signal
                     position_type = 'buy'
                     should_trade = True
                 elif signal_score < -0.6:  # Strong sell signal
@@ -462,15 +462,24 @@ class EnhancedTradingStrategy:
             # Calculate stop loss price
             if position_type == 'LONG':
                 stop_loss = current_price - base_stop
-            else:
-                stop_loss = current_price + base_stop
+                # Ensure stop loss is below current price with minimum distance
+                min_distance = current_price * self.config['risk_management']['min_stop_distance']
+                stop_loss = min(stop_loss, current_price - min_distance)
                 
-            # Ensure stop loss is not too close to current price
-            min_stop_distance = current_price * self.config['risk_management']['base_stop_distance']
-            if position_type == 'LONG':
-                stop_loss = max(stop_loss, current_price - min_stop_distance)
-            else:
-                stop_loss = min(stop_loss, current_price + min_stop_distance)
+                # Additional validation for minimum distance
+                min_allowed_distance = current_price * self.config['risk_management']['min_stop_distance']
+                if current_price - stop_loss < min_allowed_distance:
+                    stop_loss = current_price - min_allowed_distance
+            else:  # SHORT
+                stop_loss = current_price + base_stop
+                # Ensure stop loss is above current price with minimum distance
+                min_distance = current_price * self.config['risk_management']['min_stop_distance']
+                stop_loss = max(stop_loss, current_price + min_distance)
+                
+                # Additional validation for minimum distance
+                min_allowed_distance = current_price * self.config['risk_management']['min_stop_distance']
+                if stop_loss - current_price < min_allowed_distance:
+                    stop_loss = current_price + min_allowed_distance
                 
             # Round to appropriate precision
             stop_loss = round(stop_loss, self.config['trading']['price_precision'])
@@ -483,29 +492,43 @@ class EnhancedTradingStrategy:
             return None
 
     async def _calculate_take_profit(self, symbol: str, df: pd.DataFrame, position_type: str, current_price: float, stop_loss: float) -> float:
-        """Calculate take profit based on risk:reward ratio and market conditions."""
+        """Calculate take profit based on risk-reward ratio and market conditions."""
         try:
-            if not stop_loss:
-                return None
-                
-            # Calculate risk distance based on position type
+            # Get market conditions
+            market_conditions = await self._get_market_conditions(symbol)
+            volatility = market_conditions.get('volatility', 'LOW')
+            trend = market_conditions.get('trend', 'DOWN')
+            
+            # Calculate base take profit using risk-reward ratio
             if position_type == 'LONG':
                 risk_distance = current_price - stop_loss
-                take_profit_distance = risk_distance * self.config['risk_management']['take_profit_multiplier']
-                take_profit = current_price + take_profit_distance
-            else:
-                risk_distance = stop_loss - current_price
-                take_profit_distance = risk_distance * self.config['risk_management']['take_profit_multiplier']
-                take_profit = current_price - take_profit_distance
+                base_tp = current_price + (risk_distance * self.config['risk_management']['take_profit_multiplier'])
                 
+                # Ensure take profit is above current price with minimum distance
+                min_distance = current_price * self.config['risk_management']['min_tp_distance']
+                base_tp = max(base_tp, current_price + min_distance)
+            else:  # SHORT
+                risk_distance = stop_loss - current_price
+                base_tp = current_price - (risk_distance * self.config['risk_management']['take_profit_multiplier'])
+                
+                # Ensure take profit is below current price with minimum distance
+                min_distance = current_price * self.config['risk_management']['min_tp_distance']
+                base_tp = min(base_tp, current_price - min_distance)
+            
+            # Adjust take profit based on market conditions
+            if volatility == 'HIGH':  # High volatility
+                base_tp *= self.config['risk_management']['volatility_multiplier']
+            if trend == 'UP' and position_type == 'LONG' or trend == 'DOWN' and position_type == 'SHORT':  # Strong trend
+                base_tp *= self.config['risk_management']['trend_multiplier']
+            
             # Round to appropriate precision
-            take_profit = round(take_profit, self.config['trading']['price_precision'])
+            take_profit = round(base_tp, self.config['trading']['price_precision'])
             
             logger.info(f"Calculated take profit for {symbol} {position_type}: {take_profit} (current price: {current_price})")
             return take_profit
             
         except Exception as e:
-            logger.error(f"Error calculating take profit: {str(e)}")
+            logger.error(f"Error calculating take profit for {symbol}: {str(e)}")
             return None
 
     async def close(self):
