@@ -5,8 +5,7 @@ Service for interacting with Binance exchange.
 import logging
 from typing import Dict, Optional, List, Any
 import ccxt.async_support as ccxt
-from datetime import datetime, timedelta
-import pandas as pd
+from datetime import timedelta
 import time
 import asyncio
 

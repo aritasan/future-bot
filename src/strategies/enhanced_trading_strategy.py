@@ -209,26 +209,31 @@ class EnhancedTradingStrategy:
             # Get market data
             df = await indicator_service.calculate_indicators(symbol)
             if df is None or df.empty:
+                print(f"No data for {symbol}")
                 return None
                 
             # Multi-timeframe analysis
             timeframe_analysis = await self.analyze_multiple_timeframes(symbol)
             if not timeframe_analysis:
+                print(f"No timeframe analysis for {symbol}")
                 return None
                 
             # BTC volatility analysis
             btc_volatility = await self.analyze_btc_volatility()
             if not btc_volatility:
+                print(f"No BTC volatility analysis for {symbol}")
                 return None
                 
             # Altcoin correlation analysis
             altcoin_correlation = await self.analyze_altcoin_correlation(symbol, btc_volatility)
             if not altcoin_correlation:
+                print(f"No altcoin correlation analysis for {symbol}")
                 return None
                 
             # Market sentiment analysis
             sentiment = await self.analyze_market_sentiment(symbol)
             if not sentiment:
+                print(f"No sentiment analysis for {symbol}")
                 return None
                 
             # Calculate signal score
@@ -360,37 +365,6 @@ class EnhancedTradingStrategy:
         except Exception as e:
             logger.error(f"Error analyzing market sentiment: {str(e)}")
             return None
-            
-    def _check_trend_following(self, df: pd.DataFrame) -> bool:
-        """Check for trend following signals.
-        
-        Args:
-            df: DataFrame with indicators
-            
-        Returns:
-            bool: True if trend following signal is present
-        """
-        try:
-            # Check for EMA crossover
-            ema_crossover = (
-                df['EMA_FAST'].iloc[-2] < df['EMA_SLOW'].iloc[-2] and
-                df['EMA_FAST'].iloc[-1] > df['EMA_SLOW'].iloc[-1]
-            )
-            
-            # Check for MACD crossover
-            macd_crossover = (
-                df['MACD'].iloc[-2] < df['MACD_SIGNAL'].iloc[-2] and
-                df['MACD'].iloc[-1] > df['MACD_SIGNAL'].iloc[-1]
-            )
-            
-            # Check for ADX strength
-            adx_strong = df['ADX'].iloc[-1] > 25
-            
-            return (ema_crossover or macd_crossover) and adx_strong
-            
-        except Exception as e:
-            logger.error(f"Error checking trend following: {str(e)}")
-            return False
             
     def _check_mean_reversion(self, df: pd.DataFrame) -> bool:
         """Check for mean reversion signals.
@@ -811,7 +785,15 @@ class EnhancedTradingStrategy:
             return None
             
     async def analyze_altcoin_correlation(self, symbol: str, btc_volatility: Dict) -> Dict:
-        """Analyze altcoin correlation with caching."""
+        """Analyze altcoin correlation with BTC and adjust based on BTC volatility.
+        
+        Args:
+            symbol: Trading pair symbol
+            btc_volatility: BTC volatility information
+            
+        Returns:
+            Dict: Correlation analysis results
+        """
         try:
             current_time = time.time()
             cache_key = f"correlation_{symbol}"
@@ -824,12 +806,24 @@ class EnhancedTradingStrategy:
             # Calculate fresh analysis
             analysis = await self._calculate_altcoin_correlation(symbol)
             if analysis:
+                # Adjust correlation based on BTC volatility
+                if btc_volatility and 'volatility' in btc_volatility:
+                    btc_vol = btc_volatility['volatility']
+                    if btc_vol > 0.02:  # High BTC volatility
+                        analysis['correlation'] *= 1.2  # Increase correlation during high volatility
+                        analysis['volatility_adjusted'] = True
+                    elif btc_vol < 0.01:  # Low BTC volatility
+                        analysis['correlation'] *= 0.8  # Decrease correlation during low volatility
+                        analysis['volatility_adjusted'] = True
+                    else:
+                        analysis['volatility_adjusted'] = False
+                
                 self._cache[cache_key] = (analysis, current_time)
                 self._last_update[cache_key] = current_time
             return analysis
             
         except Exception as e:
-            logger.error(f"Error analyzing altcoin correlation: {str(e)}")
+            logger.error(f"Error analyzing altcoin correlation for {symbol}: {str(e)}")
             return None
             
     def clear_cache(self):
@@ -2000,90 +1994,177 @@ class EnhancedTradingStrategy:
             logger.error(f"Error monitoring trailing stops: {str(e)}")
             
     def _check_trend_following_signal(self, symbol: str, market_conditions: Dict) -> Optional[Dict]:
-        """Check if trend following conditions are met and generate a trading signal.
+        """Check for trend following signals with enhanced analysis.
         
         Args:
             symbol: Trading pair symbol
-            market_conditions: Current market conditions
+            market_conditions: Dictionary containing market conditions
             
         Returns:
-            Optional[Dict]: Trading signal if conditions are met, None otherwise
+            Optional[Dict]: Signal dictionary with the following structure:
+            {
+                'type': 'trend_following',
+                'side': 'buy' or 'sell',
+                'signal_score': float,
+                'should_trade': bool,
+                'strength': float,
+                'confidence': float,
+                'entry_price': float,
+                'stop_loss': float,
+                'take_profit': float,
+                'conditions': Dict
+            }
         """
         try:
-            # Get trend direction
-            trend = market_conditions.get('trend', '')
-            if not trend:
-                return None
-                
-            # Get trend strength
-            trend_strength = market_conditions.get('trend_strength', 0)
-            if trend_strength < 0.6:  # Require strong trend
-                return None
-                
-            # Get volatility
-            volatility = market_conditions.get('volatility', 0)
-            if volatility > 0.8:  # Avoid extremely volatile markets
-                return None
-                
-            # Create trading signal
+            # Get indicators from market conditions
+            df = market_conditions['df']
+            current_price = df['close'].iloc[-1]
+            ema_fast = df['EMA_FAST'].iloc[-1]
+            ema_slow = df['EMA_SLOW'].iloc[-1]
+            macd = df['MACD'].iloc[-1]
+            macd_signal = df['MACD_SIGNAL'].iloc[-1]
+            rsi = df['RSI'].iloc[-1]
+            volume = df['volume'].iloc[-1]
+            adx = df['ADX'].iloc[-1]
+            atr = df['ATR'].iloc[-1]
+            
+            # Log current market state
+            logger.info(f"Analyzing trend following for {symbol}:")
+            logger.info(f"Price: {current_price}, EMA Fast: {ema_fast}, EMA Slow: {ema_slow}")
+            logger.info(f"MACD: {macd}, Signal: {macd_signal}, RSI: {rsi}")
+            logger.info(f"Volume: {volume}, ADX: {adx}, ATR: {atr}")
+            
+            # Initialize signal dictionary
             signal = {
-                'symbol': symbol,
-                'strategy': 'trend_following',
-                'side': 'buy' if trend == 'uptrend' else 'sell',
-                'signal_score': 0.8 if trend == 'uptrend' else -0.8,
-                'should_trade': True
+                'type': 'trend_following',
+                'side': None,
+                'signal_score': 0.0,
+                'should_trade': False,
+                'strength': 0.0,
+                'confidence': 0.0,
+                'entry_price': current_price,
+                'stop_loss': None,
+                'take_profit': None,
+                'conditions': {}
             }
             
-            return signal
+            # Check for bullish trend
+            if (current_price > ema_fast > ema_slow and  # Price above EMAs
+                macd > macd_signal and  # MACD bullish
+                rsi > 50 and rsi < 70 and  # RSI in bullish range
+                volume > df['volume'].rolling(20).mean().iloc[-1] * 1.2 and  # Volume confirmation
+                adx > 25):  # Strong trend
+                
+                signal['side'] = 'buy'
+                signal['should_trade'] = True
+                signal['strength'] = min(1.0, (adx - 25) / 25)  # Normalize ADX strength
+                signal['confidence'] = 0.7
+                signal['signal_score'] = 0.8
+                
+                # Calculate stop loss and take profit
+                signal['stop_loss'] = current_price - (atr * 2)
+                signal['take_profit'] = current_price + (atr * 4)
+                
+                signal['conditions'] = {
+                    'price_above_ema': True,
+                    'macd_bullish': True,
+                    'rsi_bullish': True,
+                    'volume_confirmation': True,
+                    'trend_strength': adx
+                }
+                
+            # Check for bearish trend
+            elif (current_price < ema_fast < ema_slow and  # Price below EMAs
+                  macd < macd_signal and  # MACD bearish
+                  rsi < 50 and rsi > 30 and  # RSI in bearish range
+                  volume > df['volume'].rolling(20).mean().iloc[-1] * 1.2 and  # Volume confirmation
+                  adx > 25):  # Strong trend
+                
+                signal['side'] = 'sell'
+                signal['should_trade'] = True
+                signal['strength'] = min(1.0, (adx - 25) / 25)  # Normalize ADX strength
+                signal['confidence'] = 0.7
+                signal['signal_score'] = -0.8
+                
+                # Calculate stop loss and take profit
+                signal['stop_loss'] = current_price + (atr * 2)
+                signal['take_profit'] = current_price - (atr * 4)
+                
+                signal['conditions'] = {
+                    'price_below_ema': True,
+                    'macd_bearish': True,
+                    'rsi_bearish': True,
+                    'volume_confirmation': True,
+                    'trend_strength': adx
+                }
+            
+            return signal if signal['should_trade'] else None
             
         except Exception as e:
-            logger.error(f"Error checking trend following conditions: {str(e)}")
+            logger.error(f"Error checking trend following signals for {symbol}: {str(e)}")
             return None
-            
+
     def _check_breakout_signal(self, symbol: str, market_conditions: Dict) -> Optional[Dict]:
-        """Check if breakout conditions are met and generate a trading signal.
-        
-        Args:
-            symbol: Trading pair symbol
-            market_conditions: Current market conditions
-            
-        Returns:
-            Optional[Dict]: Trading signal if conditions are met, None otherwise
-        """
+        """Check for breakout signals with enhanced analysis."""
         try:
-            # Get volatility
-            volatility = market_conditions.get('volatility', 0)
-            if volatility < 0.4:  # Require some volatility for breakouts
-                return None
-                
-            # Get volume
-            volume = market_conditions.get('volume', 0)
-            if volume < 0.6:  # Require decent volume for breakouts
-                return None
-                
-            # Get price action
-            price_action = market_conditions.get('price_action', {})
-            if not price_action:
-                return None
-                
-            # Check for breakout
-            breakout_direction = price_action.get('breakout_direction', '')
-            if not breakout_direction:
-                return None
-                
-            # Create trading signal
+            # Get indicators from market conditions
+            df = market_conditions['df']
+            current_price = df['close'].iloc[-1]
+            bb_upper = df['BB_upper'].iloc[-1]
+            bb_lower = df['BB_lower'].iloc[-1]
+            bb_middle = df['BB_middle'].iloc[-1]
+            volume = df['volume'].iloc[-1]
+            volume_ma = df['volume'].rolling(window=20).mean().iloc[-1]
+            rsi = df['RSI'].iloc[-1]
+            atr = df['ATR'].iloc[-1]
+            
+            # Log current market state
+            logger.info(f"Breakout analysis for {symbol}: Price={current_price}, BB_upper={bb_upper}, BB_lower={bb_lower}, Volume={volume}, RSI={rsi}")
+            
+            # Initialize signal
             signal = {
-                'symbol': symbol,
-                'strategy': 'breakout',
-                'side': 'buy' if breakout_direction == 'up' else 'sell',
-                'signal_score': 0.7 if breakout_direction == 'up' else -0.7,
-                'should_trade': True
+                'type': 'breakout',
+                'side': None,
+                'signal_score': 0,
+                'should_trade': False,
+                'strength': 0.5,
+                'confidence': 0.5,
+                'entry_price': current_price,
+                'stop_loss': None,
+                'take_profit': None,
+                'conditions': {}
             }
             
-            return signal
+            # Check for bullish breakout
+            if current_price > bb_upper and volume > volume_ma * 1.5 and rsi < 70:
+                signal['side'] = 'buy'
+                signal['signal_score'] = 0.8
+                signal['should_trade'] = True
+                signal['stop_loss'] = bb_middle * 0.99  # 1% buffer
+                signal['take_profit'] = current_price + (atr * 2)
+                signal['conditions'] = {
+                    'price_above_bb': True,
+                    'volume_confirmation': True,
+                    'rsi_ok': True
+                }
+                
+            # Check for bearish breakout
+            elif current_price < bb_lower and volume > volume_ma * 1.5 and rsi > 30:
+                signal['side'] = 'sell'
+                signal['signal_score'] = -0.8
+                signal['should_trade'] = True
+                signal['stop_loss'] = bb_middle * 1.01  # 1% buffer
+                signal['take_profit'] = current_price - (atr * 2)
+                signal['conditions'] = {
+                    'price_below_bb': True,
+                    'volume_confirmation': True,
+                    'rsi_ok': True
+                }
+            
+            return signal if signal['should_trade'] else None
             
         except Exception as e:
-            logger.error(f"Error checking breakout conditions: {str(e)}")
+            logger.error(f"Error checking breakout signals for {symbol}: {str(e)}")
             return None
 
     async def _get_market_trend(self, symbol: str) -> str:
@@ -2225,3 +2306,74 @@ class EnhancedTradingStrategy:
         except Exception as e:
             logger.error(f"Error identifying support/resistance levels: {str(e)}")
             return None
+
+    def _analyze_trend_structure(self, df: pd.DataFrame) -> Dict:
+        """Analyze trend structure for better trend following signals.
+        
+        Args:
+            df: DataFrame with price data
+            
+        Returns:
+            Dict: Trend structure analysis results
+        """
+        try:
+            # Get recent price action
+            recent_prices = df['close'].iloc[-20:]  # Look at last 20 candles
+            
+            # Find swing highs and lows
+            swing_highs = []
+            swing_lows = []
+            
+            for i in range(1, len(recent_prices)-1):
+                if recent_prices.iloc[i] > recent_prices.iloc[i-1] and recent_prices.iloc[i] > recent_prices.iloc[i+1]:
+                    swing_highs.append(recent_prices.iloc[i])
+                elif recent_prices.iloc[i] < recent_prices.iloc[i-1] and recent_prices.iloc[i] < recent_prices.iloc[i+1]:
+                    swing_lows.append(recent_prices.iloc[i])
+            
+            # Analyze trend structure
+            if len(swing_highs) >= 2 and len(swing_lows) >= 2:
+                # Check for higher highs and higher lows (uptrend)
+                is_uptrend = (
+                    swing_highs[-1] > swing_highs[-2] and
+                    swing_lows[-1] > swing_lows[-2]
+                )
+                
+                # Check for lower highs and lower lows (downtrend)
+                is_downtrend = (
+                    swing_highs[-1] < swing_highs[-2] and
+                    swing_lows[-1] < swing_lows[-2]
+                )
+                
+                # Calculate trend strength
+                if is_uptrend:
+                    trend_strength = (swing_highs[-1] - swing_highs[-2]) / swing_highs[-2]
+                elif is_downtrend:
+                    trend_strength = (swing_lows[-2] - swing_lows[-1]) / swing_lows[-2]
+                else:
+                    trend_strength = 0
+                
+                return {
+                    'trend': 'up' if is_uptrend else 'down' if is_downtrend else 'sideways',
+                    'strength': trend_strength,
+                    'swing_highs': swing_highs,
+                    'swing_lows': swing_lows,
+                    'is_valid': is_uptrend or is_downtrend
+                }
+            
+            return {
+                'trend': 'sideways',
+                'strength': 0,
+                'swing_highs': swing_highs,
+                'swing_lows': swing_lows,
+                'is_valid': False
+            }
+            
+        except Exception as e:
+            logger.error(f"Error analyzing trend structure: {str(e)}")
+            return {
+                'trend': 'sideways',
+                'strength': 0,
+                'swing_highs': [],
+                'swing_lows': [],
+                'is_valid': False
+            }
