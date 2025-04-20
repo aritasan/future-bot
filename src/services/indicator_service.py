@@ -41,6 +41,12 @@ class IndicatorService:
             "4h": 3600,  # 1 hour for 4h data
         }
         self._last_update = {}
+        self._time_offset = 0  # Time difference between local and server time
+        self._last_sync_time = 0  # Last time synchronization timestamp
+        self._sync_interval = 300  # Sync every 5 minutes
+        self._max_retries = 3  # Maximum number of retries
+        self._retry_delay = 1  # Initial retry delay in seconds
+        self._max_retry_delay = 32  # Maximum retry delay in seconds
         
     async def initialize(self) -> bool:
         """Initialize the indicator service.
@@ -53,14 +59,23 @@ class IndicatorService:
                 logger.warning("Indicator service already initialized")
                 return True
                 
+            # Get API credentials based on mode
+            use_testnet = self.config['api']['binance']['use_testnet']
+            api_config = self.config['api']['binance']['testnet' if use_testnet else 'mainnet']
+            
             # Configure exchange options for Windows
             exchange_options = {
-                'apiKey': self.config['api']['binance']['api_key'],
-                'secret': self.config['api']['binance']['api_secret'],
+                'apiKey': api_config['api_key'],
+                'secret': api_config['api_secret'],
                 'enableRateLimit': True,
                 'options': {
                     'defaultType': 'future',
-                    'adjustForTimeDifference': True
+                    'adjustForTimeDifference': True,
+                    'recvWindow': 60000,  # 60 seconds
+                    'defaultTimeInForce': 'GTC',
+                    'createMarketBuyOrderRequiresPrice': False,
+                    'warnOnFetchOpenOrdersWithoutSymbol': False,
+                    'defaultPositionMode': 'hedge'  # Enable hedge mode
                 }
             }
             
@@ -74,6 +89,9 @@ class IndicatorService:
             # Initialize exchange
             self.exchange = ccxt.binance(exchange_options)
             
+            # Sync time with Binance server
+            await self._sync_time()
+            
             self._is_initialized = True
             logger.info("Indicator service initialized successfully")
             return True
@@ -82,6 +100,77 @@ class IndicatorService:
             logger.error(f"Failed to initialize indicator service: {str(e)}")
             return False
             
+    async def _sync_time(self) -> None:
+        """Synchronize local time with Binance server time."""
+        try:
+            current_time = time.time()
+            if current_time - self._last_sync_time < self._sync_interval:
+                return
+
+            # Get server time with retry mechanism
+            for attempt in range(3):
+                try:
+                    server_time = await self.exchange.fetch_time()
+                    local_time = int(time.time() * 1000)
+                    self._time_offset = server_time - local_time
+                    self._last_sync_time = current_time
+                    
+                    # Increase recvWindow to avoid timestamp errors
+                    if hasattr(self.exchange, 'options'):
+                        self.exchange.options['recvWindow'] = 60000  # 60 seconds
+                        logger.info(f"Time synchronized. Offset: {self._time_offset}ms, recvWindow: 60s")
+                    else:
+                        logger.warning("Exchange options not available for recvWindow adjustment")
+                    return
+                except Exception as e:
+                    if attempt < 2:
+                        logger.warning(f"Time sync attempt {attempt + 1} failed: {str(e)}")
+                        await asyncio.sleep(1)
+                    else:
+                        raise e
+                    
+        except Exception as e:
+            logger.error(f"Error synchronizing time: {str(e)}")
+            # Force sync on next request
+            self._last_sync_time = 0
+
+    async def _make_request(self, func, *args, **kwargs):
+        """Make a request with retry mechanism and time synchronization."""
+        retries = 0
+        last_error = None
+
+        while retries < self._max_retries:
+            try:
+                # Sync time before making request
+                await self._sync_time()
+                
+                # Add timestamp to request if needed
+                if 'params' in kwargs:
+                    if 'timestamp' not in kwargs['params']:
+                        kwargs['params']['timestamp'] = int(time.time() * 1000) + self._time_offset
+                    if 'recvWindow' not in kwargs['params']:
+                        kwargs['params']['recvWindow'] = 60000  # 60 seconds
+                
+                result = await func(*args, **kwargs)
+                return result
+            except Exception as e:
+                last_error = e
+                retries += 1
+                
+                if '-1021' in str(e):  # Timestamp error
+                    logger.warning(f"Timestamp error detected: {str(e)}. Forcing time sync...")
+                    self._last_sync_time = 0  # Force sync on next attempt
+                    await self._sync_time()
+                    continue
+                
+                if retries < self._max_retries:
+                    delay = min(self._retry_delay * (2 ** (retries - 1)), self._max_retry_delay)
+                    logger.warning(f"Request failed, retrying in {delay}s (attempt {retries}/{self._max_retries})")
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error(f"Request failed after {retries} attempts: {str(last_error)}")
+                    raise last_error
+
     async def get_historical_data(self, symbol: str, timeframe: str = "5m", limit: int = 100) -> Optional[pd.DataFrame]:
         """Get historical price data with caching and retry mechanism.
         
@@ -115,7 +204,12 @@ class IndicatorService:
             for attempt in range(self.max_retries):
                 try:
                     # Use the same event loop for all operations
-                    ohlcv = await self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+                    ohlcv = await self._make_request(
+                        self.exchange.fetch_ohlcv,
+                        symbol,
+                        timeframe=timeframe,
+                        limit=limit
+                    )
                     
                     # Convert to DataFrame
                     df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
