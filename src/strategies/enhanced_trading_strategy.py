@@ -839,78 +839,52 @@ class EnhancedTradingStrategy:
         
     def calculate_trailing_stop(self, current_price: float, atr: float, position_type: str, 
                               market_conditions: Dict = None) -> float:
-        """Calculate trailing stop level with advanced market analysis.
-        
-        Args:
-            current_price: Current market price
-            atr: Average True Range
-            position_type: Position type (BUY/SELL)
-            market_conditions: Dictionary containing market analysis data
-            
-        Returns:
-            float: Trailing stop level
-        """
+        """Calculate trailing stop price based on current market conditions."""
         try:
-            # Get configuration parameters
-            base_atr_multiplier = self.config['risk_management']['atr_multiplier']
-            min_stop_distance = self.config['risk_management']['min_stop_distance']
-            
-            # Initialize dynamic multipliers
-            volatility_multiplier = 1.0
-            trend_multiplier = 1.0
-            volume_multiplier = 1.0
-            
-            if market_conditions:
-                # Adjust for volatility
+            # Get trailing stop configuration
+            trailing_config = self.config['risk_management']['trailing_stop']
+            dynamic_config = trailing_config['dynamic']
+            time_based = trailing_config['time_based']
+
+            # Calculate base trailing stop distance
+            base_distance = atr * dynamic_config['atr_multiplier']
+
+            # Adjust distance based on market conditions
+            if market_conditions and dynamic_config['volatility_adjustment']:
                 volatility = market_conditions.get('volatility', 0)
-                if volatility > 0.02:  # High volatility
-                    volatility_multiplier = 1.2
-                elif volatility < 0.01:  # Low volatility
-                    volatility_multiplier = 0.8
-                    
-                # Adjust for trend strength
+                base_distance *= (1 + volatility)
+
+            if market_conditions and dynamic_config['trend_adjustment']:
                 trend_strength = market_conditions.get('trend_strength', 0)
-                if trend_strength > 0.7:  # Strong trend
-                    trend_multiplier = 1.1
-                elif trend_strength < 0.3:  # Weak trend
-                    trend_multiplier = 0.9
-                    
-                # Adjust for volume
-                volume_ratio = market_conditions.get('volume_ratio', 1.0)
-                if volume_ratio > 1.5:  # High volume
-                    volume_multiplier = 1.1
-                elif volume_ratio < 0.5:  # Low volume
-                    volume_multiplier = 0.9
-                    
-            # Calculate final ATR multiplier
-            final_atr_multiplier = base_atr_multiplier * volatility_multiplier * trend_multiplier * volume_multiplier
-            
-            # Calculate base trailing stop
-            base_stop = atr * final_atr_multiplier
-            
-            # Ensure minimum stop distance
-            min_allowed_distance = current_price * min_stop_distance
-            base_stop = max(base_stop, min_allowed_distance)
-            
-            # Adjust for position type
-            if position_type == "BUY":
-                trailing_stop = current_price - base_stop
+                base_distance *= (1 + trend_strength)
+
+            # Adjust distance based on time
+            if time_based['enabled'] and market_conditions:
+                position_age = market_conditions.get('position_age', 0)
+                for i, window in enumerate(time_based['time_windows']):
+                    if position_age <= window:
+                        base_distance *= time_based['distance_multipliers'][i]
+                        break
+
+            # Calculate trailing stop price
+            if position_type == 'LONG':
+                trailing_stop = current_price - base_distance
             else:
-                trailing_stop = current_price + base_stop
-                
-            # Round to appropriate precision
-            precision = self.config['trading']['price_precision']
-            trailing_stop = round(trailing_stop, precision)
-            
-            logger.debug(f"Trailing stop calculation: price={current_price}, atr={atr}, "
-                        f"base_multiplier={base_atr_multiplier}, final_multiplier={final_atr_multiplier}, "
-                        f"stop={trailing_stop}")
-                        
+                trailing_stop = current_price + base_distance
+
+            # Ensure minimum distance
+            min_distance = self.config['risk_management']['min_stop_distance']
+            if position_type == 'LONG':
+                trailing_stop = max(trailing_stop, current_price * (1 - min_distance))
+            else:
+                trailing_stop = min(trailing_stop, current_price * (1 + min_distance))
+
+            logger.info(f"Calculated trailing stop for {position_type}: {trailing_stop}")
             return trailing_stop
-            
+
         except Exception as e:
             logger.error(f"Error calculating trailing stop: {str(e)}")
-            return current_price
+            return None
 
     async def calculate_signal_score(self, df: pd.DataFrame, timeframe_analysis: Dict, 
                                    btc_volatility: Dict, altcoin_correlation: Dict,
@@ -1289,95 +1263,217 @@ class EnhancedTradingStrategy:
         }
 
     async def _handle_dca(self, symbol: str, position: Dict) -> Optional[Dict]:
-        """Handle Dollar Cost Averaging (DCA) for a position.
+        """Handle DCA (Dollar Cost Averaging) for a position with enhanced features.
         
         Args:
             symbol: Trading pair symbol
-            position: Position details
+            position: Current position details
             
         Returns:
-            Dict with DCA execution details or None if no DCA needed
+            Optional[Dict]: DCA execution details if successful, None otherwise
         """
         try:
-            # Get position details from the position structure
-            if 'info' not in position:
-                logger.error(f"Invalid position structure for {symbol}")
+            # Get current price and position details
+            current_price = await self.binance_service.get_current_price(symbol)
+            if not current_price:
+                logger.error(f"Failed to get current price for {symbol}")
                 return None
                 
-            position_amt = float(position['info'].get('positionAmt', '0'))
-            if position_amt == 0:
-                logger.info(f"No position found for {symbol}")
-                return None
-                
-            mark_price = float(position['info'].get('markPrice', '0'))
-            entry_price = float(position['info'].get('entryPrice', '0'))
-            if not mark_price or not entry_price:
-                logger.error(f"Invalid price data for {symbol}")
-                return None
-                
-            # Check if the position is in loss (for DCA, we want to DCA when in loss)
-            unrealized_pnl = float(position.get('unrealizedPnl', 0))
-            if unrealized_pnl > 0:
-                logger.info(f"Skipping DCA for {symbol} - position is profitable")
-                return None
-                
-            # Determine position side
-            position_side = position['info'].get('positionSide', 'LONG')
-            is_long = position_side == 'LONG'
+            entry_price = float(position.get('entryPrice', 0))
+            position_size = float(position.get('positionAmt', 0))
+            position_type = position.get('positionSide', 'LONG')
             
+            if not entry_price or not position_size:
+                logger.error(f"Invalid position details for {symbol}")
+                return None
+                
             # Calculate price drop percentage
-            price_drop = ((entry_price - mark_price) / entry_price) * 100 if is_long else \
-                        ((mark_price - entry_price) / entry_price) * 100
-                        
+            price_drop = abs(current_price - entry_price) / entry_price
+            
             # Get market conditions
             market_conditions = await self._get_market_conditions(symbol)
             if not market_conditions:
-                logger.error(f"Could not get market conditions for {symbol}")
+                logger.error(f"Failed to get market conditions for {symbol}")
                 return None
                 
-            # Check if DCA is favorable
+            # Check if DCA is favorable based on multiple conditions
             if not self._is_dca_favorable(price_drop, market_conditions):
-                logger.info(f"DCA not favorable for {symbol} - Price drop: {price_drop:.2f}%")
+                logger.info(f"DCA not favorable for {symbol} at {current_price}")
                 return None
                 
-            # Calculate DCA amount based on position size and risk
-            base_amount = abs(position_amt)
-            dca_amount = base_amount * self.config['risk_management']['dca_multiplier']
-            
-            # Round to appropriate precision
-            precision = self.config['trading']['price_precision']
-            dca_amount = round(dca_amount, precision)
-            
-            # Execute DCA order
+            # Calculate DCA size based on risk management
+            dca_size = await self._calculate_dca_size(position_size, price_drop)
+            if not dca_size:
+                logger.error(f"Failed to calculate DCA size for {symbol}")
+                return None
+                
+            # Place DCA order
             order_params = {
                 'symbol': symbol,
-                'side': 'BUY' if is_long else 'SELL',
+                'side': 'BUY' if position_type == 'LONG' else 'SELL',
                 'type': 'MARKET',
-                'amount': dca_amount,
-                'position_side': position_side
+                'amount': dca_size,
+                'reduceOnly': False
             }
-            order = await self.binance_service.place_order(order_params)
             
+            order = await self.binance_service.place_order(order_params)
             if not order:
-                logger.error(f"Failed to execute DCA order for {symbol}")
+                logger.error(f"Failed to place DCA order for {symbol}")
                 return None
                 
-            # Calculate new average entry price
-            total_position = base_amount + dca_amount
-            new_entry = ((entry_price * base_amount) + (mark_price * dca_amount)) / total_position
+            # Update stop loss and take profit
+            new_stop_loss = await self._calculate_stop_loss(
+                symbol=symbol,
+                df=market_conditions['df'],
+                position_type=position_type,
+                current_price=current_price,
+                atr=market_conditions['atr']
+            )
             
-            logger.info(f"Executed DCA for {symbol} - Amount: {dca_amount}, New Entry: {new_entry:.8f}")
+            new_take_profit = await self._calculate_take_profit(
+                symbol=symbol,
+                df=market_conditions['df'],
+                position_type=position_type,
+                current_price=current_price,
+                stop_loss=new_stop_loss
+            )
             
-            return {
+            # Update orders
+            await self._update_stop_loss(symbol, new_stop_loss, position_type, position_size + dca_size)
+            await self._update_take_profit(symbol, new_take_profit, position_type, position_size + dca_size)
+            
+            # Update DCA information
+            market_conditions['dca_attempts'] = market_conditions.get('dca_attempts', 0) + 1
+            market_conditions['last_dca_time'] = time.time()
+            market_conditions['active_dca_positions'] = market_conditions.get('active_dca_positions', 0) + 1
+            
+            # Send notification
+            dca_details = {
                 'symbol': symbol,
-                'dca_amount': dca_amount,
-                'new_entry_price': new_entry,
-                'price_drop': price_drop,
-                'order_id': order.get('orderId')
+                'dca_amount': dca_size,
+                'new_entry_price': current_price,
+                'price_drop': price_drop * 100,
+                'order_id': order.get('orderId'),
+                'stop_loss': new_stop_loss,
+                'take_profit': new_take_profit,
+                'dca_attempt': market_conditions['dca_attempts'],
+                'active_dca_positions': market_conditions['active_dca_positions']
             }
             
+            await self.telegram_service.send_dca_notification(dca_details)
+            
+            return dca_details
+            
         except Exception as e:
-            logger.error(f"Error handling DCA: {str(e)}")
+            logger.error(f"Error handling DCA for {symbol}: {str(e)}")
+            return None
+
+    def _is_dca_favorable(self, price_drop: float, market_conditions: Dict) -> bool:
+        """Check if DCA conditions are favorable."""
+        try:
+            # Get DCA configuration
+            dca_config = self.config['risk_management']['dca']
+            risk_control = dca_config['risk_control']
+
+            # Check price drop threshold
+            if price_drop < dca_config['price_drop_thresholds'][0]:
+                logger.info("Price drop below minimum threshold")
+                return False
+
+            # Check volume condition
+            volume_ratio = market_conditions.get('volume_ratio', 1.0)
+            if volume_ratio < dca_config['volume_threshold']:
+                logger.info("Volume below threshold")
+                return False
+
+            # Check volatility condition
+            volatility = market_conditions.get('volatility', 0)
+            if volatility > dca_config['volatility_threshold']:
+                logger.info("Volatility above threshold")
+                return False
+
+            # Check RSI condition
+            rsi = market_conditions.get('rsi', 50)
+            if dca_config['rsi_thresholds']['oversold'] < rsi < dca_config['rsi_thresholds']['overbought']:
+                logger.info("RSI not in favorable range")
+                return False
+
+            # Check BTC correlation
+            btc_correlation = market_conditions.get('btc_correlation', 0)
+            if abs(btc_correlation) < dca_config['btc_correlation_threshold']:
+                logger.info("BTC correlation below threshold")
+                return False
+
+            # Check time since last DCA
+            last_dca_time = market_conditions.get('last_dca_time', 0)
+            current_time = time.time()
+            if current_time - last_dca_time < dca_config['min_time_between_attempts']:
+                logger.info("Not enough time since last DCA")
+                return False
+
+            # Check max drawdown
+            current_drawdown = market_conditions.get('current_drawdown', 0)
+            if current_drawdown > risk_control['max_drawdown']:
+                logger.info("Max drawdown exceeded")
+                return False
+
+            # Check position size
+            position_size = market_conditions.get('position_size', 0)
+            account_balance = market_conditions.get('account_balance', 0)
+            if position_size / account_balance > risk_control['max_position_size']:
+                logger.info("Max position size exceeded")
+                return False
+
+            # Check profit target
+            min_profit_target = risk_control['min_profit_target']
+            if market_conditions.get('unrealized_pnl', 0) < min_profit_target:
+                logger.info("Profit target not reached")
+                return False
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Error checking DCA conditions: {str(e)}")
+            return False
+
+    async def _calculate_dca_size(self, current_size: float, price_drop: float) -> Optional[float]:
+        """Calculate DCA size based on risk management rules.
+        
+        Args:
+            current_size: Current position size
+            price_drop: Current price drop percentage
+            
+        Returns:
+            Optional[float]: Calculated DCA size if successful, None otherwise
+        """
+        try:
+            # Get account balance
+            balance = await self.binance_service.get_account_balance()
+            if not balance:
+                return None
+                
+            # Calculate base risk amount
+            base_risk = float(balance.get('total', 0)) * self.config['risk_management']['max_risk_per_trade']
+            
+            # Adjust risk based on price drop
+            risk_multiplier = 1.0
+            price_drop_thresholds = self.config['risk_management']['dca']['price_drop_thresholds']
+            for threshold in price_drop_thresholds:
+                if price_drop >= threshold:
+                    risk_multiplier *= self.config['risk_management']['dca']['risk_reduction']
+                    
+            # Calculate final DCA size
+            dca_size = (base_risk * risk_multiplier) / self.config['risk_management']['min_stop_distance']
+            
+            # Ensure DCA size is not too large
+            max_position_size = float(balance.get('total', 0)) * self.config['risk_management']['max_risk_per_position']
+            if current_size + dca_size > max_position_size:
+                dca_size = max_position_size - current_size
+                
+            return dca_size
+            
+        except Exception as e:
+            logger.error(f"Error calculating DCA size: {str(e)}")
             return None
 
     async def _get_market_conditions(self, symbol: str) -> Dict:
@@ -1421,48 +1517,6 @@ class EnhancedTradingStrategy:
             logger.error(f"Error getting market conditions: {str(e)}")
             return {}
             
-    def _is_dca_favorable(self, price_drop: float, market_conditions: Dict) -> bool:
-        """Check if market conditions are favorable for DCA.
-        
-        Args:
-            price_drop: Current price drop percentage
-            market_conditions: Current market conditions
-            
-        Returns:
-            bool: True if conditions are favorable for DCA
-        """
-        try:
-            # Check if we have valid market conditions
-            if not market_conditions:
-                return False
-                
-            # Get conditions
-            trend = market_conditions.get('trend')
-            volatility = market_conditions.get('volatility')
-            volume = market_conditions.get('volume', '')
-            atr = market_conditions.get('atr', 0)
-            volume_ratio = market_conditions.get('volume_ratio', 0)
-            
-            # Favorable conditions:
-            # 1. Price drop is significant but not too extreme (2% - 10%)
-            # 2. Volatility is not extremely high
-            # 3. Volume is not extremely low
-            # 4. Trend is not strongly against the position
-            # 5. ATR is within reasonable range
-            return (
-                price_drop >= 0.02 and  # Minimum 2% drop
-                price_drop <= 0.10 and  # Maximum 10% drop
-                volatility != "HIGH" and  # Avoid high volatility
-                volume != "LOW" and  # Avoid low volume
-                volume_ratio > 0.8 and  # Volume above 80% of average
-                atr > 0 and  # Valid ATR
-                trend != "DOWN"  # Avoid DCA in strong downtrend
-            )
-            
-        except Exception as e:
-            logger.error(f"Error checking DCA favorability: {str(e)}")
-            return False
-
     async def _update_trailing_stop(self, symbol: str, position_type: str) -> None:
         """Update trailing stop for a position with advanced features.
         
@@ -1474,7 +1528,7 @@ class EnhancedTradingStrategy:
             # Check if we've updated recently
             if symbol in self._last_update:
                 last_update = self._last_update[symbol]
-                if time.time() - last_update < self.config['risk_management']['trailing_stop_update_interval']:
+                if time.time() - last_update < self.config['risk_management']['trailing_stop']['update_interval']:
                     return
                     
             # Get position details
@@ -1551,8 +1605,8 @@ class EnhancedTradingStrategy:
         Returns:
             bool: True if should move to break-even
         """
-        min_profit_ratio = self.config['risk_management']['break_even_min_profit']
-        min_time = self.config['risk_management']['break_even_min_time']
+        min_profit_ratio = self.config['risk_management']['trailing_stop']['break_even']['min_profit']
+        min_time = self.config['risk_management']['trailing_stop']['break_even']['min_time']
         
         profit_ratio = abs(unrealized_pnl / (current_price * abs(position_size)))
         return profit_ratio >= min_profit_ratio and position_age >= min_time
@@ -1572,8 +1626,8 @@ class EnhancedTradingStrategy:
         Returns:
             bool: True if should take partial profit
         """
-        min_profit_ratio = self.config['risk_management']['partial_profit_min_profit']
-        min_time = self.config['risk_management']['partial_profit_min_time']
+        min_profit_ratio = self.config['risk_management']['trailing_stop']['partial_profit']['min_profit']
+        min_time = self.config['risk_management']['trailing_stop']['partial_profit']['min_time']
         
         profit_ratio = abs(unrealized_pnl / (current_price * abs(position_size)))
         return profit_ratio >= min_profit_ratio and position_age >= min_time
@@ -1587,7 +1641,7 @@ class EnhancedTradingStrategy:
         """
         try:
             # Calculate size to close
-            close_ratio = self.config['risk_management']['partial_profit_close_ratio']
+            close_ratio = self.config['risk_management']['trailing_stop']['partial_profit']['close_ratio']
             close_size = abs(position_size) * close_ratio
             
             # Place market order to close portion
@@ -1613,8 +1667,8 @@ class EnhancedTradingStrategy:
         volatility = market_conditions.get('volatility', 0)
         volume_ratio = market_conditions.get('volume_ratio', 1.0)
         
-        return (volatility > self.config['risk_management']['emergency_volatility_threshold'] or
-                volume_ratio > self.config['risk_management']['emergency_volume_threshold'])
+        return (volatility > self.config['risk_management']['emergency_stop']['volatility_threshold'] or
+                volume_ratio > self.config['risk_management']['emergency_stop']['volume_threshold'])
                 
     def _calculate_emergency_stop(self, current_price: float, position_type: str,
                                 market_conditions: Dict) -> float:
@@ -1628,7 +1682,7 @@ class EnhancedTradingStrategy:
         Returns:
             float: Emergency stop level
         """
-        emergency_distance = self.config['risk_management']['emergency_stop_distance']
+        emergency_distance = self.config['risk_management']['emergency_stop']['distance']
         
         if position_type == "BUY":
             return current_price * (1 - emergency_distance)
@@ -2119,4 +2173,55 @@ class EnhancedTradingStrategy:
             
         except Exception as e:
             logger.error(f"Error getting market sentiment for {symbol}: {str(e)}")
+            return None
+
+    def _get_support_resistance(self, market_conditions: Dict) -> Optional[Dict]:
+        """Identify support and resistance levels from price data.
+        
+        Args:
+            market_conditions: Dictionary containing market data
+            
+        Returns:
+            Optional[Dict]: Dictionary with support and resistance levels
+        """
+        try:
+            if not market_conditions or 'df' not in market_conditions:
+                return None
+                
+            df = market_conditions['df']
+            if df.empty:
+                return None
+                
+            # Get recent price data
+            recent_data = df.tail(50)  # Look at last 50 candles
+            
+            # Find local minima and maxima
+            local_min = []
+            local_max = []
+            
+            for i in range(1, len(recent_data)-1):
+                if (recent_data['low'].iloc[i] < recent_data['low'].iloc[i-1] and 
+                    recent_data['low'].iloc[i] < recent_data['low'].iloc[i+1]):
+                    local_min.append(recent_data['low'].iloc[i])
+                if (recent_data['high'].iloc[i] > recent_data['high'].iloc[i-1] and 
+                    recent_data['high'].iloc[i] > recent_data['high'].iloc[i+1]):
+                    local_max.append(recent_data['high'].iloc[i])
+                    
+            # Get current price
+            current_price = recent_data['close'].iloc[-1]
+            
+            # Find nearest support and resistance
+            support = max([p for p in local_min if p < current_price], default=None)
+            resistance = min([p for p in local_max if p > current_price], default=None)
+            
+            if support is None or resistance is None:
+                return None
+                
+            return {
+                'support': support,
+                'resistance': resistance
+            }
+            
+        except Exception as e:
+            logger.error(f"Error identifying support/resistance levels: {str(e)}")
             return None

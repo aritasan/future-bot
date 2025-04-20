@@ -171,59 +171,105 @@ def load_config() -> Dict[str, Any]:
                 'amount_precision': PRICE_PRECISION,
                 'max_order_size': 1000,
                 'leverage': DEFAULT_LEVERAGE,
-                'position_mode': "hedge",
-                'risk_management': {
-                    'max_position_size': float(os.getenv('MAX_POSITION_SIZE', '0.1')),
-                    'max_leverage': int(os.getenv('MAX_LEVERAGE', '20')),
-                    'risk_per_trade': float(os.getenv('RISK_PER_TRADE', '0.01')),
-                    'min_stop_distance': float(os.getenv('MIN_STOP_DISTANCE', '0.005')),
-                    'take_profit_multiplier': float(os.getenv('TAKE_PROFIT_MULTIPLIER', '2.0'))
-                },
-                'strategy': {
-                    'timeframes': ['5m', '15m', '1h', '4h'],
-                    'indicators': {
-                        'rsi': {'period': 14},
-                        'macd': {'fast': 12, 'slow': 26, 'signal': 9},
-                        'bollinger': {'period': 20, 'std': 2},
-                        'atr': {'period': 14}
-                    }
-                }
+                'position_mode': "hedge"
             },
             'risk_management': {
-                'base_stop_distance': BASE_STOP_DISTANCE,
-                'volatility_multiplier': VOLATILITY_MULTIPLIER,
-                'trend_multiplier': TREND_MULTIPLIER,
-                'take_profit_multiplier': TAKE_PROFIT_MULTIPLIER,
-                'dca_multiplier': DCA_MULTIPLIER,
-                'atr_multiplier': ATR_MULTIPLIER,
-                'risk_per_trade': RISK_PER_TRADE,
-                'max_drawdown': MAX_DRAWDOWN,
-                'max_open_positions': 5,
-                'stop_loss_multiplier': 1.5,
-                'min_stop_distance': MIN_STOP_DISTANCE,
-                'min_tp_distance': MIN_TP_DISTANCE,
-                'trailing_stop_activation': TRAILING_STOP_ACTIVATION,
-                'trailing_stop_distance': TRAILING_STOP_DISTANCE,
-                'dca_enabled': DCA_ENABLED,
-                'max_dca_attempts': MAX_DCA_ATTEMPTS,
-                'dca_distance': DCA_DISTANCE,
-                'dca_multiplier': DCA_MULTIPLIER,
-                'max_position_size': 0.1,  # Maximum position size as percentage of account
-                'max_leverage': 20,  # Maximum leverage allowed
-                'max_drawdown': 0.1,  # Maximum drawdown before stopping trading
-                'max_open_positions': 5,  # Maximum number of open positions
-                'min_stop_distance': 0.005,  # Minimum stop loss distance (0.5%)
-                'take_profit_multiplier': 2.0,  # Take profit distance multiplier relative to stop loss
-                'trailing_stop_update_interval': 60,  # Update trailing stop every 60 seconds
-                'break_even_min_profit': 0.01,  # Minimum 1% profit to move to break-even
-                'break_even_min_time': 300,  # Minimum 5 minutes to move to break-even
-                'partial_profit_min_profit': 0.02,  # Minimum 2% profit to take partial profit
-                'partial_profit_min_time': 600,  # Minimum 10 minutes to take partial profit
-                'partial_profit_close_ratio': 0.5,  # Close 50% of position when taking partial profit
-                'emergency_stop_volatility_threshold': 0.03,  # 3% volatility threshold
-                'emergency_stop_volume_threshold': 2.0,  # 2x average volume threshold
-                'emergency_stop_trend_threshold': 0.7,  # 70% trend strength threshold
-                'emergency_stop_distance': 0.02  # 2% emergency stop distance
+                # General risk parameters
+                'max_risk_per_trade': 0.02,  # 2% of account balance
+                'max_risk_per_position': 0.05,  # 5% of account balance
+                'min_stop_distance': 0.005,  # 0.5% minimum stop distance
+                'min_tp_distance': 0.01,  # 1% minimum take profit distance
+                'take_profit_multiplier': 2.0,  # R:R ratio
+                
+                # Stop loss calculation parameters
+                'atr_multiplier': 1.5,  # ATR multiplier for stop loss calculation
+                'volatility_multiplier': 1.5,  # Volatility adjustment factor
+                'trend_multiplier': 1.2,  # Trend strength adjustment factor
+                'base_stop_distance': 0.02,  # Base stop distance (2%)
+                
+                # DCA parameters
+                'dca': {
+                    'enabled': True,
+                    'max_attempts': 3,  # Maximum number of DCA attempts per position
+                    'risk_reduction': 0.5,  # Reduce risk by 50% for each DCA attempt
+                    'price_drop_thresholds': [0.02, 0.05, 0.1],  # Price drop thresholds
+                    'volume_threshold': 1.5,  # Minimum volume ratio
+                    'volatility_threshold': 0.02,  # Maximum volatility
+                    'rsi_thresholds': {
+                        'oversold': 30,
+                        'overbought': 70
+                    },
+                    'min_time_between_attempts': 3600,  # Minimum 1 hour between attempts
+                    'max_positions': 5,  # Maximum number of positions in DCA
+                    'btc_correlation_threshold': 0.7,  # Minimum BTC correlation
+                    
+                    # New time-based adjustment parameters
+                    'time_based_adjustment': {
+                        'enabled': True,
+                        'time_windows': [3600, 7200, 14400],  # 1h, 2h, 4h
+                        'size_multipliers': [1.0, 0.8, 0.6]   # Reduce DCA size over time
+                    },
+                    
+                    # New risk control parameters
+                    'risk_control': {
+                        'max_drawdown': 0.1,  # 10% max drawdown for DCA
+                        'max_position_size': 0.2,  # 20% of account
+                        'min_profit_target': 0.03  # 3% minimum profit target
+                    }
+                },
+                
+                # Trailing stop parameters
+                'trailing_stop': {
+                    'update_interval': 60,  # Update every 60 seconds
+                    'break_even': {
+                        'min_profit': 0.01,  # Minimum 1% profit
+                        'min_time': 300  # Minimum 5 minutes
+                    },
+                    'partial_profit': {
+                        'min_profit': 0.02,  # Minimum 2% profit
+                        'min_time': 600,  # Minimum 10 minutes
+                        'close_ratio': 0.5  # Close 50% of position
+                    },
+                    
+                    # New dynamic trailing stop parameters
+                    'dynamic': {
+                        'enabled': True,
+                        'atr_multiplier': 1.5,
+                        'volatility_adjustment': True,
+                        'trend_adjustment': True
+                    },
+                    
+                    # New time-based parameters
+                    'time_based': {
+                        'enabled': True,
+                        'time_windows': [1800, 3600, 7200],  # 30m, 1h, 2h
+                        'distance_multipliers': [1.0, 1.2, 1.5]  # Increase distance over time
+                    }
+                },
+                
+                # New integration parameters
+                'integration': {
+                    'dca_trailing_stop': {
+                        'enabled': True,
+                        'min_profit_for_dca': 0.02,  # 2% minimum profit for DCA
+                        'trailing_stop_after_dca': True,
+                        'dca_after_trailing_stop': False
+                    }
+                },
+                
+                # New position management parameters
+                'position_management': {
+                    'max_concurrent_dca': 3,  # Maximum concurrent DCA positions
+                    'max_total_risk': 0.15,   # 15% maximum total risk
+                    'risk_reduction_factor': 0.7  # Risk reduction factor for new positions
+                },
+                
+                # Emergency stop parameters
+                'emergency_stop': {
+                    'volatility_threshold': 0.03,  # 3% volatility threshold
+                    'volume_threshold': 2.0,  # 2x average volume threshold
+                    'distance': 0.02  # 2% emergency stop distance
+                }
             },
             'cache': {
                 'price_ttl': PRICE_CACHE_TTL,
