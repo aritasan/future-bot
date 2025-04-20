@@ -120,14 +120,20 @@ class BinanceService:
                     return None
                 price = ticker.get('last')
                 
-            # Place the order
+            # Place the main order
+            order_params = {
+                "positionSide": position_side
+            }
+            
+            # Only add reduceOnly if explicitly requested
+            if reduce_only:
+                order_params["reduceOnly"] = True
+                
             order = await self.exchange.create_market_order(
                 symbol=symbol,
                 side=side,
                 amount=amount,
-                params={
-                    "positionSide": position_side
-                }
+                params=order_params
             )
             
             if not order:
@@ -151,15 +157,25 @@ class BinanceService:
                 try:
                     # Place stop loss order
                     logger.info(f"Placing stop loss order for {symbol} at {stop_loss}")
+                    sl_params = {
+                        "stopPrice": stop_loss,
+                        "positionSide": position_side,
+                        "workingType": "MARK_PRICE",
+                        "priceProtect": True
+                    }
+                    
+                    # Check if we have an open position before adding reduceOnly
+                    position = await self.get_position(symbol)
+                    print(f"{symbol} PositionSL: {position}")
+                    if position and float(position.get('positionAmt', 0)) != 0:
+                        sl_params['reduceOnly'] = True
+                    
                     sl_order = await self.exchange.create_order(
                         symbol=symbol,
                         type="STOP_MARKET",
                         side=close_side,
                         amount=amount,
-                        params={
-                            "stopPrice": stop_loss,
-                            "positionSide": position_side
-                        }
+                        params=sl_params
                     )
                     
                     if sl_order:
@@ -174,15 +190,25 @@ class BinanceService:
                 try:
                     # Place take profit order
                     logger.info(f"Placing take profit order for {symbol} at {take_profit}")
+                    tp_params = {
+                        "stopPrice": take_profit,
+                        "positionSide": position_side,
+                        "workingType": "MARK_PRICE",
+                        "priceProtect": True
+                    }
+                    
+                    # Check if we have an open position before adding reduceOnly
+                    position = await self.get_position(symbol)
+                    print(f"{symbol} PositionTP: {position}")
+                    if position and float(position.get('positionAmt', 0)) != 0:
+                        tp_params['reduceOnly'] = True
+                    
                     tp_order = await self.exchange.create_order(
                         symbol=symbol,
                         type="TAKE_PROFIT_MARKET",
                         side=close_side,
                         amount=amount,
-                        params={
-                            "stopPrice": take_profit,
-                            "positionSide": position_side
-                        }
+                        params=tp_params
                     )
                     if tp_order:
                         logger.info(f"Take profit order placed: {tp_order}")

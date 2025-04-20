@@ -244,6 +244,7 @@ class EnhancedTradingStrategy:
             
             # Prepare market conditions for strategy-specific checks
             market_conditions = {
+                'df': df,
                 'trend': timeframe_analysis.get('trend', ''),
                 'trend_strength': timeframe_analysis.get('trend_strength', 0),
                 'volatility': btc_volatility.get('volatility', 0),
@@ -259,23 +260,39 @@ class EnhancedTradingStrategy:
             
             # If either strategy generates a valid signal, use it
             strategy_signal = trend_signal or breakout_signal
-            if strategy_signal:
+            if strategy_signal and strategy_signal.get('should_trade', False):
                 signal_score = strategy_signal['signal_score']
                 position_type = strategy_signal['side']
-                should_trade = strategy_signal['should_trade']
+                
+                # Add additional signal information
+                signal_info = {
+                    'strength': strategy_signal.get('strength', 0),
+                    'confidence': strategy_signal.get('confidence', 0),
+                    'entry_price': strategy_signal.get('entry_price', 0),
+                    'stop_loss': strategy_signal.get('stop_loss', 0),
+                    'take_profit': strategy_signal.get('take_profit', 0),
+                    'conditions': strategy_signal.get('conditions', {})
+                }
             else:
                 # Determine position type based on signal score
                 if signal_score > 0.6 or signal_score < -0.6:
                     print(f"{symbol} signal_score: {signal_score}")
                 if signal_score > 0.6:  # Strong buy signal
-                    position_type = 'buy'
-                    should_trade = True
+                    position_type = 'long'
                 elif signal_score < -0.6:  # Strong sell signal
-                    position_type = 'sell'
-                    should_trade = True
+                    position_type = 'short'
                 else:
-                    should_trade = False
                     return None
+                
+                # Default signal information
+                signal_info = {
+                    'strength': abs(signal_score),
+                    'confidence': 0.7 if abs(signal_score) > 0.8 else 0.5,
+                    'entry_price': float(df['close'].iloc[-1]),
+                    'stop_loss': 0,
+                    'take_profit': 0,
+                    'conditions': {}
+                }
                 
             # Check conditions
             if not self.check_volume_condition(df):
@@ -286,10 +303,6 @@ class EnhancedTradingStrategy:
                 print(f"Volatility condition not met for {symbol}")
                 return None
                 
-            # if not self.check_adx_condition(df):
-            #     print(f"ADX condition not met for {symbol}")
-            #     return None
-                
             if not self.check_bollinger_condition(df):
                 print(f"Bollinger condition not met for {symbol}")
                 return None
@@ -298,30 +311,37 @@ class EnhancedTradingStrategy:
             current_price = float(df['close'].iloc[-1])
             position_size = await self._calculate_position_size(symbol, self.config['trading']['risk_per_trade'], current_price)
             if not position_size:
+                print(f"Could not calculate position size for {symbol}")
                 return None
                 
-            # Calculate stop loss and take profit
-            stop_loss = await self._calculate_stop_loss(symbol, df, position_type, current_price, df['ATR'].iloc[-1])
-            take_profit = await self._calculate_take_profit(symbol, df, position_type, current_price, stop_loss)
-            
+            # Return final signal
             return {
                 'symbol': symbol,
                 'side': position_type,
-                'amount': position_size,
-                'type': 'market',
-                'price': current_price,
-                'stop_loss': stop_loss,
-                'take_profit': take_profit,
                 'signal_score': signal_score,
+                'should_trade': True,
+                'position_size': position_size,
+                'current_price': current_price,
+                'market_analysis': {
+                    'trend': timeframe_analysis.get('trend', ''),
+                    'trend_strength': timeframe_analysis.get('trend_strength', 0),
+                    'volatility': btc_volatility.get('volatility', 0),
+                    'volume_ratio': df['volume'].iloc[-1] / df['volume'].mean(),
+                    'price_action': market_conditions['price_action']
+                },
+                'risk_metrics': {
+                    'atr': float(df['ATR'].iloc[-1]),
+                    'rsi': float(df['RSI'].iloc[-1]),
+                    'adx': float(df['ADX'].iloc[-1]) if 'ADX' in df.columns else 0,
+                    'correlation': altcoin_correlation.get('correlation', 0)
+                },
                 'timeframe_analysis': timeframe_analysis,
-                'btc_volatility': btc_volatility,
-                'altcoin_correlation': altcoin_correlation,
-                'sentiment': sentiment,
-                'should_trade': should_trade
+                'sentiment_analysis': sentiment,
+                **signal_info
             }
             
         except Exception as e:
-            logger.error(f"Error generating signals: {str(e)}")
+            print(f"Error generating signals for {symbol}: {str(e)}")
             return None
             
     async def analyze_market_sentiment(self, symbol: str) -> Dict:
@@ -1533,8 +1553,8 @@ class EnhancedTradingStrategy:
             # Get current market data
             current_price = float(position['markPrice'])
             entry_price = float(position['entryPrice'])
-            unrealized_pnl = float(position['unrealizedProfit'])
-            position_size = float(position['positionAmt'])
+            unrealized_pnl = float(position['info']['unrealizedProfit'])
+            position_size = float(position['info']['positionAmt'])
             
             # Calculate position age
             position_age = time.time() - self._position_entry_time.get(symbol, time.time())
@@ -1762,6 +1782,7 @@ class EnhancedTradingStrategy:
                     # Get market conditions
                     market_conditions = await self._get_market_conditions(symbol)
                     if not market_conditions:
+                        logger.error(f"No market conditions available for {symbol}")
                         return
                         
                     # Execute new trade
@@ -1831,8 +1852,15 @@ class EnhancedTradingStrategy:
                 logger.error(f"Could not get historical data for {symbol}")
                 return
                 
-            # Convert signal side to position type
-            position_type = 'LONG' if signal['side'].upper() == 'BUY' else 'SHORT'
+            # Convert signal side to position type and ensure correct format
+            signal_side = signal.get('side', '').lower()
+            if signal_side not in ['long', 'short']:
+                logger.error(f"Invalid signal side: {signal_side}")
+                return
+                
+            # Convert signal side to order side
+            order_side = 'BUY' if signal_side == 'long' else 'SELL'
+            position_type = 'LONG' if order_side == 'BUY' else 'SHORT'
                 
             # Calculate stop loss and take profit
             stop_loss = await self._calculate_stop_loss(symbol, df, position_type, current_price, df['ATR'].iloc[-1])
@@ -1842,58 +1870,38 @@ class EnhancedTradingStrategy:
                 logger.error(f"Invalid stop loss or take profit calculated for {symbol}")
                 return
                 
-            # Check if we need to use reduceOnly
-            position = await self.binance_service.get_position(symbol)
-            use_reduce_only = False
-            position_side = None
-            
-            if position and float(position.get('positionAmt', 0)) != 0:
-                position_side = position.get('positionSide', 'LONG')
-                is_long_position = position_side == 'LONG'
-                is_long_signal = signal['side'].upper() == 'BUY'
-                
-                # If we're trying to open a position in the opposite direction, use reduceOnly
-                if is_long_position != is_long_signal:
-                    use_reduce_only = True
-                    logger.info(f"Using reduceOnly for {symbol} - opening position in opposite direction")
-            else:
-                # If no existing position, set position_side based on signal
-                position_side = 'LONG' if signal['side'].upper() == 'BUY' else 'SHORT'
-                
-            # Place the order
+            # Prepare order parameters
             order_params = {
                 'symbol': symbol,
-                'side': signal['side'].upper(),  # Ensure side is uppercase
-                'type': 'MARKET',  # Ensure type is uppercase
+                'side': order_side,
+                'type': 'market',
                 'amount': position_size,
-                'price': signal.get('price'),
+                'price': current_price,
                 'stop_loss': stop_loss,
                 'take_profit': take_profit,
-                'position_side': position_side
+                'position_side': position_type  # Add position_side parameter
             }
             
-            # Add reduceOnly if needed
-            if use_reduce_only:
-                order_params['reduceOnly'] = True
-                
+            # Place the order
             order = await self.binance_service.place_order(order_params)
+            if not order:
+                logger.error(f"Failed to place order for {symbol}")
+                return
+                
+            # Send order notification
+            await self.telegram_service.send_order_notification(order)
             
-            if order:
-                # Send notification
-                await self.telegram_service.send_order_notification(order)
-                
-                # Update position tracking
-                self._last_trade_time[symbol] = time.time()
-                self._last_trade_price[symbol] = current_price
-                self._last_trade_side[symbol] = signal['side']
-                
-                logger.info(f"Trade executed for {symbol}: {order}")
-            else:
-                logger.error(f"Failed to execute trade for {symbol}")
-                
+            # Update position tracking
+            self._last_trade_time[symbol] = time.time()
+            self._last_trade_price[symbol] = current_price
+            self._last_trade_side[symbol] = order_side
+            
+            logger.info(f"Order placed successfully for {symbol}: {order}")
+            
         except Exception as e:
-            logger.error(f"Error executing trade: {str(e)}")
-            
+            logger.error(f"Error executing trade for {symbol}: {str(e)}")
+            return
+
     async def start_monitoring_tasks(self) -> None:
         """Start all monitoring tasks."""
         try:
@@ -1978,36 +1986,38 @@ class EnhancedTradingStrategy:
                         if unrealized_pnl <= 0:
                             logger.info(f"Skipping trailing stop update for {symbol} - position is not profitable")
                             continue  # Skip this position but continue with others
-                        await self._update_trailing_stop(symbol, position['positionSide'])
+                            
+                        # Determine position side based on position amount
+                        position_amt = float(position.get('positionAmt', 0))
+                        position_side = 'LONG' if position_amt > 0 else 'SHORT'
+                        
+                        await self._update_trailing_stop(symbol, position_side)
                     
         except Exception as e:
             logger.error(f"Error monitoring trailing stops: {str(e)}")
             
     def _check_trend_following_signal(self, symbol: str, market_conditions: Dict) -> Optional[Dict]:
-        """Check for trend following signals with enhanced analysis.
+        """
+        Check for trend following signals based on EMAs, MACD, and RSI.
         
         Args:
             symbol: Trading pair symbol
-            market_conditions: Dictionary containing market conditions
+            market_conditions: Dictionary containing market data and indicators
             
         Returns:
-            Optional[Dict]: Signal dictionary with the following structure:
-            {
-                'type': 'trend_following',
-                'side': 'buy' or 'sell',
-                'signal_score': float,
-                'should_trade': bool,
-                'strength': float,
-                'confidence': float,
-                'entry_price': float,
-                'stop_loss': float,
-                'take_profit': float,
-                'conditions': Dict
-            }
+            Optional[Dict]: Signal dictionary if conditions met, None otherwise
         """
         try:
-            # Get indicators from market conditions
+            if not market_conditions or 'df' not in market_conditions:
+                logger.warning(f"No market data available for {symbol}")
+                return None
+                
             df = market_conditions['df']
+            if df is None or df.empty:
+                logger.warning(f"Empty DataFrame for {symbol}")
+                return None
+                
+            # Get current values
             current_price = df['close'].iloc[-1]
             ema_fast = df['EMA_FAST'].iloc[-1]
             ema_slow = df['EMA_SLOW'].iloc[-1]
@@ -2015,21 +2025,22 @@ class EnhancedTradingStrategy:
             macd_signal = df['MACD_SIGNAL'].iloc[-1]
             rsi = df['RSI'].iloc[-1]
             volume = df['volume'].iloc[-1]
-            adx = df['ADX'].iloc[-1]
+            volume_ma = df['volume'].rolling(window=20).mean().iloc[-1]
             atr = df['ATR'].iloc[-1]
             
             # Log current market state
-            logger.info(f"Analyzing trend following for {symbol}:")
-            logger.info(f"Price: {current_price}, EMA Fast: {ema_fast}, EMA Slow: {ema_slow}")
-            logger.info(f"MACD: {macd}, Signal: {macd_signal}, RSI: {rsi}")
-            logger.info(f"Volume: {volume}, ADX: {adx}, ATR: {atr}")
+            logger.info(
+                f"Trend following analysis for {symbol}: "
+                f"Price={current_price:.8f}, "
+                f"EMA_FAST={ema_fast:.8f}, "
+                f"EMA_SLOW={ema_slow:.8f}, "
+                f"RSI={rsi:.2f}"
+            )
             
-            # Initialize signal dictionary
+            # Initialize signal
             signal = {
                 'type': 'trend_following',
                 'side': None,
-                'signal_score': 0.0,
-                'should_trade': False,
                 'strength': 0.0,
                 'confidence': 0.0,
                 'entry_price': current_price,
@@ -2038,67 +2049,70 @@ class EnhancedTradingStrategy:
                 'conditions': {}
             }
             
-            # Check for bullish trend
-            if (current_price > ema_fast > ema_slow and  # Price above EMAs
-                macd > macd_signal and  # MACD bullish
-                rsi > 50 and rsi < 70 and  # RSI in bullish range
-                volume > df['volume'].rolling(20).mean().iloc[-1] * 1.2 and  # Volume confirmation
-                adx > 25):  # Strong trend
+            # Check bullish trend conditions
+            if (current_price > ema_fast > ema_slow and 
+                macd > macd_signal and 
+                rsi < 70 and 
+                volume > volume_ma * 1.2):
                 
-                signal['side'] = 'buy'
-                signal['should_trade'] = True
-                signal['strength'] = min(1.0, (adx - 25) / 25)  # Normalize ADX strength
+                signal['side'] = 'long'
+                signal['strength'] = 0.8
                 signal['confidence'] = 0.7
-                signal['signal_score'] = 0.8
-                
-                # Calculate stop loss and take profit
-                signal['stop_loss'] = current_price - (atr * 2)
-                signal['take_profit'] = current_price + (atr * 4)
-                
+                signal['stop_loss'] = ema_slow * 0.99  # 1% buffer
+                signal['take_profit'] = current_price + (atr * 2)
                 signal['conditions'] = {
-                    'price_above_ema': True,
+                    'price_above_emas': True,
                     'macd_bullish': True,
-                    'rsi_bullish': True,
-                    'volume_confirmation': True,
-                    'trend_strength': adx
+                    'rsi_ok': True,
+                    'volume_confirmation': True
                 }
                 
-            # Check for bearish trend
-            elif (current_price < ema_fast < ema_slow and  # Price below EMAs
-                  macd < macd_signal and  # MACD bearish
-                  rsi < 50 and rsi > 30 and  # RSI in bearish range
-                  volume > df['volume'].rolling(20).mean().iloc[-1] * 1.2 and  # Volume confirmation
-                  adx > 25):  # Strong trend
+            # Check bearish trend conditions
+            elif (current_price < ema_fast < ema_slow and 
+                  macd < macd_signal and 
+                  rsi > 30 and 
+                  volume > volume_ma * 1.2):
                 
-                signal['side'] = 'sell'
-                signal['should_trade'] = True
-                signal['strength'] = min(1.0, (adx - 25) / 25)  # Normalize ADX strength
+                signal['side'] = 'short'
+                signal['strength'] = -0.8
                 signal['confidence'] = 0.7
-                signal['signal_score'] = -0.8
-                
-                # Calculate stop loss and take profit
-                signal['stop_loss'] = current_price + (atr * 2)
-                signal['take_profit'] = current_price - (atr * 4)
-                
+                signal['stop_loss'] = ema_slow * 1.01  # 1% buffer
+                signal['take_profit'] = current_price - (atr * 2)
                 signal['conditions'] = {
-                    'price_below_ema': True,
+                    'price_below_emas': True,
                     'macd_bearish': True,
-                    'rsi_bearish': True,
-                    'volume_confirmation': True,
-                    'trend_strength': adx
+                    'rsi_ok': True,
+                    'volume_confirmation': True
                 }
             
-            return signal if signal['should_trade'] else None
+            return signal if signal['side'] is not None else None
             
         except Exception as e:
             logger.error(f"Error checking trend following signals for {symbol}: {str(e)}")
             return None
 
     def _check_breakout_signal(self, symbol: str, market_conditions: Dict) -> Optional[Dict]:
-        """Check for breakout signals with enhanced analysis."""
+        """
+        Check for breakout signals based on Bollinger Bands, volume, and RSI.
+        
+        Args:
+            symbol: Trading pair symbol
+            market_conditions: Dictionary containing market data and indicators
+            
+        Returns:
+            Optional[Dict]: Signal dictionary if conditions met, None otherwise
+        """
         try:
-            # Get indicators from market conditions
+            if not market_conditions or 'df' not in market_conditions:
+                logger.warning(f"No market data available for {symbol}")
+                return None
+                
             df = market_conditions['df']
+            if df is None or df.empty:
+                logger.warning(f"Empty DataFrame for {symbol}")
+                return None
+                
+            # Get current values
             current_price = df['close'].iloc[-1]
             bb_upper = df['BB_upper'].iloc[-1]
             bb_lower = df['BB_lower'].iloc[-1]
@@ -2109,49 +2123,63 @@ class EnhancedTradingStrategy:
             atr = df['ATR'].iloc[-1]
             
             # Log current market state
-            logger.info(f"Breakout analysis for {symbol}: Price={current_price}, BB_upper={bb_upper}, BB_lower={bb_lower}, Volume={volume}, RSI={rsi}")
+            logger.info(
+                f"Breakout analysis for {symbol}: "
+                f"Price={current_price:.8f}, "
+                f"BB_upper={bb_upper:.8f}, "
+                f"BB_lower={bb_lower:.8f}, "
+                f"BB_middle={bb_middle:.8f}"
+            )
             
             # Initialize signal
             signal = {
                 'type': 'breakout',
                 'side': None,
-                'signal_score': 0,
-                'should_trade': False,
-                'strength': 0.5,
-                'confidence': 0.5,
+                'strength': 0.0,
+                'confidence': 0.0,
                 'entry_price': current_price,
                 'stop_loss': None,
                 'take_profit': None,
                 'conditions': {}
             }
             
-            # Check for bullish breakout
-            if current_price > bb_upper and volume > volume_ma * 1.5 and rsi < 70:
-                signal['side'] = 'buy'
-                signal['signal_score'] = 0.8
-                signal['should_trade'] = True
+            # Check bullish breakout conditions
+            if (current_price > bb_upper and 
+                volume > volume_ma * 1.5 and 
+                rsi < 70 and 
+                atr / current_price < 0.05):
+                
+                signal['side'] = 'long'
+                signal['strength'] = 0.8
+                signal['confidence'] = 0.7
                 signal['stop_loss'] = bb_middle * 0.99  # 1% buffer
                 signal['take_profit'] = current_price + (atr * 2)
                 signal['conditions'] = {
-                    'price_above_bb': True,
-                    'volume_confirmation': True,
-                    'rsi_ok': True
+                    'price_above_bb_upper': True,
+                    'high_volume': True,
+                    'rsi_ok': True,
+                    'atr_ratio_ok': True
                 }
                 
-            # Check for bearish breakout
-            elif current_price < bb_lower and volume > volume_ma * 1.5 and rsi > 30:
-                signal['side'] = 'sell'
-                signal['signal_score'] = -0.8
-                signal['should_trade'] = True
+            # Check bearish breakout conditions
+            elif (current_price < bb_lower and 
+                  volume > volume_ma * 1.5 and 
+                  rsi > 30 and 
+                  atr / current_price < 0.05):
+                
+                signal['side'] = 'short'
+                signal['strength'] = -0.8
+                signal['confidence'] = 0.7
                 signal['stop_loss'] = bb_middle * 1.01  # 1% buffer
                 signal['take_profit'] = current_price - (atr * 2)
                 signal['conditions'] = {
-                    'price_below_bb': True,
-                    'volume_confirmation': True,
-                    'rsi_ok': True
+                    'price_below_bb_lower': True,
+                    'high_volume': True,
+                    'rsi_ok': True,
+                    'atr_ratio_ok': True
                 }
             
-            return signal if signal['should_trade'] else None
+            return signal if signal['side'] is not None else None
             
         except Exception as e:
             logger.error(f"Error checking breakout signals for {symbol}: {str(e)}")
