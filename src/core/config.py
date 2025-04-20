@@ -207,7 +207,23 @@ def load_config() -> Dict[str, Any]:
                 'dca_enabled': DCA_ENABLED,
                 'max_dca_attempts': MAX_DCA_ATTEMPTS,
                 'dca_distance': DCA_DISTANCE,
-                'dca_multiplier': DCA_MULTIPLIER
+                'dca_multiplier': DCA_MULTIPLIER,
+                'max_position_size': 0.1,  # Maximum position size as percentage of account
+                'max_leverage': 20,  # Maximum leverage allowed
+                'max_drawdown': 0.1,  # Maximum drawdown before stopping trading
+                'max_open_positions': 5,  # Maximum number of open positions
+                'min_stop_distance': 0.005,  # Minimum stop loss distance (0.5%)
+                'take_profit_multiplier': 2.0,  # Take profit distance multiplier relative to stop loss
+                'trailing_stop_update_interval': 60,  # Update trailing stop every 60 seconds
+                'break_even_min_profit': 0.01,  # Minimum 1% profit to move to break-even
+                'break_even_min_time': 300,  # Minimum 5 minutes to move to break-even
+                'partial_profit_min_profit': 0.02,  # Minimum 2% profit to take partial profit
+                'partial_profit_min_time': 600,  # Minimum 10 minutes to take partial profit
+                'partial_profit_close_ratio': 0.5,  # Close 50% of position when taking partial profit
+                'emergency_stop_volatility_threshold': 0.03,  # 3% volatility threshold
+                'emergency_stop_volume_threshold': 2.0,  # 2x average volume threshold
+                'emergency_stop_trend_threshold': 0.7,  # 70% trend strength threshold
+                'emergency_stop_distance': 0.02  # 2% emergency stop distance
             },
             'cache': {
                 'price_ttl': PRICE_CACHE_TTL,
