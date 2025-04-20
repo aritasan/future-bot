@@ -104,6 +104,7 @@ class EnhancedTradingStrategy:
         self._last_trade_amount = {}
         self._last_trade_stop_loss = {}
         self._last_trade_take_profit = {}
+        self._position_entry_time = {}  # Track entry time for each position
         
     async def initialize(self) -> bool:
         """Initialize the strategy.
@@ -1553,8 +1554,8 @@ class EnhancedTradingStrategy:
             # Get current market data
             current_price = float(position['markPrice'])
             entry_price = float(position['entryPrice'])
-            unrealized_pnl = float(position['info']['unrealizedProfit'])
-            position_size = float(position['info']['positionAmt'])
+            unrealized_pnl = float(position.get('unrealizedPnl', 0))
+            position_size = float(position.get('info', {}).get('positionAmt', 0))
             
             # Calculate position age
             position_age = time.time() - self._position_entry_time.get(symbol, time.time())
@@ -1735,7 +1736,7 @@ class EnhancedTradingStrategy:
         """
         try:
             # Get recent candles
-            candles = await self.binance_service.get_klines(symbol, interval="1h", limit=24)
+            candles = await self.binance_service.get_klines(symbol, timeframe="1h", limit=24)
             
             # Calculate volatility
             high_prices = [float(c[2]) for c in candles]
@@ -1748,8 +1749,13 @@ class EnhancedTradingStrategy:
             volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1.0
             
             # Calculate trend strength using ADX
-            adx = await self.indicator_service.calculate_adx(symbol)
-            trend_strength = adx / 100.0 if adx else 0.5
+            df = await self.indicator_service.get_historical_data(symbol, timeframe="1h", limit=24)
+            if df is not None and not df.empty:
+                df = self.indicator_service._calculate_adx(df)
+                adx = df['ADX'].iloc[-1] if 'ADX' in df.columns else 0
+            else:
+                adx = 0
+            trend_strength = adx / 100.0
             
             return {
                 'volatility': volatility,
@@ -1837,71 +1843,57 @@ class EnhancedTradingStrategy:
             # Get current price
             current_price = await self.binance_service.get_current_price(symbol)
             if not current_price:
-                logger.error(f"Could not get current price for {symbol}")
+                logger.error(f"Failed to get current price for {symbol}")
                 return
-                
+
             # Calculate position size
-            position_size = await self._calculate_position_size(symbol, self.config['trading']['risk_per_trade'], current_price)
+            position_size = await self._calculate_position_size(
+                symbol, 
+                self.config['risk_management']['risk_per_trade'],
+                current_price
+            )
             if not position_size:
-                logger.error(f"Invalid position size calculated for {symbol}")
+                logger.error(f"Failed to calculate position size for {symbol}")
                 return
-                
-            # Get historical data for stop loss and take profit calculation
-            df = await self.indicator_service.calculate_indicators(symbol)
-            if df is None or df.empty:
-                logger.error(f"Could not get historical data for {symbol}")
-                return
-                
-            # Convert signal side to position type and ensure correct format
-            signal_side = signal.get('side', '').lower()
-            if signal_side not in ['long', 'short']:
-                logger.error(f"Invalid signal side: {signal_side}")
-                return
-                
-            # Convert signal side to order side
-            order_side = 'BUY' if signal_side == 'long' else 'SELL'
-            position_type = 'LONG' if order_side == 'BUY' else 'SHORT'
-                
+
             # Calculate stop loss and take profit
-            stop_loss = await self._calculate_stop_loss(symbol, df, position_type, current_price, df['ATR'].iloc[-1])
-            take_profit = await self._calculate_take_profit(symbol, df, position_type, current_price, stop_loss)
-            
-            if not stop_loss or not take_profit:
-                logger.error(f"Invalid stop loss or take profit calculated for {symbol}")
+            df = await self.indicator_service.get_historical_data(symbol)
+            if df is None:
+                logger.error(f"Failed to get historical data for {symbol}")
                 return
-                
+
+            atr = await self.indicator_service.calculate_atr(symbol)
+            stop_loss = await self._calculate_stop_loss(
+                symbol, df, signal['position_type'], current_price, atr
+            )
+            take_profit = await self._calculate_take_profit(
+                symbol, df, signal['position_type'], current_price, stop_loss
+            )
+
             # Prepare order parameters
             order_params = {
                 'symbol': symbol,
-                'side': order_side,
+                'side': signal['side'],
                 'type': 'market',
                 'amount': position_size,
-                'price': current_price,
                 'stop_loss': stop_loss,
                 'take_profit': take_profit,
-                'position_side': position_type  # Add position_side parameter
+                'position_side': signal['position_type']
             }
-            
+
             # Place the order
             order = await self.binance_service.place_order(order_params)
-            if not order:
+            if order:
+                # Record entry time for the position
+                self._position_entry_time[symbol] = time.time()
+                logger.info(f"Order placed successfully: {order}")
+                await self.telegram_service.send_order_notification(order)
+            else:
                 logger.error(f"Failed to place order for {symbol}")
-                return
-                
-            # Send order notification
-            await self.telegram_service.send_order_notification(order)
-            
-            # Update position tracking
-            self._last_trade_time[symbol] = time.time()
-            self._last_trade_price[symbol] = current_price
-            self._last_trade_side[symbol] = order_side
-            
-            logger.info(f"Order placed successfully for {symbol}: {order}")
-            
+
         except Exception as e:
             logger.error(f"Error executing trade for {symbol}: {str(e)}")
-            return
-
+            
     async def start_monitoring_tasks(self) -> None:
         """Start all monitoring tasks."""
         try:

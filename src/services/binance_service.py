@@ -161,14 +161,11 @@ class BinanceService:
                         "stopPrice": stop_loss,
                         "positionSide": position_side,
                         "workingType": "MARK_PRICE",
-                        "priceProtect": True
+                        "priceProtect": True,
+                        "timeInForce": "GTC",  # Good Till Cancel
+                        "closePosition": True,  # Close the entire position
+                        "reduceOnly": True  # Always reduce only for SL
                     }
-                    
-                    # Check if we have an open position before adding reduceOnly
-                    position = await self.get_position(symbol)
-                    print(f"{symbol} PositionSL: {position}")
-                    if position and float(position.get('positionAmt', 0)) != 0:
-                        sl_params['reduceOnly'] = True
                     
                     sl_order = await self.exchange.create_order(
                         symbol=symbol,
@@ -194,14 +191,11 @@ class BinanceService:
                         "stopPrice": take_profit,
                         "positionSide": position_side,
                         "workingType": "MARK_PRICE",
-                        "priceProtect": True
+                        "priceProtect": True,
+                        "timeInForce": "GTC",  # Good Till Cancel
+                        "closePosition": True,  # Close the entire position
+                        "reduceOnly": True  # Always reduce only for TP
                     }
-                    
-                    # Check if we have an open position before adding reduceOnly
-                    position = await self.get_position(symbol)
-                    print(f"{symbol} PositionTP: {position}")
-                    if position and float(position.get('positionAmt', 0)) != 0:
-                        tp_params['reduceOnly'] = True
                     
                     tp_order = await self.exchange.create_order(
                         symbol=symbol,
