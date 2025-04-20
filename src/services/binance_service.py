@@ -419,6 +419,19 @@ class BinanceService:
     async def _fetch_market_data(self, symbol: str) -> Optional[Dict]:
         """Fetch market data efficiently."""
         try:
+            # Check if symbol exists and is active
+            try:
+                markets = await self.exchange.load_markets()
+                if symbol not in markets:
+                    logger.warning(f"Symbol {symbol} not found in markets")
+                    return None
+                if not markets[symbol].get('active', False):
+                    logger.warning(f"Symbol {symbol} is not active")
+                    return None
+            except Exception as e:
+                logger.error(f"Error checking symbol status for {symbol}: {str(e)}")
+                return None
+
             # Fetch multiple data points in parallel
             tasks = [
                 self.exchange.fetch_ticker(symbol),
@@ -428,12 +441,29 @@ class BinanceService:
             
             ticker, ohlcv, order_book = await asyncio.gather(*tasks)
             
+            # Check if all data is available and has the expected structure
             if not all([ticker, ohlcv, order_book]):
+                logger.warning(f"Missing data for {symbol}: ticker={bool(ticker)}, ohlcv={bool(ohlcv)}, order_book={bool(order_book)}")
+                return None
+                
+            # Check if ohlcv has at least one candle
+            if not ohlcv or len(ohlcv) == 0:
+                logger.warning(f"No OHLCV data available for {symbol}")
+                return None
+                
+            # Check if order book has bids and asks
+            if not order_book.get('bids') or not order_book.get('asks'):
+                logger.warning(f"No order book data available for {symbol}")
+                return None
+                
+            # Check if there are any bids or asks
+            if len(order_book['bids']) == 0 or len(order_book['asks']) == 0:
+                logger.warning(f"Empty order book for {symbol}")
                 return None
                 
             return {
-                'price': ticker['last'],
-                'volume': ticker['quoteVolume'],
+                'price': ticker.get('last'),
+                'volume': ticker.get('quoteVolume'),
                 'bid': order_book['bids'][0][0],
                 'ask': order_book['asks'][0][0],
                 'high': ohlcv[0][2],
@@ -441,7 +471,7 @@ class BinanceService:
             }
             
         except Exception as e:
-            logger.error(f"Error fetching market data: {str(e)}")
+            logger.error(f"Error fetching market data for {symbol}: {str(e)}")
             return None
             
     async def _calculate_position_statistics(self) -> Dict:

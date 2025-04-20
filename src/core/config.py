@@ -149,6 +149,9 @@ def load_config() -> Dict[str, Any]:
                 }
             },
             'trading': {
+                'min_volume': 1000000,
+                'min_volatility': 0.02,
+                'max_btc_correlation': 0.8,
                 'max_drawdown': MAX_DRAWDOWN,
                 'atr_period': ATR_PERIOD,
                 'max_orders_per_symbol': MAX_ORDERS_PER_SYMBOL,

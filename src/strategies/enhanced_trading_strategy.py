@@ -2298,72 +2298,201 @@ class EnhancedTradingStrategy:
             return None
 
     def _analyze_trend_structure(self, df: pd.DataFrame) -> Dict:
-        """Analyze trend structure for better trend following signals.
-        
-        Args:
-            df: DataFrame with price data
-            
-        Returns:
-            Dict: Trend structure analysis results
-        """
+        """Analyze market trend structure with enhanced flexibility."""
         try:
-            # Get recent price action
-            recent_prices = df['close'].iloc[-20:]  # Look at last 20 candles
-            
-            # Find swing highs and lows
-            swing_highs = []
-            swing_lows = []
-            
-            for i in range(1, len(recent_prices)-1):
-                if recent_prices.iloc[i] > recent_prices.iloc[i-1] and recent_prices.iloc[i] > recent_prices.iloc[i+1]:
-                    swing_highs.append(recent_prices.iloc[i])
-                elif recent_prices.iloc[i] < recent_prices.iloc[i-1] and recent_prices.iloc[i] < recent_prices.iloc[i+1]:
-                    swing_lows.append(recent_prices.iloc[i])
-            
-            # Analyze trend structure
-            if len(swing_highs) >= 2 and len(swing_lows) >= 2:
-                # Check for higher highs and higher lows (uptrend)
-                is_uptrend = (
-                    swing_highs[-1] > swing_highs[-2] and
-                    swing_lows[-1] > swing_lows[-2]
-                )
-                
-                # Check for lower highs and lower lows (downtrend)
-                is_downtrend = (
-                    swing_highs[-1] < swing_highs[-2] and
-                    swing_lows[-1] < swing_lows[-2]
-                )
-                
-                # Calculate trend strength
-                if is_uptrend:
-                    trend_strength = (swing_highs[-1] - swing_highs[-2]) / swing_highs[-2]
-                elif is_downtrend:
-                    trend_strength = (swing_lows[-2] - swing_lows[-1]) / swing_lows[-2]
-                else:
-                    trend_strength = 0
-                
+            if df is None or df.empty:
+                logger.warning("Empty or None DataFrame provided for trend analysis")
                 return {
-                    'trend': 'up' if is_uptrend else 'down' if is_downtrend else 'sideways',
-                    'strength': trend_strength,
-                    'swing_highs': swing_highs,
-                    'swing_lows': swing_lows,
-                    'is_valid': is_uptrend or is_downtrend
+                    'has_clear_structure': False,
+                    'trend_type': 'unknown',
+                    'strength': 0.0,
+                    'support_levels': [],
+                    'resistance_levels': []
                 }
+
+            # Calculate key levels
+            high = df['high'].max()
+            low = df['low'].min()
+            current_price = df['close'].iloc[-1]
+            
+            # Calculate trend strength using multiple EMAs
+            ema_8 = df['close'].ewm(span=8, adjust=False).mean()
+            ema_21 = df['close'].ewm(span=21, adjust=False).mean()
+            ema_55 = df['close'].ewm(span=55, adjust=False).mean()
+            
+            # Calculate trend alignment score
+            trend_alignment = 0
+            if ema_8.iloc[-1] > ema_21.iloc[-1] > ema_55.iloc[-1]:
+                trend_alignment = 1  # Strong uptrend
+            elif ema_8.iloc[-1] < ema_21.iloc[-1] < ema_55.iloc[-1]:
+                trend_alignment = -1  # Strong downtrend
+            
+            # Calculate trend strength using multiple factors
+            price_distance = abs(ema_8.iloc[-1] - ema_55.iloc[-1]) / current_price
+            ema_angles = [
+                (ema_8.iloc[-1] - ema_8.iloc[-5]) / ema_8.iloc[-5],
+                (ema_21.iloc[-1] - ema_21.iloc[-5]) / ema_21.iloc[-5],
+                (ema_55.iloc[-1] - ema_55.iloc[-5]) / ema_55.iloc[-5]
+            ]
+            trend_strength = (price_distance + abs(sum(ema_angles))) / 2
+            
+            # Determine trend type with more nuance
+            if trend_alignment > 0:
+                trend_type = 'strong_uptrend' if trend_strength > 0.02 else 'weak_uptrend'
+            elif trend_alignment < 0:
+                trend_type = 'strong_downtrend' if trend_strength > 0.02 else 'weak_downtrend'
+            else:
+                # Check for potential reversal or consolidation
+                recent_trend = 'up' if ema_8.iloc[-1] > ema_8.iloc[-5] else 'down'
+                trend_type = f'consolidation_{recent_trend}_bias'
+                
+            # Find support and resistance levels with volume confirmation
+            support_levels = []
+            resistance_levels = []
+            
+            # Use volume profile for level confirmation
+            volume_profile = df.groupby(pd.cut(df['close'], bins=20))['volume'].sum()
+            high_volume_prices = volume_profile[volume_profile > volume_profile.mean()].index
+            
+            # Use Fibonacci levels as potential support/resistance
+            fib_levels = [0.236, 0.382, 0.5, 0.618, 0.786]
+            for level in fib_levels:
+                price_level = low + (high - low) * level
+                # Check if level is near high volume area
+                for vol_price in high_volume_prices:
+                    if abs(price_level - vol_price.mid) / current_price < 0.01:
+                        if price_level < current_price:
+                            support_levels.append(price_level)
+                        else:
+                            resistance_levels.append(price_level)
+                    
+            # Add recent swing highs and lows
+            window = 20
+            df['swing_high'] = df['high'].rolling(window=window, center=True).apply(
+                lambda x: x[len(x)//2] == max(x)
+            )
+            df['swing_low'] = df['low'].rolling(window=window, center=True).apply(
+                lambda x: x[len(x)//2] == min(x)
+            )
+            
+            recent_swing_highs = df[df['swing_high']]['high'].dropna()
+            recent_swing_lows = df[df['swing_low']]['low'].dropna()
+            
+            for high_price in recent_swing_highs:
+                if high_price > current_price:
+                    resistance_levels.append(high_price)
+                    
+            for low_price in recent_swing_lows:
+                if low_price < current_price:
+                    support_levels.append(low_price)
+                    
+            # Remove duplicates and sort
+            support_levels = sorted(list(set(support_levels)))
+            resistance_levels = sorted(list(set(resistance_levels)))
+            
+            # Determine if structure is clear with more flexible conditions
+            has_clear_structure = (
+                len(support_levels) >= 2 and  # At least 2 support levels
+                len(resistance_levels) >= 2 and  # At least 2 resistance levels
+                trend_strength > 0.005 and  # Reduced from 0.01
+                abs(trend_alignment) >= 0.5  # Allow for developing trends
+            )
             
             return {
-                'trend': 'sideways',
-                'strength': 0,
-                'swing_highs': swing_highs,
-                'swing_lows': swing_lows,
-                'is_valid': False
+                'has_clear_structure': has_clear_structure,
+                'trend_type': trend_type,
+                'strength': trend_strength,
+                'support_levels': support_levels,
+                'resistance_levels': resistance_levels,
+                'trend_alignment': trend_alignment
             }
             
         except Exception as e:
             logger.error(f"Error analyzing trend structure: {str(e)}")
             return {
-                'trend': 'sideways',
-                'strength': 0,
-                'swing_highs': [],
-                'swing_lows': [],
-                'is_valid': False
+                'has_clear_structure': False,
+                'trend_type': 'unknown',
+                'strength': 0.0,
+                'support_levels': [],
+                'resistance_levels': [],
+                'trend_alignment': 0
             }
+
+    async def select_trading_pairs(self, timeframe: str = '1h') -> List[str]:
+        """
+        Select trading pairs based on enhanced trend analysis and market conditions.
+        
+        Args:
+            timeframe: The timeframe to analyze, default is 1h
+            
+        Returns:
+            List of selected trading pairs
+        """
+        try:
+            selected_pairs = []
+            all_pairs = await self.exchange_service.get_trading_pairs()
+            
+            for symbol in all_pairs:
+                try:
+                    # Get historical data with increased lookback
+                    df = await self.indicator_service.get_historical_data(symbol, timeframe, limit=100)
+                    if df is None or df.empty:
+                        continue
+                        
+                    # Calculate indicators
+                    adx = self.indicator_service.calculate_adx(df)
+                    volume_ma = df['volume'].rolling(window=20).mean()
+                    current_volume = df['volume'].iloc[-1]
+                    
+                    # Analyze trend structure
+                    trend_analysis = self._analyze_trend_structure(df)
+                    
+                    # Enhanced selection criteria
+                    meets_criteria = (
+                        trend_analysis['has_clear_structure'] and
+                        adx.iloc[-1] > 15 and  # Reduced from 20
+                        current_volume > volume_ma.iloc[-1] * 1.2 and  # 20% above average volume
+                        trend_analysis['strength'] > 0.01  # Minimum trend strength
+                    )
+                    
+                    if meets_criteria:
+                        # Calculate selection score
+                        score = (
+                            trend_analysis['strength'] * 0.4 +  # Weight trend strength
+                            (adx.iloc[-1] / 100) * 0.3 +  # Weight ADX
+                            (current_volume / volume_ma.iloc[-1]) * 0.3  # Weight volume
+                        )
+                        
+                        selected_pairs.append({
+                            'symbol': symbol,
+                            'score': score,
+                            'trend_type': trend_analysis['trend_type'],
+                            'strength': trend_analysis['strength'],
+                            'adx': adx.iloc[-1],
+                            'volume_ratio': current_volume / volume_ma.iloc[-1]
+                        })
+                        
+                except Exception as e:
+                    logger.warning(f"Error analyzing {symbol}: {str(e)}")
+                    continue
+            
+            # Sort pairs by score and take top 10
+            selected_pairs.sort(key=lambda x: x['score'], reverse=True)
+            top_pairs = selected_pairs[:10]
+            
+            # Log selection results
+            for pair in top_pairs:
+                logger.info(
+                    f"Selected {pair['symbol']}: "
+                    f"Score={pair['score']:.2f}, "
+                    f"Trend={pair['trend_type']}, "
+                    f"Strength={pair['strength']:.2f}, "
+                    f"ADX={pair['adx']:.2f}, "
+                    f"Volume Ratio={pair['volume_ratio']:.2f}"
+                )
+            
+            return [pair['symbol'] for pair in top_pairs]
+            
+        except Exception as e:
+            logger.error(f"Error in select_trading_pairs: {str(e)}")
+            return []
