@@ -1568,7 +1568,7 @@ class EnhancedTradingStrategy:
             # Check for emergency stop
             if self._should_emergency_stop(market_conditions):
                 new_stop_loss = self._calculate_emergency_stop(
-                    current_price, position_type, market_conditions
+                    current_price, position_type
                 )
                 logger.warning(f"Emergency stop triggered for {symbol} at {new_stop_loss}")
                 
@@ -1664,18 +1664,8 @@ class EnhancedTradingStrategy:
         return (volatility > self.config['risk_management']['emergency_stop']['volatility_threshold'] or
                 volume_ratio > self.config['risk_management']['emergency_stop']['volume_threshold'])
                 
-    def _calculate_emergency_stop(self, current_price: float, position_type: str,
-                                market_conditions: Dict) -> float:
-        """Calculate emergency stop level.
-        
-        Args:
-            current_price: Current market price
-            position_type: Position type (BUY/SELL)
-            market_conditions: Dictionary containing market analysis data
-            
-        Returns:
-            float: Emergency stop level
-        """
+    def _calculate_emergency_stop(self, current_price: float, position_type: str) -> float:
+        """Calculate emergency stop level based on current market price and position type."""
         emergency_distance = self.config['risk_management']['emergency_stop']['distance']
         
         if position_type == "BUY":
@@ -1775,7 +1765,7 @@ class EnhancedTradingStrategy:
                         return
                         
                     # Execute new trade
-                    await self._execute_trade(symbol, signals, market_conditions)
+                    await self._execute_trade(symbol, signals)
                 return
                 
             # Case 2: Existing position - manage the position
@@ -1820,8 +1810,8 @@ class EnhancedTradingStrategy:
         except Exception as e:
             logger.error(f"Error processing trading signals: {str(e)}")
             
-    async def _execute_trade(self, symbol: str, signal: Dict, market_conditions: Dict) -> None:
-        """Execute a trade based on the signal and market conditions."""
+    async def _execute_trade(self, symbol: str, signal: Dict) -> None:
+        """Execute a trade based on the signal."""
         try:
             # Get current price
             current_price = await self.binance_service.get_current_price(symbol)
