@@ -1794,72 +1794,26 @@ class EnhancedTradingStrategy:
             return {}
 
     async def process_trading_signals(self, signals: Dict) -> None:
-        """Process trading signals and execute trades with enhanced risk management.
-        
-        Args:
-            signals: Dictionary containing trading signals and analysis
-        """
+        """Process trading signals and execute trades."""
         try:
             symbol = signals.get('symbol')
             if not symbol:
+                logger.error("No symbol in signals")
                 return
-                
+
             # Get current position
             position = await self.binance_service.get_position(symbol)
             
-            # Case 1: No existing position - check if we should open a new position
-            if not position:
-                # Check if we should trade based on signals
-                if signals.get('should_trade', False):
-                    # Get market conditions
-                    market_conditions = await self._get_market_conditions(symbol)
-                    if not market_conditions:
-                        logger.error(f"No market conditions available for {symbol}")
-                        return
-                        
-                    # Execute new trade
+            if position and float(position.get('positionAmt', 0)) != 0:
+                # We have an existing position, manage it
+                await self._manage_existing_position(symbol, position, signals)
+            else:
+                # No existing position, check if we should open a new one
+                if not self.telegram_service.is_trading_paused():
                     await self._execute_trade(symbol, signals)
-                return
-                
-            # Case 2: Existing position - manage the position
-            # Check if we should close the position
-            if await self.should_close_position(position):
-                # Position will be closed by should_close_position method
-                # and appropriate notifications will be sent
-                await self.binance_service.close_position(symbol)
-                return
-                
-            # Check if we should update stops
-            if await self.should_update_stops(position, position['entryPrice']):
-                # Calculate new stops
-                new_stops = await self.calculate_new_stops(position, position['entryPrice'])
-                if new_stops:
-                    # Update stop loss and take profit
-                    await self.binance_service.update_stop_loss(
-                        symbol=symbol,
-                        stop_price=new_stops['stop_loss'],
-                        side='sell' if position['positionAmt'] > 0 else 'buy',
-                        amount=abs(float(position['positionAmt']))
-                    )
-                    await self.binance_service.update_take_profit(
-                        symbol=symbol,
-                        take_profit=new_stops['take_profit'],
-                        side='sell' if position['positionAmt'] > 0 else 'buy',
-                        amount=abs(float(position['positionAmt']))
-                    )
+                else:
+                    logger.info(f"Trading paused - Skipping new trade for {symbol}")
                     
-            # Check for DCA opportunity
-            dca_result = await self._handle_dca(symbol, position)
-            if dca_result:
-                # DCA was executed, update position tracking
-                self._last_dca_time[symbol] = time.time()
-                self._dca_history[symbol] = dca_result.get('dca_history', [])
-                
-            # Update trailing stop if needed
-            if await self._update_trailing_stop(symbol, position['positionSide']):
-                # Trailing stop was updated, no need for further action
-                return
-                
         except Exception as e:
             logger.error(f"Error processing trading signals: {str(e)}")
             
@@ -2693,3 +2647,63 @@ class EnhancedTradingStrategy:
         except Exception as e:
             logger.error(f"Error checking risk accumulation: {str(e)}")
             return False
+
+    async def _manage_existing_position(self, symbol: str, position: Dict, signals: Dict) -> None:
+        """Manage an existing position.
+        
+        Args:
+            symbol: Trading pair symbol
+            position: Current position details
+            signals: Trading signals
+        """
+        try:
+            # Check if we should close the position
+            if await self.should_close_position(position):
+                await self.binance_service.close_position(symbol)
+                return
+                
+            # Get current price and market conditions
+            current_price = await self.binance_service.get_current_price(symbol)
+            if not current_price:
+                logger.error(f"Failed to get current price for {symbol}")
+                return
+                
+            market_conditions = await self._get_market_conditions(symbol)
+            if not market_conditions:
+                logger.error(f"Failed to get market conditions for {symbol}")
+                return
+                
+            # Check if we should update stops
+            if await self.should_update_stops(position, current_price):
+                new_stops = await self.calculate_new_stops(position, current_price)
+                if new_stops:
+                    # Update stop loss
+                    await self._update_stop_loss(
+                        symbol=symbol,
+                        new_stop_loss=new_stops['stop_loss'],
+                        position_type=position['positionSide'],
+                        position_size=abs(float(position['positionAmt']))
+                    )
+                    
+                    # Update take profit
+                    await self._update_take_profit(
+                        symbol=symbol,
+                        new_take_profit=new_stops['take_profit'],
+                        position_type=position['positionSide'],
+                        position_size=abs(float(position['positionAmt']))
+                    )
+                    
+            # Check for DCA opportunity
+            dca_result = await self._handle_dca(symbol, position)
+            if dca_result:
+                # DCA was executed, update position tracking
+                self._last_dca_time[symbol] = time.time()
+                self._dca_history[symbol] = dca_result.get('dca_history', [])
+                
+            # Update trailing stop if needed
+            if await self._update_trailing_stop(symbol, position['positionSide']):
+                # Trailing stop was updated, no need for further action
+                return
+                
+        except Exception as e:
+            logger.error(f"Error managing existing position for {symbol}: {str(e)}")

@@ -235,8 +235,11 @@ class TelegramService:
             
             self._is_paused = True
             self._pause_event.set()  # Set the pause event
-            await update.message.reply_text("⏸ Bot trading paused successfully")
-            logger.info("Bot trading paused via Telegram command")
+            await update.message.reply_text(
+                "⏸ Bot trading paused successfully\n"
+                "⚠️ Note: Only new trades are paused. Trailing stops and position management will continue to work."
+            )
+            logger.info("Bot trading paused via Telegram command - Only new trades are paused")
         except Exception as e:
             logger.error(f"Error handling pause command: {str(e)}")
             await update.message.reply_text("An error occurred while pausing the bot.")
