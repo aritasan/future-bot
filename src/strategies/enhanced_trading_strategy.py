@@ -1706,6 +1706,23 @@ class EnhancedTradingStrategy:
             position_size: Current position size
         """
         try:
+            # Get current price
+            current_price = await self.binance_service.get_current_price(symbol)
+            if not current_price:
+                logger.error(f"Failed to get current price for {symbol}")
+                return
+
+            # Check minimum distance
+            min_distance = current_price * self.config['risk_management']['min_stop_distance']
+            if position_type == "BUY":
+                if current_price - new_stop_loss < min_distance:
+                    logger.warning(f"Stop loss too close to current price for {symbol}. Adjusting...")
+                    new_stop_loss = current_price - min_distance
+            else:  # SELL
+                if new_stop_loss - current_price < min_distance:
+                    logger.warning(f"Stop loss too close to current price for {symbol}. Adjusting...")
+                    new_stop_loss = current_price + min_distance
+
             # Cancel existing stop loss
             await self.binance_service.cancel_all_orders(symbol)
             
@@ -1913,6 +1930,8 @@ class EnhancedTradingStrategy:
                 return
 
             # Send notification
+            order['stop_loss'] = stop_loss
+            order['take_profit'] = take_profit
             await self.telegram_service.send_order_notification(order)
 
         except Exception as e:
@@ -2523,3 +2542,51 @@ class EnhancedTradingStrategy:
         except Exception as e:
             logger.error(f"Error in select_trading_pairs: {str(e)}")
             return []
+
+    async def _update_take_profit(self, symbol: str, new_take_profit: float,
+                               position_type: str, position_size: float) -> None:
+        """Update take profit order.
+        
+        Args:
+            symbol: Trading pair symbol
+            new_take_profit: New take profit level
+            position_type: Position type (BUY/SELL)
+            position_size: Current position size
+        """
+        try:
+            # Get current price
+            current_price = await self.binance_service.get_current_price(symbol)
+            if not current_price:
+                logger.error(f"Failed to get current price for {symbol}")
+                return
+
+            # Check minimum distance
+            min_distance = current_price * self.config['risk_management']['min_take_profit_distance']
+            if position_type == "BUY":
+                if new_take_profit - current_price < min_distance:
+                    logger.warning(f"Take profit too close to current price for {symbol}. Adjusting...")
+                    new_take_profit = current_price + min_distance
+            else:  # SELL
+                if current_price - new_take_profit < min_distance:
+                    logger.warning(f"Take profit too close to current price for {symbol}. Adjusting...")
+                    new_take_profit = current_price - min_distance
+
+            # Cancel existing take profit
+            await self.binance_service.cancel_all_orders(symbol)
+            
+            # Place new take profit
+            await self.binance_service.place_order(
+                symbol=symbol,
+                side="SELL" if position_type == "BUY" else "BUY",
+                order_type="TAKE_PROFIT_MARKET",
+                quantity=abs(position_size),
+                stop_price=new_take_profit
+            )
+            
+            # Send notification
+            await self.notification_service.send_message(
+                f"Updated take profit for {symbol} to {new_take_profit}"
+            )
+            
+        except Exception as e:
+            logger.error(f"Error updating take profit for {symbol}: {str(e)}")
