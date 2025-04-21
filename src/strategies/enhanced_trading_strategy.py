@@ -1859,6 +1859,11 @@ class EnhancedTradingStrategy:
                 logger.error(f"Failed to get market conditions for {symbol}")
                 return
 
+            # Check if df exists in market_conditions
+            if 'df' not in market_conditions or market_conditions['df'] is None:
+                logger.error(f"Market data DataFrame not found for {symbol}")
+                return
+
             # Calculate position size based on risk per trade
             position_size = await self._calculate_position_size(
                 symbol=symbol,
@@ -1895,11 +1900,11 @@ class EnhancedTradingStrategy:
             # Place the order
             order_params = {
                 'symbol': symbol,
-                'side': 'buy' if signal.get('side', 'LONG') == 'LONG' else 'sell',
+                'side': 'buy' if signal.get('side', 'long').lower() == 'long' else 'sell',
                 'amount': position_size,
                 'stop_loss': stop_loss,
                 'take_profit': take_profit,
-                'position_side': signal.get('side', 'LONG')  # Use 'side' instead of 'position_type'
+                'position_side': 'LONG' if signal.get('side', 'long').lower() == 'long' else 'SHORT'
             }
 
             order = await self.binance_service.place_order(order_params)
