@@ -286,9 +286,9 @@ class EnhancedTradingStrategy:
                 # Determine position type based on signal score
                 if signal_score > 0.6 or signal_score < -0.6:
                     print(f"{symbol} signal_score: {signal_score}")
-                if signal_score > 0.61:  # Strong buy signal
+                if signal_score > 0.6:  # Strong buy signal
                     position_type = 'long'
-                elif signal_score < -0.61:  # Strong sell signal
+                elif signal_score < -0.6:  # Strong sell signal
                     position_type = 'short'
                 else:
                     return None
@@ -446,88 +446,58 @@ class EnhancedTradingStrategy:
             return False
             
     async def _calculate_stop_loss(self, symbol: str, df: pd.DataFrame, position_type: str, current_price: float, atr: float) -> float:
-        """Calculate stop loss based on market conditions and risk parameters."""
+        """Calculate stop loss price based on ATR and market conditions."""
         try:
+            # Get stop loss multiplier from config
+            stop_loss_multiplier = float(self.config['risk_management']['stop_loss_atr_multiplier'])
+            
+            # Calculate base stop loss using ATR
+            if position_type == "LONG":
+                stop_loss = float(current_price) - (float(atr) * stop_loss_multiplier)
+            else:
+                stop_loss = float(current_price) + (float(atr) * stop_loss_multiplier)
+            
             # Get market conditions
             market_conditions = await self._get_market_conditions(symbol)
-            volatility = market_conditions.get('volatility', 'LOW')
-            trend = market_conditions.get('trend', 'DOWN')
             
-            # Calculate base stop distance using ATR
-            base_stop = atr * self.config['risk_management']['atr_multiplier']
+            # Adjust stop loss based on volatility
+            if float(market_conditions['volatility']) > float(self.config['risk_management']['high_volatility_threshold']):
+                # Increase stop loss distance in high volatility
+                if position_type == "LONG":
+                    stop_loss = float(current_price) - (float(atr) * stop_loss_multiplier * 1.5)
+                else:
+                    stop_loss = float(current_price) + (float(atr) * stop_loss_multiplier * 1.5)
             
-            # Adjust stop distance based on market conditions
-            if volatility == 'HIGH':  # High volatility
-                base_stop *= self.config['risk_management']['volatility_multiplier']
-            if trend == 'UP' and position_type == 'LONG' or trend == 'DOWN' and position_type == 'SHORT':  # Strong trend
-                base_stop *= self.config['risk_management']['trend_multiplier']
-                
-            # Calculate stop loss price
-            if position_type == 'LONG':
-                stop_loss = current_price - base_stop
-                # Ensure stop loss is below current price with minimum distance
-                min_distance = current_price * self.config['risk_management']['min_stop_distance']
-                stop_loss = min(stop_loss, current_price - min_distance)
-                
-                # Additional validation for minimum distance
-                min_allowed_distance = current_price * self.config['risk_management']['min_stop_distance']
-                if current_price - stop_loss < min_allowed_distance:
-                    stop_loss = current_price - min_allowed_distance
-            else:  # SHORT
-                stop_loss = current_price + base_stop
-                # Ensure stop loss is above current price with minimum distance
-                min_distance = current_price * self.config['risk_management']['min_stop_distance']
-                stop_loss = max(stop_loss, current_price + min_distance)
-                
-                # Additional validation for minimum distance
-                min_allowed_distance = current_price * self.config['risk_management']['min_stop_distance']
-                if stop_loss - current_price < min_allowed_distance:
-                    stop_loss = current_price + min_allowed_distance
-                
-            # Round to appropriate precision
-            stop_loss = round(stop_loss, self.config['trading']['price_precision'])
+            # Ensure minimum distance from current price
+            min_distance = float(self.config['risk_management']['min_stop_distance'])
+            if position_type == "LONG":
+                stop_loss = min(stop_loss, float(current_price) - min_distance)
+            else:
+                stop_loss = max(stop_loss, float(current_price) + min_distance)
             
-            logger.info(f"Calculated stop loss for {symbol} {position_type}: {stop_loss} (current price: {current_price})")
+            logger.info(f"Calculated stop loss for {symbol} {position_type.lower()}: {stop_loss} (current price: {current_price})")
             return stop_loss
             
         except Exception as e:
-            logger.error(f"Error calculating stop loss: {str(e)}")
+            logger.error(f"Error calculating stop loss for {symbol}: {str(e)}")
             return None
 
     async def _calculate_take_profit(self, symbol: str, df: pd.DataFrame, position_type: str, current_price: float, stop_loss: float) -> float:
-        """Calculate take profit based on risk-reward ratio and market conditions."""
+        """Calculate take profit price based on risk-reward ratio."""
         try:
-            # Get market conditions
-            market_conditions = await self._get_market_conditions(symbol)
-            volatility = market_conditions.get('volatility', 'LOW')
-            trend = market_conditions.get('trend', 'DOWN')
+            # Get risk-reward ratio from config
+            risk_reward_ratio = self.config['risk_management']['take_profit_multiplier']
             
-            # Calculate base take profit using risk-reward ratio
-            if position_type == 'LONG':
-                risk_distance = current_price - stop_loss
-                base_tp = current_price + (risk_distance * self.config['risk_management']['take_profit_multiplier'])
-                
-                # Ensure take profit is above current price with minimum distance
-                min_distance = current_price * self.config['risk_management']['min_tp_distance']
-                base_tp = max(base_tp, current_price + min_distance)
-            else:  # SHORT
-                risk_distance = stop_loss - current_price
-                base_tp = current_price - (risk_distance * self.config['risk_management']['take_profit_multiplier'])
-                
-                # Ensure take profit is below current price with minimum distance
-                min_distance = current_price * self.config['risk_management']['min_tp_distance']
-                base_tp = min(base_tp, current_price - min_distance)
+            # Calculate price difference between current price and stop loss
+            price_diff = abs(current_price - stop_loss)
             
-            # Adjust take profit based on market conditions
-            if volatility == 'HIGH':  # High volatility
-                base_tp *= self.config['risk_management']['volatility_multiplier']
-            if trend == 'UP' and position_type == 'LONG' or trend == 'DOWN' and position_type == 'SHORT':  # Strong trend
-                base_tp *= self.config['risk_management']['trend_multiplier']
+            # Calculate take profit based on risk-reward ratio
+            if position_type == "LONG":
+                take_profit = current_price + (price_diff * risk_reward_ratio)
+            else:
+                take_profit = current_price - (price_diff * risk_reward_ratio)
             
-            # Round to appropriate precision
-            take_profit = round(base_tp, self.config['trading']['price_precision'])
-            
-            logger.info(f"Calculated take profit for {symbol} {position_type}: {take_profit} (current price: {current_price})")
+            logger.info(f"Calculated take profit for {symbol} {position_type.lower()}: {take_profit} (current price: {current_price})")
             return take_profit
             
         except Exception as e:
@@ -1806,7 +1776,7 @@ class EnhancedTradingStrategy:
             
             if position and float(position.get('positionAmt', 0)) != 0:
                 # We have an existing position, manage it
-                await self._manage_existing_position(symbol, position, signals)
+                await self._manage_existing_position(symbol, position)
             else:
                 # No existing position, check if we should open a new one
                 if not self.telegram_service.is_trading_paused():
@@ -1822,7 +1792,6 @@ class EnhancedTradingStrategy:
         try:
             # Check order frequency
             if not await self._check_order_frequency(symbol):
-                logger.warning(f"Cannot place new order for {symbol} due to frequency limits")
                 return
 
             # Get current price and ATR
@@ -1860,7 +1829,6 @@ class EnhancedTradingStrategy:
 
             # Check risk accumulation
             if not await self._check_risk_accumulation(symbol, position_size):
-                logger.warning(f"Cannot place new order for {symbol} due to risk limits")
                 return
 
             # Calculate stop loss and take profit
@@ -2597,7 +2565,6 @@ class EnhancedTradingStrategy:
             if self._order_history[symbol]:
                 last_order_time = self._order_history[symbol][-1]
                 if current_time - last_order_time < self._min_order_interval:
-                    logger.warning(f"Minimum order interval not met for {symbol}")
                     return False
             
             return True
@@ -2626,7 +2593,7 @@ class EnhancedTradingStrategy:
             current_risk = 0
             for position in positions:
                 if position['symbol'] == symbol:
-                    position_amt = float(position.get('positionAmt', 0))
+                    position_amt = float(position.get('info', {}).get('positionAmt', 0))
                     entry_price = float(position.get('entryPrice', 0))
                     current_price = float(position.get('markPrice', 0))
                     
@@ -2648,13 +2615,12 @@ class EnhancedTradingStrategy:
             logger.error(f"Error checking risk accumulation: {str(e)}")
             return False
 
-    async def _manage_existing_position(self, symbol: str, position: Dict, signals: Dict) -> None:
+    async def _manage_existing_position(self, symbol: str, position: Dict) -> None:
         """Manage an existing position.
         
         Args:
             symbol: Trading pair symbol
             position: Current position details
-            signals: Trading signals
         """
         try:
             # Check if we should close the position

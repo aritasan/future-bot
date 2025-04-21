@@ -272,6 +272,33 @@ def load_config() -> Dict[str, Any]:
                     'volatility_threshold': 0.03,  # 3% volatility threshold
                     'volume_threshold': 2.0,  # 2x average volume threshold
                     'distance': 0.02  # 2% emergency stop distance
+                },
+
+                # New order frequency control parameters
+                'order_frequency': {
+                    'min_time_between_orders': 300,  # 5 minutes minimum between orders
+                    'max_orders_per_hour': 12,  # Maximum 12 orders per hour
+                    'max_orders_per_day': 50,  # Maximum 50 orders per day
+                    'cool_down_period': 3600,  # 1 hour cool down if limits exceeded
+                    'time_windows': {
+                        'hourly': 3600,
+                        'daily': 86400
+                    }
+                },
+
+                # New risk accumulation control parameters
+                'risk_accumulation': {
+                    'max_concurrent_positions': 5,  # Maximum 5 concurrent positions
+                    'max_total_risk': 0.2,  # 20% maximum total risk
+                    'risk_reduction_factor': 0.8,  # Reduce risk by 20% for each new position
+                    'position_size_limits': {
+                        'min': 0.01,  # 1% minimum position size
+                        'max': 0.1,   # 10% maximum position size
+                        'default': 0.05  # 5% default position size
+                    },
+                    'correlation_threshold': 0.7,  # Maximum allowed correlation between positions
+                    'volatility_threshold': 0.02,  # Maximum allowed volatility (2%)
+                    'drawdown_threshold': 0.1  # 10% maximum drawdown
                 }
             },
             'cache': {
