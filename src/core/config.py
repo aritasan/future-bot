@@ -107,6 +107,7 @@ TREND_MULTIPLIER = float(os.getenv("TREND_MULTIPLIER", "1.2"))  # Trend strength
 TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "2.0"))  # Risk:Reward ratio
 DCA_MULTIPLIER = float(os.getenv("DCA_MULTIPLIER", "0.5"))  # DCA size relative to initial position
 ATR_MULTIPLIER = float(os.getenv("ATR_MULTIPLIER", "1.5"))  # ATR multiplier for dynamic stops
+STOP_LOSS_ATR_MULTIPLIER = float(os.getenv("STOP_LOSS_ATR_MULTIPLIER", "1.5"))  # ATR multiplier for stop loss calculation
 
 # New risk management parameters
 MIN_STOP_DISTANCE = float(os.getenv("MIN_STOP_DISTANCE", "0.005"))  # 0.5% minimum distance for stop loss
@@ -189,6 +190,7 @@ def load_config() -> Dict[str, Any]:
                 'volatility_multiplier': 1.5,  # Volatility adjustment factor
                 'trend_multiplier': 1.2,  # Trend strength adjustment factor
                 'base_stop_distance': 0.02,  # Base stop distance (2%)
+                'stop_loss_atr_multiplier': 1.5,  # ATR multiplier for stop loss calculation
                 
                 # DCA parameters
                 'dca': {

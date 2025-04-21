@@ -111,8 +111,8 @@ class EnhancedTradingStrategy:
         self._position_entry_time = {}  # Track entry time for each position
         self._order_history = {}  # Track order history per symbol
         self._min_order_interval = 300  # Minimum 5 minutes between orders
-        self._max_orders_per_hour = 3  # Maximum 3 orders per hour
-        self._max_risk_per_symbol = 0.1  # Maximum 10% risk per symbol
+        self._max_orders_per_hour = 10  # Maximum 3 orders per hour
+        self._max_risk_per_symbol = 0.3  # Maximum 10% risk per symbol
         
     async def initialize(self) -> bool:
         """Initialize the strategy.
@@ -312,9 +312,9 @@ class EnhancedTradingStrategy:
                 print(f"Volatility condition not met for {symbol}")
                 return None
                 
-            if not self.check_bollinger_condition(df):
-                print(f"Bollinger condition not met for {symbol}")
-                return None
+            # if not self.check_bollinger_condition(df):
+            #     print(f"Bollinger condition not met for {symbol}")
+            #     return None
                 
             # Calculate position size
             current_price = float(df['close'].iloc[-1])
@@ -445,7 +445,7 @@ class EnhancedTradingStrategy:
             logger.error(f"Error checking breakout: {str(e)}")
             return False
             
-    async def _calculate_stop_loss(self, symbol: str, df: pd.DataFrame, position_type: str, current_price: float, atr: float) -> float:
+    async def _calculate_stop_loss(self, symbol: str, position_type: str, current_price: float, atr: float) -> float:
         """Calculate stop loss price based on ATR and market conditions."""
         try:
             # Get stop loss multiplier from config
@@ -461,12 +461,18 @@ class EnhancedTradingStrategy:
             market_conditions = await self._get_market_conditions(symbol)
             
             # Adjust stop loss based on volatility
-            if float(market_conditions['volatility']) > float(self.config['risk_management']['high_volatility_threshold']):
-                # Increase stop loss distance in high volatility
-                if position_type == "LONG":
-                    stop_loss = float(current_price) - (float(atr) * stop_loss_multiplier * 1.5)
-                else:
-                    stop_loss = float(current_price) + (float(atr) * stop_loss_multiplier * 1.5)
+            volatility = market_conditions.get('volatility', 0)
+            try:
+                volatility = float(volatility)
+                if volatility > float(self.config['risk_management']['high_volatility_threshold']):
+                    # Increase stop loss distance in high volatility
+                    if position_type == "LONG":
+                        stop_loss = float(current_price) - (float(atr) * stop_loss_multiplier * 1.5)
+                    else:
+                        stop_loss = float(current_price) + (float(atr) * stop_loss_multiplier * 1.5)
+            except (ValueError, TypeError):
+                # If volatility is not a number, use default multiplier
+                logger.warning(f"Invalid volatility value for {symbol}, using default stop loss")
             
             # Ensure minimum distance from current price
             min_distance = float(self.config['risk_management']['min_stop_distance'])
@@ -482,7 +488,7 @@ class EnhancedTradingStrategy:
             logger.error(f"Error calculating stop loss for {symbol}: {str(e)}")
             return None
 
-    async def _calculate_take_profit(self, symbol: str, df: pd.DataFrame, position_type: str, current_price: float, stop_loss: float) -> float:
+    async def _calculate_take_profit(self, symbol: str, position_type: str, current_price: float, stop_loss: float) -> float:
         """Calculate take profit price based on risk-reward ratio."""
         try:
             # Get risk-reward ratio from config
@@ -1317,7 +1323,6 @@ class EnhancedTradingStrategy:
             # Update stop loss and take profit
             new_stop_loss = await self._calculate_stop_loss(
                 symbol=symbol,
-                df=market_conditions['df'],
                 position_type=position_type,
                 current_price=current_price,
                 atr=market_conditions['atr']
@@ -1325,7 +1330,6 @@ class EnhancedTradingStrategy:
             
             new_take_profit = await self._calculate_take_profit(
                 symbol=symbol,
-                df=market_conditions['df'],
                 position_type=position_type,
                 current_price=current_price,
                 stop_loss=new_stop_loss
@@ -1553,14 +1557,14 @@ class EnhancedTradingStrategy:
             
             # Check if we should move to break-even
             if self._should_move_to_break_even(
-                current_price, entry_price, unrealized_pnl, position_age, position_size
+                current_price, unrealized_pnl, position_age, position_size
             ):
                 new_stop_loss = entry_price
                 logger.info(f"Moving to break-even for {symbol} at {new_stop_loss}")
                 
             # Check if we should take partial profit
             if self._should_take_partial_profit(
-                current_price, entry_price, unrealized_pnl, position_age, position_size
+                current_price, unrealized_pnl, position_age, position_size
             ):
                 await self._take_partial_profit(symbol, position_size)
                 logger.info(f"Taking partial profit for {symbol}")
@@ -1584,8 +1588,7 @@ class EnhancedTradingStrategy:
         except Exception as e:
             logger.error(f"Error updating trailing stop for {symbol}: {str(e)}")
             
-    def _should_move_to_break_even(self, current_price: float, entry_price: float,
-                                 unrealized_pnl: float, position_age: float,
+    def _should_move_to_break_even(self, current_price: float, unrealized_pnl: float, position_age: float,
                                  position_size: float) -> bool:
         """Check if we should move stop loss to break-even.
         
@@ -1605,8 +1608,7 @@ class EnhancedTradingStrategy:
         profit_ratio = abs(unrealized_pnl / (current_price * abs(position_size)))
         return profit_ratio >= min_profit_ratio and position_age >= min_time
         
-    def _should_take_partial_profit(self, current_price: float, entry_price: float,
-                                  unrealized_pnl: float, position_age: float,
+    def _should_take_partial_profit(self, current_price: float, unrealized_pnl: float, position_age: float,
                                   position_size: float) -> bool:
         """Check if we should take partial profit.
         
@@ -1834,7 +1836,6 @@ class EnhancedTradingStrategy:
             # Calculate stop loss and take profit
             stop_loss = await self._calculate_stop_loss(
                 symbol=symbol,
-                df=market_conditions['df'],
                 position_type=signal.get('side', 'LONG'),
                 current_price=current_price,
                 atr=atr
@@ -1845,7 +1846,6 @@ class EnhancedTradingStrategy:
 
             take_profit = await self._calculate_take_profit(
                 symbol=symbol,
-                df=market_conditions['df'],
                 position_type=signal.get('side', 'LONG'),
                 current_price=current_price,
                 stop_loss=stop_loss
