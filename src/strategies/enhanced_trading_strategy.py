@@ -13,24 +13,28 @@ from src.services.indicator_service import IndicatorService
 from src.services.sentiment_service import SentimentService
 from src.services.binance_service import BinanceService
 from src.services.telegram_service import TelegramService
+from src.services.notification_service import NotificationService
 
 logger = logging.getLogger(__name__)
 
 class EnhancedTradingStrategy:
     """Enhanced trading strategy with multiple indicators and risk management."""
     
-    def __init__(self, config: Dict, binance_service: BinanceService, indicator_service: IndicatorService, telegram_service: TelegramService):
+    def __init__(self, config: Dict, binance_service: BinanceService, indicator_service: IndicatorService,
+                 notification_service: NotificationService, telegram_service: TelegramService):
         """Initialize the trading strategy.
         
         Args:
             config: Configuration dictionary
             binance_service: Binance service instance
             indicator_service: Indicator service instance
+            notification_service: Notification service instance
             telegram_service: Telegram service instance
         """
         self.config = config
         self.binance_service = binance_service
         self.indicator_service = indicator_service
+        self.notification_service = notification_service
         self.telegram_service = telegram_service
         self._is_running = False
         self._monitoring_tasks = []
@@ -105,6 +109,10 @@ class EnhancedTradingStrategy:
         self._last_trade_stop_loss = {}
         self._last_trade_take_profit = {}
         self._position_entry_time = {}  # Track entry time for each position
+        self._order_history = {}  # Track order history per symbol
+        self._min_order_interval = 300  # Minimum 5 minutes between orders
+        self._max_orders_per_hour = 3  # Maximum 3 orders per hour
+        self._max_risk_per_symbol = 0.1  # Maximum 10% risk per symbol
         
     async def initialize(self) -> bool:
         """Initialize the strategy.
@@ -1858,6 +1866,11 @@ class EnhancedTradingStrategy:
     async def _execute_trade(self, symbol: str, signal: Dict) -> None:
         """Execute a trade based on the signal."""
         try:
+            # Check order frequency
+            if not await self._check_order_frequency(symbol):
+                logger.warning(f"Cannot place new order for {symbol} due to frequency limits")
+                return
+
             # Get current price and ATR
             current_price = await self.binance_service.get_current_price(symbol)
             if not current_price:
@@ -1891,11 +1904,16 @@ class EnhancedTradingStrategy:
                 logger.error(f"Failed to calculate position size for {symbol}")
                 return
 
+            # Check risk accumulation
+            if not await self._check_risk_accumulation(symbol, position_size):
+                logger.warning(f"Cannot place new order for {symbol} due to risk limits")
+                return
+
             # Calculate stop loss and take profit
             stop_loss = await self._calculate_stop_loss(
                 symbol=symbol,
                 df=market_conditions['df'],
-                position_type=signal.get('side', 'LONG'),  # Use 'side' instead of 'position_type'
+                position_type=signal.get('side', 'LONG'),
                 current_price=current_price,
                 atr=atr
             )
@@ -1906,7 +1924,7 @@ class EnhancedTradingStrategy:
             take_profit = await self._calculate_take_profit(
                 symbol=symbol,
                 df=market_conditions['df'],
-                position_type=signal.get('side', 'LONG'),  # Use 'side' instead of 'position_type'
+                position_type=signal.get('side', 'LONG'),
                 current_price=current_price,
                 stop_loss=stop_loss
             )
@@ -1928,6 +1946,9 @@ class EnhancedTradingStrategy:
             if not order:
                 logger.error(f"Failed to place order for {symbol}")
                 return
+
+            # Update order history
+            self._order_history[symbol].append(time.time())
 
             # Send notification
             order['stop_loss'] = stop_loss
@@ -2590,3 +2611,85 @@ class EnhancedTradingStrategy:
             
         except Exception as e:
             logger.error(f"Error updating take profit for {symbol}: {str(e)}")
+
+    async def _check_order_frequency(self, symbol: str) -> bool:
+        """Check if we can place a new order based on frequency limits.
+        
+        Args:
+            symbol: Trading pair symbol
+            
+        Returns:
+            bool: True if we can place a new order
+        """
+        try:
+            current_time = time.time()
+            
+            # Initialize order history if not exists
+            if symbol not in self._order_history:
+                self._order_history[symbol] = []
+            
+            # Remove orders older than 1 hour
+            self._order_history[symbol] = [
+                order_time for order_time in self._order_history[symbol]
+                if current_time - order_time < 3600
+            ]
+            
+            # Check if we have reached max orders per hour
+            if len(self._order_history[symbol]) >= self._max_orders_per_hour:
+                logger.warning(f"Maximum orders per hour reached for {symbol}")
+                return False
+            
+            # Check minimum interval since last order
+            if self._order_history[symbol]:
+                last_order_time = self._order_history[symbol][-1]
+                if current_time - last_order_time < self._min_order_interval:
+                    logger.warning(f"Minimum order interval not met for {symbol}")
+                    return False
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error checking order frequency: {str(e)}")
+            return False
+
+    async def _check_risk_accumulation(self, symbol: str, new_position_size: float) -> bool:
+        """Check if adding new position would exceed risk limits.
+        
+        Args:
+            symbol: Trading pair symbol
+            new_position_size: Size of new position to add
+            
+        Returns:
+            bool: True if risk limit is not exceeded
+        """
+        try:
+            # Get current positions
+            positions = await self.binance_service.get_positions()
+            if not positions:
+                return True
+                
+            # Calculate current risk for symbol
+            current_risk = 0
+            for position in positions:
+                if position['symbol'] == symbol:
+                    position_amt = float(position.get('positionAmt', 0))
+                    entry_price = float(position.get('entryPrice', 0))
+                    current_price = float(position.get('markPrice', 0))
+                    
+                    # Calculate risk as percentage of account
+                    risk = abs(position_amt * (current_price - entry_price))
+                    current_risk += risk
+                    
+            # Calculate new risk
+            new_risk = new_position_size * self.config['risk_management']['max_risk_per_trade']
+            
+            # Check if total risk would exceed limit
+            if current_risk + new_risk > self._max_risk_per_symbol:
+                logger.warning(f"Risk limit would be exceeded for {symbol}")
+                return False
+                
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error checking risk accumulation: {str(e)}")
+            return False

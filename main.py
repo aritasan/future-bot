@@ -18,6 +18,7 @@ from src.services.telegram_service import TelegramService
 from src.services.indicator_service import IndicatorService
 from src.core.health_monitor import HealthMonitor
 from src.strategies.enhanced_trading_strategy import EnhancedTradingStrategy
+from src.services.notification_service import NotificationService
 
 # Create logs directory if it doesn't exist
 if not os.path.exists('logs'):
@@ -227,6 +228,7 @@ async def main():
     telegram_service = None
     health_monitor = None
     indicator_service = None
+    notification_service = None
     strategy = None
 
     try:
@@ -242,11 +244,13 @@ async def main():
         telegram_service = TelegramService(config)
         health_monitor = HealthMonitor(config)
         indicator_service = IndicatorService(config)
+        notification_service = NotificationService(config)
         strategy = EnhancedTradingStrategy(
             config=config,
             binance_service=binance_service,
             indicator_service=indicator_service,
-            telegram_service=telegram_service
+            telegram_service=telegram_service,
+            notification_service=notification_service
         )
 
         # Initialize Binance service first
@@ -279,6 +283,10 @@ async def main():
                 
             if not await strategy.initialize():
                 logger.error("Failed to initialize strategy")
+                return
+                
+            if not await notification_service.initialize():
+                logger.error("Failed to initialize notification service")
                 return
                 
             logger.info("All services initialized successfully")
