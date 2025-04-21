@@ -327,6 +327,7 @@ class EnhancedTradingStrategy:
             return {
                 'symbol': symbol,
                 'side': position_type,
+                'position_type': position_type,
                 'signal_score': signal_score,
                 'should_trade': True,
                 'position_size': position_size,
@@ -879,14 +880,14 @@ class EnhancedTradingStrategy:
                         break
 
             # Calculate trailing stop price
-            if position_type == 'LONG':
+            if position_type.upper() == 'LONG':
                 trailing_stop = current_price - base_distance
             else:
                 trailing_stop = current_price + base_distance
 
             # Ensure minimum distance
             min_distance = self.config['risk_management']['min_stop_distance']
-            if position_type == 'LONG':
+            if position_type.upper() == 'LONG':
                 trailing_stop = max(trailing_stop, current_price * (1 - min_distance))
             else:
                 trailing_stop = min(trailing_stop, current_price * (1 + min_distance))
@@ -1322,7 +1323,7 @@ class EnhancedTradingStrategy:
             # Place DCA order
             order_params = {
                 'symbol': symbol,
-                'side': 'BUY' if position_type == 'LONG' else 'SELL',
+                'side': 'BUY' if position_type.upper() == 'LONG' else 'SELL',
                 'type': 'MARKET',
                 'amount': dca_size,
                 'reduceOnly': False
@@ -1805,51 +1806,32 @@ class EnhancedTradingStrategy:
     async def _execute_trade(self, symbol: str, signal: Dict) -> None:
         """Execute a trade based on the signal."""
         try:
-            # Check order frequency
-            if not await self._check_order_frequency(symbol):
-                return
-
-            # Get current price and ATR
+            # Get current price
             current_price = await self.binance_service.get_current_price(symbol)
             if not current_price:
                 logger.error(f"Failed to get current price for {symbol}")
                 return
 
-            # Get ATR for position sizing and stop loss calculation
-            atr = await self.indicator_service.calculate_atr(symbol)
-            if not atr:
-                logger.error(f"Failed to calculate ATR for {symbol}")
-                return
-
-            # Get market conditions
-            market_conditions = await self._get_market_conditions(symbol)
-            if not market_conditions:
-                logger.error(f"Failed to get market conditions for {symbol}")
-                return
-
-            # Check if df exists in market_conditions
-            if 'df' not in market_conditions or market_conditions['df'] is None:
-                logger.error(f"Market data DataFrame not found for {symbol}")
-                return
-
-            # Calculate position size based on risk per trade
+            # Calculate position size
             position_size = await self._calculate_position_size(
                 symbol=symbol,
-                risk_per_trade=signal.get('risk_per_trade', self.config['trading']['risk_per_trade']),
+                risk_per_trade=float(self.config['trading']['risk_per_trade']),
                 current_price=current_price
             )
             if not position_size:
                 logger.error(f"Failed to calculate position size for {symbol}")
                 return
 
-            # Check risk accumulation
-            # if not await self._check_risk_accumulation(symbol, position_size):
-            #     return
+            # Get ATR for stop loss calculation
+            atr = await self.indicator_service.calculate_atr(symbol)
+            if not atr:
+                logger.error(f"Failed to get ATR for {symbol}")
+                return
 
             # Calculate stop loss and take profit
             stop_loss = await self._calculate_stop_loss(
                 symbol=symbol,
-                position_type=signal.get('side', 'LONG'),
+                position_type=signal['position_type'],
                 current_price=current_price,
                 atr=atr
             )
@@ -1859,7 +1841,7 @@ class EnhancedTradingStrategy:
 
             take_profit = await self._calculate_take_profit(
                 symbol=symbol,
-                position_type=signal.get('side', 'LONG'),
+                position_type=signal['position_type'],
                 current_price=current_price,
                 stop_loss=stop_loss
             )
@@ -1867,14 +1849,47 @@ class EnhancedTradingStrategy:
                 logger.error(f"Failed to calculate take profit for {symbol}")
                 return
 
+            # Get current position
+            current_position = await self.binance_service.get_position(symbol)
+            if current_position:
+                # Cancel existing SL/TP orders
+                open_orders = await self.binance_service.get_open_orders(symbol)
+                if open_orders:
+                    for order in open_orders:
+                        if order['type'] in ['STOP_MARKET', 'TAKE_PROFIT_MARKET']:
+                            await self.binance_service.cancel_order(symbol, order['id'])
+                            logger.info(f"Cancelled existing {order['type']} order for {symbol}")
+
+                # Calculate new total position size
+                current_size = float(current_position.get('positionAmt', 0))
+                new_total_size = current_size + position_size if signal['position_type'].upper() == 'LONG' else current_size - position_size
+                
+                # Calculate new SL/TP based on average entry price
+                entry_price = float(current_position.get('entryPrice', 0))
+                new_entry_price = (entry_price * abs(current_size) + current_price * position_size) / abs(new_total_size)
+                
+                # Recalculate SL/TP with new entry price
+                stop_loss = await self._calculate_stop_loss(
+                    symbol=symbol,
+                    position_type=signal['position_type'],
+                    current_price=new_entry_price,
+                    atr=atr
+                )
+                take_profit = await self._calculate_take_profit(
+                    symbol=symbol,
+                    position_type=signal['position_type'],
+                    current_price=new_entry_price,
+                    stop_loss=stop_loss
+                )
+
             # Place the order
             order_params = {
                 'symbol': symbol,
-                'side': 'buy' if signal.get('side', 'long').lower() == 'long' else 'sell',
+                'side': 'buy' if signal['position_type'].upper() == 'LONG' else 'sell',
+                'type': 'market',
                 'amount': position_size,
                 'stop_loss': stop_loss,
-                'take_profit': take_profit,
-                'position_side': 'LONG' if signal.get('side', 'long').lower() == 'long' else 'SHORT'
+                'take_profit': take_profit
             }
 
             order = await self.binance_service.place_order(order_params)
@@ -1882,17 +1897,22 @@ class EnhancedTradingStrategy:
                 logger.error(f"Failed to place order for {symbol}")
                 return
 
-            # Update order history
-            self._order_history[symbol].append(time.time())
-
             # Send notification
-            order['stop_loss'] = stop_loss
-            order['take_profit'] = take_profit
             await self.telegram_service.send_order_notification(order)
+
+            # Update tracking variables
+            self._last_trade_time[symbol] = time.time()
+            self._last_trade_price[symbol] = current_price
+            self._last_trade_side[symbol] = signal['position_type']
+            self._last_trade_amount[symbol] = position_size
+            self._last_trade_stop_loss[symbol] = stop_loss
+            self._last_trade_take_profit[symbol] = take_profit
+
+            logger.info(f"Trade executed for {symbol}: {order}")
 
         except Exception as e:
             logger.error(f"Error executing trade for {symbol}: {str(e)}")
-            raise
+            return
 
     async def start_monitoring_tasks(self) -> None:
         """Start all monitoring tasks."""
