@@ -452,7 +452,8 @@ class EnhancedTradingStrategy:
             stop_loss_multiplier = float(self.config['risk_management']['stop_loss_atr_multiplier'])
             
             # Calculate base stop loss using ATR
-            if position_type == "LONG":
+            logger.info(f"Calculating stop loss for {symbol} {position_type} {position_type.upper()}")
+            if position_type.upper() == "LONG":
                 stop_loss = float(current_price) - (float(atr) * stop_loss_multiplier)
             else:
                 stop_loss = float(current_price) + (float(atr) * stop_loss_multiplier)
@@ -498,7 +499,8 @@ class EnhancedTradingStrategy:
             price_diff = abs(current_price - stop_loss)
             
             # Calculate take profit based on risk-reward ratio
-            if position_type == "LONG":
+            logger.info(f"Calculating take profit for {symbol} {position_type} {position_type.upper()}")
+            if position_type.upper() == "LONG":
                 take_profit = current_price + (price_diff * risk_reward_ratio)
             else:
                 take_profit = current_price - (price_diff * risk_reward_ratio)
