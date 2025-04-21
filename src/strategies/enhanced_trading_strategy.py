@@ -110,9 +110,9 @@ class EnhancedTradingStrategy:
         self._last_trade_take_profit = {}
         self._position_entry_time = {}  # Track entry time for each position
         self._order_history = {}  # Track order history per symbol
-        self._min_order_interval = 300  # Minimum 5 minutes between orders
+        self._min_order_interval = 120  # Minimum 5 minutes between orders
         self._max_orders_per_hour = 10  # Maximum 3 orders per hour
-        self._max_risk_per_symbol = 0.3  # Maximum 10% risk per symbol
+        self._max_risk_per_symbol = 0.3  # Maximum 30% risk per symbol
         
     async def initialize(self) -> bool:
         """Initialize the strategy.
@@ -467,7 +467,7 @@ class EnhancedTradingStrategy:
                 volatility = float(volatility)
                 if volatility > float(self.config['risk_management']['high_volatility_threshold']):
                     # Increase stop loss distance in high volatility
-                    if position_type == "LONG":
+                    if position_type.upper() == "LONG":
                         stop_loss = float(current_price) - (float(atr) * stop_loss_multiplier * 1.5)
                     else:
                         stop_loss = float(current_price) + (float(atr) * stop_loss_multiplier * 1.5)
@@ -477,10 +477,12 @@ class EnhancedTradingStrategy:
             
             # Ensure minimum distance from current price
             min_distance = float(self.config['risk_management']['min_stop_distance'])
-            if position_type == "LONG":
-                stop_loss = min(stop_loss, float(current_price) - min_distance)
+            if position_type.upper() == "LONG":
+                # For LONG positions, ensure stop loss is below current price
+                stop_loss = min(stop_loss, float(current_price) * (1 - min_distance))
             else:
-                stop_loss = max(stop_loss, float(current_price) + min_distance)
+                # For SHORT positions, ensure stop loss is above current price
+                stop_loss = max(stop_loss, float(current_price) * (1 + min_distance))
             
             logger.info(f"Calculated stop loss for {symbol} {position_type.lower()}: {stop_loss} (current price: {current_price})")
             return stop_loss
@@ -504,6 +506,15 @@ class EnhancedTradingStrategy:
                 take_profit = current_price + (price_diff * risk_reward_ratio)
             else:
                 take_profit = current_price - (price_diff * risk_reward_ratio)
+            
+            # Ensure minimum distance from current price
+            min_distance = float(self.config['risk_management']['min_tp_distance'])
+            if position_type.upper() == "LONG":
+                # For LONG positions, ensure take profit is above current price
+                take_profit = max(take_profit, current_price * (1 + min_distance))
+            else:
+                # For SHORT positions, ensure take profit is below current price
+                take_profit = min(take_profit, current_price * (1 - min_distance))
             
             logger.info(f"Calculated take profit for {symbol} {position_type.lower()}: {take_profit} (current price: {current_price})")
             return take_profit
@@ -1832,8 +1843,8 @@ class EnhancedTradingStrategy:
                 return
 
             # Check risk accumulation
-            if not await self._check_risk_accumulation(symbol, position_size):
-                return
+            # if not await self._check_risk_accumulation(symbol, position_size):
+            #     return
 
             # Calculate stop loss and take profit
             stop_loss = await self._calculate_stop_loss(
