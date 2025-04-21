@@ -1521,6 +1521,7 @@ class EnhancedTradingStrategy:
             volume_status = "HIGH" if volume_ratio > 1.5 else "MEDIUM" if volume_ratio > 1 else "LOW"
             
             return {
+                'df': df,
                 'trend': trend,
                 'volatility': volatility,
                 'volume': volume_status,

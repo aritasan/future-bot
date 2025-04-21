@@ -104,7 +104,6 @@ class BinanceService:
             price = order_params.get('price')
             stop_loss = order_params.get('stop_loss')
             take_profit = order_params.get('take_profit')
-            reduce_only = order_params.get('reduce_only')
             position_side = order_params.get('position_side')
             
             # Validate required parameters
@@ -120,20 +119,24 @@ class BinanceService:
                     return None
                 price = ticker.get('last')
                 
+            # Determine position side and order side for Hedge Mode
+            if side == "buy":
+                position_side = "LONG"
+                close_side = "SELL"
+            else:
+                position_side = "SHORT"
+                close_side = "BUY"
+                
             # Place the main order
-            order_params = {
+            main_order_params = {
                 "positionSide": position_side
             }
-            
-            # Only add reduceOnly if explicitly requested
-            if reduce_only:
-                order_params["reduceOnly"] = True
                 
             order = await self.exchange.create_market_order(
                 symbol=symbol,
                 side=side,
                 amount=amount,
-                params=order_params
+                params=main_order_params
             )
             
             if not order:
@@ -144,14 +147,6 @@ class BinanceService:
             cache_key = f"{symbol}_{side}_{order_type}"
             self.order_cache[cache_key] = order
             
-            # Xác định position side và order side cho Hedge Mode
-            if side == "buy":
-                position_side = "LONG"
-                close_side = "SELL"
-            else:
-                position_side = "SHORT"
-                close_side = "BUY"
-                
             # Place stop loss order if provided
             if stop_loss:
                 try:
@@ -163,8 +158,7 @@ class BinanceService:
                         "workingType": "MARK_PRICE",
                         "priceProtect": True,
                         "timeInForce": "GTC",  # Good Till Cancel
-                        "closePosition": True,  # Close the entire position
-                        "reduceOnly": True  # Always reduce only for SL
+                        "closePosition": True  # Close the entire position
                     }
                     
                     sl_order = await self.exchange.create_order(
@@ -193,8 +187,7 @@ class BinanceService:
                         "workingType": "MARK_PRICE",
                         "priceProtect": True,
                         "timeInForce": "GTC",  # Good Till Cancel
-                        "closePosition": True,  # Close the entire position
-                        "reduceOnly": True  # Always reduce only for TP
+                        "closePosition": True  # Close the entire position
                     }
                     
                     tp_order = await self.exchange.create_order(
