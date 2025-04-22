@@ -2,7 +2,7 @@
 Telegram service for sending notifications and receiving commands.
 """
 import logging
-from typing import Dict, Optional
+from typing import Dict
 from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, ContextTypes
 from telegram.constants import ParseMode
