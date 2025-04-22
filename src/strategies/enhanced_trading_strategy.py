@@ -1293,7 +1293,7 @@ class EnhancedTradingStrategy:
                 return None
                 
             entry_price = float(position.get('entryPrice', 0))
-            position_size = float(position.get('positionAmt', 0))
+            position_size = float(position.get('info').get('positionAmt', 0))
             position_type = position.get('positionSide', 'LONG')
             
             if not entry_price or not position_size:
@@ -1790,7 +1790,7 @@ class EnhancedTradingStrategy:
             # Get current position
             position = await self.binance_service.get_position(symbol)
             
-            if position and float(position.get('positionAmt', 0)) != 0:
+            if position and float(position.get('info').get('positionAmt', 0)) != 0:
                 # We have an existing position, manage it
                 await self._manage_existing_position(symbol, position)
             else:
@@ -1861,7 +1861,7 @@ class EnhancedTradingStrategy:
                             logger.info(f"Cancelled existing {order['type']} order for {symbol}")
 
                 # Calculate new total position size
-                current_size = float(current_position.get('positionAmt', 0))
+                current_size = float(current_position.get('info').get('positionAmt', 0))
                 new_total_size = current_size + position_size if signal['position_type'].upper() == 'LONG' else current_size - position_size
                 
                 # Calculate new SL/TP based on average entry price
@@ -2000,7 +2000,7 @@ class EnhancedTradingStrategy:
                             continue  # Skip this position but continue with others
                             
                         # Determine position side based on position amount
-                        position_amt = float(position.get('positionAmt', 0))
+                        position_amt = float(position.get('info').get('positionAmt', 0))
                         position_side = 'LONG' if position_amt > 0 else 'SHORT'
                         
                         await self._update_trailing_stop(symbol, position_side)
@@ -2681,7 +2681,7 @@ class EnhancedTradingStrategy:
                         symbol=symbol,
                         new_stop_loss=new_stops['stop_loss'],
                         position_type=position['positionSide'],
-                        position_size=abs(float(position['positionAmt']))
+                        position_size=abs(float(position['info']['positionAmt']))
                     )
                     
                     # Update take profit
@@ -2689,7 +2689,7 @@ class EnhancedTradingStrategy:
                         symbol=symbol,
                         new_take_profit=new_stops['take_profit'],
                         position_type=position['positionSide'],
-                        position_size=abs(float(position['positionAmt']))
+                        position_size=abs(float(position['info']['positionAmt']))
                     )
                     
             # Check for DCA opportunity

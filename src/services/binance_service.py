@@ -271,8 +271,10 @@ class BinanceService:
                 return None
                 
             # Find position for the specified symbol
+            # Convert BIO/USDT:USDT => BIOUSDT
+            symbol = symbol.split(':')[0].replace('/', '')
             for position in positions:
-                if position.get('symbol') == symbol and float(position.get('contracts', 0)) != 0:
+                if position.get('info').get('symbol') == symbol and float(position.get('contracts', 0)) != 0:
                     return position
                     
             return None
@@ -587,7 +589,7 @@ class BinanceService:
             # Only add reduceOnly if we're in a position that requires it
             # Check if we have an open position for this symbol
             position = await self.get_position(symbol)
-            if position and float(position.get('positionAmt', 0)) != 0:
+            if position and float(position.get('info').get('positionAmt', 0)) != 0:
                 params['reduceOnly'] = True
             
             if position_side:
@@ -617,7 +619,7 @@ class BinanceService:
             # Only add reduceOnly if we're in a position that requires it
             # Check if we have an open position for this symbol
             position = await self.get_position(symbol)
-            if position and float(position.get('positionAmt', 0)) != 0:
+            if position and float(position.get('info').get('positionAmt', 0)) != 0:
                 params['reduceOnly'] = True
                 
             result = await self._make_request(
@@ -860,7 +862,7 @@ class BinanceService:
                 return False
                 
             # Get position amount
-            position_amt = float(position.get('positionAmt', 0))
+            position_amt = float(position.get('info').get('positionAmt', 0))
             if position_amt == 0:
                 logger.warning(f"No position amount for {symbol}")
                 return False
