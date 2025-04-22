@@ -105,6 +105,7 @@ class BinanceService:
             stop_loss = order_params.get('stop_loss')
             take_profit = order_params.get('take_profit')
             position_side = order_params.get('position_side')
+            reduce_only = order_params.get('reduceOnly', order_params.get('reduce_only', order_params.get('params', {}).get('reduceOnly', False)))
             
             # Validate required parameters
             if not all([symbol, side, amount]):
@@ -131,7 +132,10 @@ class BinanceService:
             main_order_params = {
                 "positionSide": position_side
             }
-                
+
+            if reduce_only:
+                main_order_params['reduceOnly'] = True
+
             order = await self.exchange.create_order(
                 symbol=symbol,
                 type=order_type,
