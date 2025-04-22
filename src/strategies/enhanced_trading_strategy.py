@@ -1902,6 +1902,8 @@ class EnhancedTradingStrategy:
                 return
 
             # Send notification
+            order['stop_loss'] = stop_loss
+            order['take_profit'] = take_profit
             await self.telegram_service.send_order_notification(order)
 
             # Update tracking variables
