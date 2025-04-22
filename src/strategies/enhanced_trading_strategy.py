@@ -1387,58 +1387,67 @@ class EnhancedTradingStrategy:
             dca_config = self.config['risk_management']['dca']
             risk_control = dca_config['risk_control']
 
+            # Convert all values to float for comparison
+            price_drop = float(price_drop)
+            min_price_drop = float(dca_config['price_drop_thresholds'][0])
+            volume_threshold = float(dca_config['volume_threshold'])
+            volatility_threshold = float(dca_config['volatility_threshold'])
+            btc_correlation_threshold = float(dca_config['btc_correlation_threshold'])
+            max_drawdown = float(risk_control['max_drawdown'])
+            max_position_size = float(risk_control['max_position_size'])
+            min_profit_target = float(risk_control['min_profit_target'])
+
             # Check price drop threshold
-            if price_drop < dca_config['price_drop_thresholds'][0]:
+            if price_drop < min_price_drop:
                 logger.info("Price drop below minimum threshold")
                 return False
 
             # Check volume condition
-            volume_ratio = market_conditions.get('volume_ratio', 1.0)
-            if volume_ratio < dca_config['volume_threshold']:
+            volume_ratio = float(market_conditions.get('volume_ratio', 1.0))
+            if volume_ratio < volume_threshold:
                 logger.info("Volume below threshold")
                 return False
 
             # Check volatility condition
-            volatility = market_conditions.get('volatility', 0)
-            if volatility > dca_config['volatility_threshold']:
+            volatility = float(market_conditions.get('volatility', 0))
+            if volatility > volatility_threshold:
                 logger.info("Volatility above threshold")
                 return False
 
             # Check RSI condition
-            rsi = market_conditions.get('rsi', 50)
-            if dca_config['rsi_thresholds']['oversold'] < rsi < dca_config['rsi_thresholds']['overbought']:
+            rsi = float(market_conditions.get('rsi', 50))
+            if float(dca_config['rsi_thresholds']['oversold']) < rsi < float(dca_config['rsi_thresholds']['overbought']):
                 logger.info("RSI not in favorable range")
                 return False
 
             # Check BTC correlation
-            btc_correlation = market_conditions.get('btc_correlation', 0)
-            if abs(btc_correlation) < dca_config['btc_correlation_threshold']:
+            btc_correlation = float(market_conditions.get('btc_correlation', 0))
+            if abs(btc_correlation) < btc_correlation_threshold:
                 logger.info("BTC correlation below threshold")
                 return False
 
             # Check time since last DCA
-            last_dca_time = market_conditions.get('last_dca_time', 0)
-            current_time = time.time()
-            if current_time - last_dca_time < dca_config['min_time_between_attempts']:
+            last_dca_time = float(market_conditions.get('last_dca_time', 0))
+            current_time = float(time.time())
+            if current_time - last_dca_time < float(dca_config['min_time_between_attempts']):
                 logger.info("Not enough time since last DCA")
                 return False
 
             # Check max drawdown
-            current_drawdown = market_conditions.get('current_drawdown', 0)
-            if current_drawdown > risk_control['max_drawdown']:
+            current_drawdown = float(market_conditions.get('current_drawdown', 0))
+            if current_drawdown > max_drawdown:
                 logger.info("Max drawdown exceeded")
                 return False
 
             # Check position size
-            position_size = market_conditions.get('position_size', 0)
-            account_balance = market_conditions.get('account_balance', 0)
-            if position_size / account_balance > risk_control['max_position_size']:
+            position_size = float(market_conditions.get('position_size', 0))
+            account_balance = float(market_conditions.get('account_balance', 0))
+            if account_balance > 0 and position_size / account_balance > max_position_size:
                 logger.info("Max position size exceeded")
                 return False
 
             # Check profit target
-            min_profit_target = risk_control['min_profit_target']
-            if market_conditions.get('unrealized_pnl', 0) < min_profit_target:
+            if float(market_conditions.get('unrealized_pnl', 0)) < min_profit_target:
                 logger.info("Profit target not reached")
                 return False
 
