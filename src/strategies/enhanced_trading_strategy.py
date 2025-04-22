@@ -617,7 +617,7 @@ class EnhancedTradingStrategy:
                 return False
                 
             # Check if price moved significantly
-            if position["side"] == "BUY":
+            if position["side"].upper() == "BUY":
                 price_change = (current_price - position["entry_price"]) / position["entryPrice"]
                 if price_change > 0.02:  # 2% move
                     return True
@@ -628,9 +628,9 @@ class EnhancedTradingStrategy:
                     
             # Check if trend is strengthening
             current_trend = self.get_trend(df)
-            if position["side"] == "BUY" and current_trend == "UP":
+            if position["side"].upper() == "BUY" and current_trend == "UP":
                 return True
-            elif position["side"] == "SELL" and current_trend == "DOWN":
+            elif position["side"].upper() == "SELL" and current_trend == "DOWN":
                 return True
                 
             return False
@@ -1591,9 +1591,9 @@ class EnhancedTradingStrategy:
                 logger.warning(f"Emergency stop triggered for {symbol} at {new_stop_loss}")
                 
             # Only update if new stop is more favorable
-            if position_type == "BUY" and new_stop_loss > current_stop_loss:
+            if position_type.upper() == "BUY" and new_stop_loss > current_stop_loss:
                 await self._update_stop_loss(symbol, new_stop_loss, position_type, position_size)
-            elif position_type == "SELL" and new_stop_loss < current_stop_loss:
+            elif position_type.upper() == "SELL" and new_stop_loss < current_stop_loss:
                 await self._update_stop_loss(symbol, new_stop_loss, position_type, position_size)
                 
             # Update last update time
@@ -1687,7 +1687,7 @@ class EnhancedTradingStrategy:
         """Calculate emergency stop level based on current market price and position type."""
         emergency_distance = self.config['risk_management']['emergency_stop']['distance']
         
-        if position_type == "BUY":
+        if position_type.upper() == "BUY":
             return current_price * (1 - emergency_distance)
         else:
             return current_price * (1 + emergency_distance)
@@ -1711,7 +1711,7 @@ class EnhancedTradingStrategy:
 
             # Check minimum distance
             min_distance = current_price * self.config['risk_management']['min_stop_distance']
-            if position_type == "BUY":
+            if position_type.upper() == "BUY":
                 if current_price - new_stop_loss < min_distance:
                     logger.warning(f"Stop loss too close to current price for {symbol}. Adjusting...")
                     new_stop_loss = current_price - min_distance
@@ -1726,7 +1726,7 @@ class EnhancedTradingStrategy:
             # Place new stop loss
             order_params = {
                 'symbol': symbol,
-                'side': "SELL" if position_type == "BUY" else "BUY",
+                'side': "SELL" if position_type.upper() == "BUY" else "BUY",
                 'type': "STOP_MARKET",
                 'amount': abs(position_size),
                 'stop_price': new_stop_loss
@@ -2542,7 +2542,7 @@ class EnhancedTradingStrategy:
 
             # Check minimum distance
             min_distance = current_price * self.config['risk_management']['min_take_profit_distance']
-            if position_type == "BUY":
+            if position_type.upper() == "BUY":
                 if new_take_profit - current_price < min_distance:
                     logger.warning(f"Take profit too close to current price for {symbol}. Adjusting...")
                     new_take_profit = current_price + min_distance
@@ -2557,7 +2557,7 @@ class EnhancedTradingStrategy:
             # Create order parameters
             order_params = {
                 'symbol': symbol,
-                'side': "SELL" if position_type == "BUY" else "BUY",
+                'side': "SELL" if position_type.upper() == "BUY" else "BUY",
                 'type': "TAKE_PROFIT_MARKET",
                 'amount': abs(position_size),
                 'stop_price': new_take_profit

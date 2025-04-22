@@ -120,7 +120,7 @@ class BinanceService:
                 price = ticker.get('last')
                 
             # Determine position side and order side for Hedge Mode
-            if side == "buy":
+            if side.lower() == "buy":
                 position_side = "LONG"
                 close_side = "SELL"
             else:
@@ -132,8 +132,9 @@ class BinanceService:
                 "positionSide": position_side
             }
                 
-            order = await self.exchange.create_market_order(
+            order = await self.exchange.create_order(
                 symbol=symbol,
+                type=order_type,
                 side=side,
                 amount=amount,
                 params=main_order_params
@@ -868,7 +869,7 @@ class BinanceService:
                 return False
                 
             # Determine side based on position amount
-            side = 'sell' if position_amt > 0 else 'buy'
+            side = 'SELL' if position_amt > 0 else 'BUY'
             amount = abs(position_amt)
             
             # Get position side
