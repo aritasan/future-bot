@@ -8,6 +8,7 @@ import ccxt.async_support as ccxt
 from datetime import timedelta
 import time
 import asyncio
+from src.utils.helpers import is_same_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +136,7 @@ class BinanceService:
             }
 
             # For market orders, reduceOnly should be in the main params
-            if order_type == 'market' and close_position:
+            if order_type.lower() == 'market' and close_position:
                 main_order_params['closePosition'] = True
 
             # For stop/take profit orders, reduceOnly should be in the params
@@ -286,7 +287,7 @@ class BinanceService:
             # Convert BIO/USDT:USDT => BIOUSDT
             symbol = symbol.split(':')[0].replace('/', '')
             for position in positions:
-                if position.get('info').get('symbol') == symbol and float(position.get('contracts', 0)) != 0:
+                if is_same_symbol(position.get('info').get('symbol'), symbol) and float(position.get('contracts', 0)) != 0:
                     return position
                     
             return None

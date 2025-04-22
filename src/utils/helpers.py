@@ -34,7 +34,7 @@ def get_min_order_size(symbol: str) -> float:
         
         # Find the symbol info
         for symbol_info in exchange_info['symbols']:
-            if symbol_info['symbol'] == symbol.replace('/', ''):
+            if is_same_symbol(symbol_info['symbol'], symbol):
                 # Get the minimum order size from the symbol info
                 min_qty = float(symbol_info['filters'][1]['minQty'])
                 return min_qty
@@ -174,3 +174,10 @@ def get_exchange_info() -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Error getting exchange info: {e}")
         return {} 
+    
+def is_same_symbol(symbol1: str, symbol2: str) -> bool:
+    """Check if two symbols are the same"""
+    symbol1 = symbol1.split(':')[0].replace('/', '')
+    symbol2 = symbol2.split(':')[0].replace('/', '')
+    return symbol1.lower() == symbol2.lower()
+

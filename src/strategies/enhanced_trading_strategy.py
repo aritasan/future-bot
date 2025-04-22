@@ -14,6 +14,7 @@ from src.services.sentiment_service import SentimentService
 from src.services.binance_service import BinanceService
 from src.services.telegram_service import TelegramService
 from src.services.notification_service import NotificationService
+from src.utils.helpers import is_same_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -570,17 +571,17 @@ class EnhancedTradingStrategy:
                     return True
                     
             # Check trend reversal
-            try:
-                # Get current trend
-                trend = await self._get_market_trend(symbol)
-                if trend:
-                    # If trend has reversed from our position
-                    if (position_amt > 0 and trend == 'bearish') or \
-                       (position_amt < 0 and trend == 'bullish'):
-                        logger.info(f"Trend reversal detected for {symbol}: {trend}")
-                        return True
-            except Exception as e:
-                logger.error(f"Error checking trend for {symbol}: {str(e)}")
+            # try:
+            #     # Get current trend
+            #     trend = await self._get_market_trend(symbol)
+            #     if trend:
+            #         # If trend has reversed from our position
+            #         if (position_amt > 0 and trend == 'bearish') or \
+            #            (position_amt < 0 and trend == 'bullish'):
+            #             logger.info(f"Trend reversal detected for {symbol}: {trend}")
+            #             return True
+            # except Exception as e:
+            #     logger.error(f"Error checking trend for {symbol}: {str(e)}")
                 
             # Check market sentiment
             try:
@@ -2634,7 +2635,7 @@ class EnhancedTradingStrategy:
             # Calculate current risk for symbol
             current_risk = 0
             for position in positions:
-                if position['symbol'] == symbol:
+                if is_same_symbol(position['symbol'], symbol):
                     position_amt = float(position.get('info', {}).get('positionAmt', 0))
                     entry_price = float(position.get('entryPrice', 0))
                     current_price = float(position.get('markPrice', 0))
