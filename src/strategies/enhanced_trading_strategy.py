@@ -618,11 +618,11 @@ class EnhancedTradingStrategy:
                 
             # Check if price moved significantly
             if position["side"] == "BUY":
-                price_change = (current_price - position["entry_price"]) / position["entry_price"]
+                price_change = (current_price - position["entry_price"]) / position["entryPrice"]
                 if price_change > 0.02:  # 2% move
                     return True
             else:
-                price_change = (position["entry_price"] - current_price) / position["entry_price"]
+                price_change = (position["entryPrice"] - current_price) / position["entryPrice"]
                 if price_change > 0.02:  # 2% move
                     return True
                     
@@ -1294,7 +1294,7 @@ class EnhancedTradingStrategy:
                 
             entry_price = float(position.get('entryPrice', 0))
             position_size = float(position.get('info').get('positionAmt', 0))
-            position_type = position.get('positionSide', 'LONG')
+            position_type = position.get('info').get('positionSide', 'LONG')
             
             if not entry_price or not position_size:
                 logger.error(f"Invalid position details for {symbol}")
@@ -2680,7 +2680,7 @@ class EnhancedTradingStrategy:
                     await self._update_stop_loss(
                         symbol=symbol,
                         new_stop_loss=new_stops['stop_loss'],
-                        position_type=position['positionSide'],
+                        position_type=position['info']['positionSide'],
                         position_size=abs(float(position['info']['positionAmt']))
                     )
                     
@@ -2688,7 +2688,7 @@ class EnhancedTradingStrategy:
                     await self._update_take_profit(
                         symbol=symbol,
                         new_take_profit=new_stops['take_profit'],
-                        position_type=position['positionSide'],
+                        position_type=position['info']['positionSide'],
                         position_size=abs(float(position['info']['positionAmt']))
                     )
                     
@@ -2700,7 +2700,7 @@ class EnhancedTradingStrategy:
                 self._dca_history[symbol] = dca_result.get('dca_history', [])
                 
             # Update trailing stop if needed
-            if await self._update_trailing_stop(symbol, position['positionSide']):
+            if await self._update_trailing_stop(symbol, position['info']['positionSide']):
                 # Trailing stop was updated, no need for further action
                 return
                 

@@ -872,7 +872,7 @@ class BinanceService:
             amount = abs(position_amt)
             
             # Get position side
-            position_side = position.get('positionSide', 'LONG' if position_amt > 0 else 'SHORT')
+            position_side = position.get('info').get('positionSide', 'LONG' if position_amt > 0 else 'SHORT')
             
             # Create market order to close position
             order_params = {
