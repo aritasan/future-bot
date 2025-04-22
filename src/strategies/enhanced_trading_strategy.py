@@ -1654,13 +1654,16 @@ class EnhancedTradingStrategy:
             close_ratio = self.config['risk_management']['trailing_stop']['partial_profit']['close_ratio']
             close_size = abs(position_size) * close_ratio
             
+            # Create order parameters
+            order_params = {
+                'symbol': symbol,
+                'side': "SELL" if position_size > 0 else "BUY",
+                'type': "MARKET",
+                'amount': close_size
+            }
+            
             # Place market order to close portion
-            await self.binance_service.place_order(
-                symbol=symbol,
-                side="SELL" if position_size > 0 else "BUY",
-                order_type="MARKET",
-                quantity=close_size
-            )
+            await self.binance_service.place_order(order_params)
             
         except Exception as e:
             logger.error(f"Error taking partial profit for {symbol}: {str(e)}")
@@ -1721,13 +1724,14 @@ class EnhancedTradingStrategy:
             await self.binance_service.cancel_all_orders(symbol)
             
             # Place new stop loss
-            await self.binance_service.place_order(
-                symbol=symbol,
-                side="SELL" if position_type == "BUY" else "BUY",
-                order_type="STOP_MARKET",
-                quantity=abs(position_size),
-                stop_price=new_stop_loss
-            )
+            order_params = {
+                'symbol': symbol,
+                'side': "SELL" if position_type == "BUY" else "BUY",
+                'type': "STOP_MARKET",
+                'amount': abs(position_size),
+                'stop_price': new_stop_loss
+            }
+            await self.binance_service.place_order(**order_params)
             
             # Send notification
             await self.notification_service.send_message(
@@ -2550,14 +2554,17 @@ class EnhancedTradingStrategy:
             # Cancel existing take profit
             await self.binance_service.cancel_all_orders(symbol)
             
+            # Create order parameters
+            order_params = {
+                'symbol': symbol,
+                'side': "SELL" if position_type == "BUY" else "BUY",
+                'type': "TAKE_PROFIT_MARKET",
+                'amount': abs(position_size),
+                'stop_price': new_take_profit
+            }
+            
             # Place new take profit
-            await self.binance_service.place_order(
-                symbol=symbol,
-                side="SELL" if position_type == "BUY" else "BUY",
-                order_type="TAKE_PROFIT_MARKET",
-                quantity=abs(position_size),
-                stop_price=new_take_profit
-            )
+            await self.binance_service.place_order(order_params)
             
             # Send notification
             await self.notification_service.send_message(
