@@ -440,6 +440,14 @@ class IndicatorService:
             df = self._calculate_adx(df)
             df = self._calculate_ichimoku(df)
             
+            # Add advanced momentum indicators
+            df = self._calculate_momentum(df)
+            df = self._calculate_stochastic(df)
+            df = self._calculate_mfi(df)
+            df = self._calculate_obv(df)
+            df = self._calculate_cci(df)
+            df = self._calculate_williams_r(df)
+            
             return df
             
         except Exception as e:
@@ -635,3 +643,136 @@ class IndicatorService:
         except Exception as e:
             logger.error(f"Error calculating ATR for {symbol}: {str(e)}")
             return None 
+
+    def _calculate_momentum(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate momentum indicators."""
+        try:
+            # Rate of Change (ROC)
+            df['ROC'] = ((df['close'] - df['close'].shift(14)) / df['close'].shift(14)) * 100.0
+            
+            # Momentum
+            df['MOM'] = df['close'] - df['close'].shift(10)
+            
+            # Relative Momentum Index (RMI)
+            df['RMI'] = self._calculate_rmi(df)
+            
+            return df
+        except Exception as e:
+            logger.error(f"Error calculating momentum indicators: {str(e)}")
+            return df
+
+    def _calculate_rmi(self, df: pd.DataFrame) -> pd.Series:
+        """Calculate Relative Momentum Index."""
+        try:
+            # Calculate price changes
+            price_changes = df['close'].diff()
+            
+            # Calculate upward and downward movements
+            up_moves = price_changes.where(price_changes > 0, 0.0)
+            down_moves = -price_changes.where(price_changes < 0, 0.0)
+            
+            # Calculate smoothed averages
+            up_avg = up_moves.rolling(window=14).mean()
+            down_avg = down_moves.rolling(window=14).mean()
+            
+            # Calculate RMI
+            rmi = 100.0 - (100.0 / (1.0 + (up_avg / down_avg)))
+            return rmi
+        except Exception as e:
+            logger.error(f"Error calculating RMI: {str(e)}")
+            return pd.Series(0.0, index=df.index)
+
+    def _calculate_stochastic(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate Stochastic Oscillator."""
+        try:
+            # Calculate %K
+            low_min = df['low'].rolling(window=14).min()
+            high_max = df['high'].rolling(window=14).max()
+            df['STOCH_K'] = 100.0 * ((df['close'] - low_min) / (high_max - low_min))
+            
+            # Calculate %D (3-period moving average of %K)
+            df['STOCH_D'] = df['STOCH_K'].rolling(window=3).mean()
+            
+            return df
+        except Exception as e:
+            logger.error(f"Error calculating Stochastic: {str(e)}")
+            return df
+
+    def _calculate_mfi(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate Money Flow Index."""
+        try:
+            # Calculate typical price
+            typical_price = (df['high'] + df['low'] + df['close']) / 3.0
+            
+            # Calculate money flow
+            money_flow = typical_price * df['volume']
+            
+            # Calculate positive and negative money flow
+            price_diff = typical_price.diff()
+            positive_flow = money_flow.where(price_diff > 0, 0.0)
+            negative_flow = money_flow.where(price_diff < 0, 0.0)
+            
+            # Calculate money ratio
+            positive_flow_sum = positive_flow.rolling(window=14).sum()
+            negative_flow_sum = negative_flow.rolling(window=14).sum()
+            money_ratio = positive_flow_sum / negative_flow_sum
+            
+            # Calculate MFI
+            df['MFI'] = 100.0 - (100.0 / (1.0 + money_ratio))
+            
+            return df
+        except Exception as e:
+            logger.error(f"Error calculating MFI: {str(e)}")
+            return df
+
+    def _calculate_obv(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate On-Balance Volume."""
+        try:
+            # Calculate price changes
+            price_changes = df['close'].diff()
+            
+            # Calculate OBV
+            obv = pd.Series(0.0, index=df.index)
+            obv[price_changes > 0] = df['volume']
+            obv[price_changes < 0] = -df['volume']
+            df['OBV'] = obv.cumsum()
+            
+            return df
+        except Exception as e:
+            logger.error(f"Error calculating OBV: {str(e)}")
+            return df
+
+    def _calculate_cci(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate Commodity Channel Index."""
+        try:
+            # Calculate typical price
+            typical_price = (df['high'] + df['low'] + df['close']) / 3.0
+            
+            # Calculate moving average
+            ma = typical_price.rolling(window=20).mean()
+            
+            # Calculate mean deviation
+            mean_deviation = abs(typical_price - ma).rolling(window=20).mean()
+            
+            # Calculate CCI
+            df['CCI'] = (typical_price - ma) / (0.015 * mean_deviation)
+            
+            return df
+        except Exception as e:
+            logger.error(f"Error calculating CCI: {str(e)}")
+            return df
+
+    def _calculate_williams_r(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate Williams %R."""
+        try:
+            # Calculate highest high and lowest low
+            highest_high = df['high'].rolling(window=14).max()
+            lowest_low = df['low'].rolling(window=14).min()
+            
+            # Calculate Williams %R
+            df['WILLIAMS_R'] = -100.0 * (highest_high - df['close']) / (highest_high - lowest_low)
+            
+            return df
+        except Exception as e:
+            logger.error(f"Error calculating Williams %R: {str(e)}")
+            return df 
