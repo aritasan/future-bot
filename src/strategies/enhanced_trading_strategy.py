@@ -257,7 +257,7 @@ class EnhancedTradingStrategy:
                 'df': df,
                 'trend': timeframe_analysis.get('trend', ''),
                 'trend_strength': timeframe_analysis.get('trend_strength', 0),
-                'volatility': btc_volatility.get('volatility', 0),
+                'volatility': btc_volatility.get('volatility_level', 'LOW'),
                 'volume': df['volume'].iloc[-1] / df['volume'].mean(),
                 'price_action': {
                     'breakout_direction': 'up' if df['close'].iloc[-1] > df['BB_upper'].iloc[-1] else 'down' if df['close'].iloc[-1] < df['BB_lower'].iloc[-1] else ''
@@ -464,18 +464,13 @@ class EnhancedTradingStrategy:
             market_conditions = await self._get_market_conditions(symbol)
             
             # Adjust stop loss based on volatility
-            volatility = market_conditions.get('volatility', 0)
-            try:
-                volatility = float(volatility)
-                if volatility > float(self.config['risk_management']['high_volatility_threshold']):
-                    # Increase stop loss distance in high volatility
-                    if position_type.upper() == "LONG":
-                        stop_loss = float(current_price) - (float(atr) * stop_loss_multiplier * 1.5)
-                    else:
-                        stop_loss = float(current_price) + (float(atr) * stop_loss_multiplier * 1.5)
-            except (ValueError, TypeError):
-                # If volatility is not a number, use default multiplier
-                logger.warning(f"Invalid volatility value for {symbol}, using default stop loss")
+            volatility = market_conditions.get('volatility', 'LOW')
+            if volatility == 'HIGH':
+                # Increase stop loss distance in high volatility
+                if position_type.upper() == "LONG":
+                    stop_loss = float(current_price) - (float(atr) * stop_loss_multiplier * 1.5)
+                else:
+                    stop_loss = float(current_price) + (float(atr) * stop_loss_multiplier * 1.5)
             
             # Ensure minimum distance from current price
             min_distance = float(self.config['risk_management']['min_stop_distance'])
@@ -935,10 +930,10 @@ class EnhancedTradingStrategy:
                 
             # Calculate volatility score
             if btc_volatility:
-                volatility_level = btc_volatility.get('volatility_level', 'medium')
-                if volatility_level == 'low':
+                volatility_level = btc_volatility.get('volatility_level', 'LOW')
+                if volatility_level == 'LOW':
                     volatility_score = 0.3
-                elif volatility_level == 'medium':
+                elif volatility_level == 'MEDIUM':
                     volatility_score = 0.2
                 else:
                     volatility_score = 0.1
@@ -1391,7 +1386,6 @@ class EnhancedTradingStrategy:
             price_drop = float(price_drop)
             min_price_drop = float(dca_config['price_drop_thresholds'][0])
             volume_threshold = float(dca_config['volume_threshold'])
-            volatility_threshold = float(dca_config['volatility_threshold'])
             btc_correlation_threshold = float(dca_config['btc_correlation_threshold'])
             max_drawdown = float(risk_control['max_drawdown'])
             max_position_size = float(risk_control['max_position_size'])
@@ -1414,9 +1408,9 @@ class EnhancedTradingStrategy:
                 return False
 
             # Check volatility condition
-            volatility = float(market_conditions.get('volatility', 0))
-            if volatility > volatility_threshold:
-                logger.info("Volatility above threshold")
+            volatility = market_conditions.get('volatility', 'LOW')
+            if volatility == 'HIGH':
+                logger.info("Volatility too high")
                 return False
 
             # Check RSI condition
@@ -1459,6 +1453,8 @@ class EnhancedTradingStrategy:
             return True
 
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             logger.error(f"Error checking DCA conditions: {str(e)}")
             return False
 
