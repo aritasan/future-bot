@@ -670,13 +670,21 @@ class EnhancedTradingStrategy:
                 return {}
                 
             # Calculate stop distance based on volatility
-            volatility = market_conditions['volatility']
+            volatility = market_conditions.get('volatility', 'LOW')
             base_stop_distance = self.config['risk_management']['base_stop_distance']
-            volatility_multiplier = 1 + (volatility * self.config['risk_management']['volatility_multiplier'])
+            
+            # Adjust volatility multiplier based on volatility level
+            if volatility == 'HIGH':
+                volatility_multiplier = 1.5
+            elif volatility == 'MEDIUM':
+                volatility_multiplier = 1.0
+            else:  # LOW
+                volatility_multiplier = 0.5
+                
             stop_distance = base_stop_distance * volatility_multiplier
             
             # Adjust stop distance based on trend strength
-            trend_strength = market_conditions['trend_strength']
+            trend_strength = market_conditions.get('trend', 0)
             trend_multiplier = 1 + (trend_strength * self.config['risk_management']['trend_multiplier'])
             stop_distance *= trend_multiplier
             
