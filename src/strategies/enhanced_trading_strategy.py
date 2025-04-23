@@ -683,9 +683,14 @@ class EnhancedTradingStrategy:
                 
             stop_distance = base_stop_distance * volatility_multiplier
             
-            # Adjust stop distance based on trend strength
-            trend_strength = market_conditions.get('trend', 0)
-            trend_multiplier = 1 + (trend_strength * self.config['risk_management']['trend_multiplier'])
+            # Adjust stop distance based on trend
+            trend = market_conditions.get('trend', 'UP')
+            # If trend is in our favor, we can use a tighter stop
+            if (position_amt > 0 and trend == 'UP') or (position_amt < 0 and trend == 'DOWN'):
+                trend_multiplier = 0.8  # Tighter stop in trend direction
+            else:
+                trend_multiplier = 1.2  # Wider stop against trend
+                
             stop_distance *= trend_multiplier
             
             # Calculate new stop loss
@@ -1315,7 +1320,7 @@ class EnhancedTradingStrategy:
                 
             # Check if DCA is favorable based on multiple conditions
             if not self._is_dca_favorable(price_drop, market_conditions):
-                logger.info(f"DCA not favorable for {symbol} at {current_price}")
+                # logger.info(f"DCA not favorable for {symbol} at {current_price}")
                 return None
                 
             # Calculate DCA size based on risk management
@@ -1406,7 +1411,6 @@ class EnhancedTradingStrategy:
 
             # Check price drop threshold
             if price_drop < min_price_drop:
-                logger.info("Price drop below minimum threshold")
                 return False
 
             # Check volume condition
