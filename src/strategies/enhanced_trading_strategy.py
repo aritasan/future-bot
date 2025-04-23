@@ -584,16 +584,16 @@ class EnhancedTradingStrategy:
             #     logger.error(f"Error checking trend for {symbol}: {str(e)}")
                 
             # Check market sentiment
-            try:
-                sentiment = await self._get_market_sentiment(symbol)
-                if sentiment:
-                    # If sentiment is strongly against our position
-                    if (position_amt > 0 and sentiment < -0.7) or \
-                       (position_amt < 0 and sentiment > 0.7):
-                        logger.info(f"Strong market sentiment against position for {symbol}: {sentiment}")
-                        return True
-            except Exception as e:
-                logger.error(f"Error checking sentiment for {symbol}: {str(e)}")
+            # try:
+            #     sentiment = await self._get_market_sentiment(symbol)
+            #     if sentiment:
+            #         # If sentiment is strongly against our position
+            #         if (position_amt > 0 and sentiment < -0.7) or \
+            #            (position_amt < 0 and sentiment > 0.7):
+            #             logger.info(f"Strong market sentiment against position for {symbol}: {sentiment}")
+            #             return True
+            # except Exception as e:
+            #     logger.error(f"Error checking sentiment for {symbol}: {str(e)}")
                 
             return False
             
@@ -1397,6 +1397,11 @@ class EnhancedTradingStrategy:
             max_position_size = float(risk_control['max_position_size'])
             min_profit_target = float(risk_control['min_profit_target'])
 
+            # Convert RSI thresholds to float
+            rsi_thresholds = dca_config['rsi_thresholds']
+            oversold_threshold = float(rsi_thresholds['oversold'])
+            overbought_threshold = float(rsi_thresholds['overbought'])
+
             # Check price drop threshold
             if price_drop < min_price_drop:
                 logger.info("Price drop below minimum threshold")
@@ -1416,7 +1421,7 @@ class EnhancedTradingStrategy:
 
             # Check RSI condition
             rsi = float(market_conditions.get('rsi', 50))
-            if float(dca_config['rsi_thresholds']['oversold']) < rsi < float(dca_config['rsi_thresholds']['overbought']):
+            if oversold_threshold < rsi < overbought_threshold:
                 logger.info("RSI not in favorable range")
                 return False
 

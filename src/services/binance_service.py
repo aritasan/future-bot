@@ -895,7 +895,6 @@ class BinanceService:
                 'amount': amount,
                 'params': {
                     'reduceOnly': True,
-                    'closePosition': True,
                     'positionSide': position_side
                 }
             }
