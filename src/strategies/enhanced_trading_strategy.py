@@ -1755,7 +1755,7 @@ class EnhancedTradingStrategy:
                 'params': {
                     'stopPrice': new_stop_loss,
                     'closePosition': True,
-                    'positionSide': "SHORT" if position_type.upper() == "SELL" or position_type.upper() == "SHORT" else "LONG"
+                    'positionSide': "LONG" if position_type.upper() == "BUY" or position_type.upper() == "LONG" else "SHORT"
                 }
             }
             
@@ -2595,7 +2595,7 @@ class EnhancedTradingStrategy:
                 'params': {
                     'stopPrice': new_take_profit,
                     'closePosition': True,
-                    'positionSide': "SHORT" if position_type.upper() == "SELL" or position_type.upper() == "SHORT" else "LONG"
+                    'positionSide': "LONG" if position_type.upper() == "BUY" or position_type.upper() == "LONG" else "SHORT"
                 }
             }
             

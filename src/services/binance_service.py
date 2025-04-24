@@ -115,7 +115,7 @@ class BinanceService:
                 return None
                 
             # Get current market price if not provided
-            if not price and order_type == 'limit':
+            if not price and order_type.lower() == 'limit':
                 ticker = await self.get_ticker(symbol)
                 if not ticker:
                     logger.error(f"Failed to get ticker for {symbol}")
@@ -140,9 +140,13 @@ class BinanceService:
                 main_order_params['closePosition'] = True
 
             # For stop/take profit orders, reduceOnly should be in the params
-            if order_type in ['stop_market', 'take_profit_market']:
-                main_order_params['reduceOnly'] = True
-                main_order_params['closePosition'] = True
+            if order_type.lower() in ['stop_market', 'take_profit_market']:
+                main_order_params['stopPrice'] = order_params.get('params', {}).get('stopPrice')
+                main_order_params['positionSide'] = order_params.get('params', {}).get('positionSide')
+                main_order_params['workingType'] = "MARK_PRICE"
+                main_order_params['priceProtect'] = True
+                main_order_params['timeInForce'] = "GTC"
+
 
             order = await self.exchange.create_order(
                 symbol=symbol,
