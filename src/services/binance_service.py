@@ -330,7 +330,7 @@ class BinanceService:
                 if price <= 0:
                     logger.error(f"Invalid price {price} for {symbol}")
                     return None
-                logger.info(f"Current price for {symbol}: {price}")
+                # logger.info(f"Current price for {symbol}: {price}")
                 return price
             return None
         except Exception as e:
