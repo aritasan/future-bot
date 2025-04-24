@@ -912,4 +912,41 @@ class BinanceService:
                 
         except Exception as e:
             logger.error(f"Error closing position for {symbol}: {str(e)}")
+            return False
+
+    async def cancel_all_orders(self, symbol: str) -> bool:
+        """Cancel all open orders for a symbol.
+        
+        Args:
+            symbol: Trading pair symbol
+            
+        Returns:
+            bool: True if all orders were cancelled successfully, False otherwise
+        """
+        try:
+            if not self._is_initialized:
+                logger.error("Binance service not initialized")
+                return False
+                
+            if self._is_closed:
+                logger.error("Binance service is closed")
+                return False
+                
+            # Get all open orders
+            orders = await self.get_open_orders(symbol)
+            if not orders:
+                return True
+                
+            # Cancel each order
+            for order in orders:
+                try:
+                    await self.cancel_order(symbol, order['id'])
+                except Exception as e:
+                    logger.error(f"Error cancelling order {order['id']}: {str(e)}")
+                    continue
+                    
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error cancelling all orders for {symbol}: {str(e)}")
             return False 

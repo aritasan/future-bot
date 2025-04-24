@@ -2566,7 +2566,7 @@ class EnhancedTradingStrategy:
                 return
 
             # Check minimum distance
-            min_distance = current_price * self.config['risk_management']['min_take_profit_distance']
+            min_distance = current_price * self.config['risk_management']['min_tp_distance']
             if position_type.upper() == "BUY":
                 if new_take_profit - current_price < min_distance:
                     logger.warning(f"Take profit too close to current price for {symbol}. Adjusting...")
