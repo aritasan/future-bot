@@ -285,8 +285,8 @@ class EnhancedTradingStrategy:
                 }
             else:
                 # Determine position type based on signal score
-                if signal_score > 0.6 or signal_score < -0.6:
-                    print(f"{symbol} signal_score: {signal_score}")
+                # if signal_score > 0.6 or signal_score < -0.6:
+                #     print(f"{symbol} signal_score: {signal_score}")
                 if signal_score > 0.6:  # Strong buy signal
                     position_type = 'long'
                 elif signal_score < -0.6:  # Strong sell signal
@@ -306,11 +306,11 @@ class EnhancedTradingStrategy:
                 
             # Check conditions
             if not self.check_volume_condition(df):
-                print(f"Volume condition not met for {symbol}")
+                # print(f"Volume condition not met for {symbol}")
                 return None
                 
             if not self.check_volatility_condition(df):
-                print(f"Volatility condition not met for {symbol}")
+                # print(f"Volatility condition not met for {symbol}")
                 return None
                 
             # if not self.check_bollinger_condition(df):
@@ -1734,11 +1734,11 @@ class EnhancedTradingStrategy:
 
             # Check minimum distance
             min_distance = current_price * self.config['risk_management']['min_stop_distance']
-            if position_type.upper() == "BUY":
+            if position_type.upper() == "BUY" or position_type.upper() == "LONG":
                 if current_price - new_stop_loss < min_distance:
                     logger.warning(f"Stop loss too close to current price for {symbol}. Adjusting...")
                     new_stop_loss = current_price - min_distance
-            else:  # SELL
+            elif position_type.upper() == "SELL" or position_type.upper() == "SHORT":
                 if new_stop_loss - current_price < min_distance:
                     logger.warning(f"Stop loss too close to current price for {symbol}. Adjusting...")
                     new_stop_loss = current_price + min_distance
@@ -1749,16 +1749,22 @@ class EnhancedTradingStrategy:
             # Place new stop loss
             order_params = {
                 'symbol': symbol,
-                'side': "SELL" if position_type.upper() == "BUY" else "BUY",
-                'type': "STOP_MARKET",
+                'side': "SELL" if position_type.upper() == "BUY" or position_type.upper() == "LONG" else "BUY",
                 'amount': abs(position_size),
-                'stop_price': new_stop_loss
+                'type': "STOP_MARKET",
+                'params': {
+                    'stopPrice': new_stop_loss,
+                    'closePosition': True,
+                    'positionSide': "SHORT" if position_type.upper() == "SELL" or position_type.upper() == "SHORT" else "LONG"
+                }
             }
-            await self.binance_service.place_order(**order_params)
+            
+            # Place new stop loss order
+            await self.binance_service.place_order(order_params)
             
             # Send notification
             await self.notification_service.send_message(
-                f"Updated trailing stop for {symbol} to {new_stop_loss}"
+                f"Updated stop loss for {symbol} to {new_stop_loss}"
             )
             
         except Exception as e:
@@ -2567,11 +2573,11 @@ class EnhancedTradingStrategy:
 
             # Check minimum distance
             min_distance = current_price * self.config['risk_management']['min_tp_distance']
-            if position_type.upper() == "BUY":
+            if position_type.upper() == "BUY" or position_type.upper() == "LONG":
                 if new_take_profit - current_price < min_distance:
                     logger.warning(f"Take profit too close to current price for {symbol}. Adjusting...")
                     new_take_profit = current_price + min_distance
-            else:  # SELL
+            elif position_type.upper() == "SELL" or position_type.upper() == "SHORT":
                 if current_price - new_take_profit < min_distance:
                     logger.warning(f"Take profit too close to current price for {symbol}. Adjusting...")
                     new_take_profit = current_price - min_distance
@@ -2582,10 +2588,15 @@ class EnhancedTradingStrategy:
             # Create order parameters
             order_params = {
                 'symbol': symbol,
-                'side': "SELL" if position_type.upper() == "BUY" else "BUY",
+                'side': "SELL" if position_type.upper() == "BUY" or position_type.upper() == "LONG" else "BUY",
                 'type': "TAKE_PROFIT_MARKET",
                 'amount': abs(position_size),
-                'stop_price': new_take_profit
+                'stop_price': new_take_profit,
+                'params': {
+                    'stopPrice': new_take_profit,
+                    'closePosition': True,
+                    'positionSide': "SHORT" if position_type.upper() == "SELL" or position_type.upper() == "SHORT" else "LONG"
+                }
             }
             
             # Place new take profit
