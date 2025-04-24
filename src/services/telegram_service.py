@@ -50,7 +50,8 @@ class TelegramService:
             self.application.add_handler(CommandHandler("pause", self._handle_pause_command))
             self.application.add_handler(CommandHandler("unpause", self._handle_unpause_command))
             self.application.add_handler(CommandHandler("report", self._handle_report_command))
-            
+            self.application.add_handler(CommandHandler("balance", self._handle_balance_command))
+
             # Initialize application
             await self.application.initialize()
             await self.application.start()
@@ -206,6 +207,7 @@ class TelegramService:
                 "/status - Show current bot status\n"
                 "/pause - Pause the bot\n"
                 "/unpause - Unpause the bot\n"
+                "/balance - Show current balance\n"
                 "/report - Show detailed report"
             )
             await update.message.reply_text(help_text, parse_mode='HTML')
@@ -352,6 +354,64 @@ class TelegramService:
         except Exception as e:
             logger.error(f"Error handling report command: {str(e)}")
             await update.message.reply_text("An error occurred while generating the report.")
+    
+    async def _handle_balance_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle the /balance command."""
+        try:
+            if not self._is_initialized:
+                await update.message.reply_text("Bot is not initialized. Please try again later.")
+                return
+            
+            if not self.binance_service:
+                await update.message.reply_text("Binance service not available")
+                return
+            
+            # Get account balance
+            balance = await self.binance_service.get_account_balance()
+            if not balance:
+                await update.message.reply_text("Failed to get account balance")
+                return
+            
+            # Get position statistics
+            position_stats = await self.binance_service.get_position_statistics()
+            if position_stats is None:
+                await update.message.reply_text("Failed to get position statistics")
+                return
+            
+            # Format header message
+            header_message = (
+                "📊 <b>Detailed Report</b>\n\n"
+                f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"Paused: {'Yes' if self._is_paused else 'No'}\n\n"
+                "💰 <b>Balance</b>\n"
+            )
+            
+            # Add balance information
+            for asset, data in balance.items():
+                if isinstance(data, dict):
+                    amount = data.get('total')
+                else:
+                    amount = data
+                    
+                if amount is not None:
+                    try:
+                        amount_float = float(amount)
+                        if amount_float > 0:
+                            header_message += f"{asset}: {amount_float}\n"
+                    except (ValueError, TypeError):
+                        logger.warning(f"Invalid balance amount for {asset}: {amount}")
+                        continue
+            
+            # Add positions summary
+            header_message += f"\n📈 Active Positions: {position_stats['active_positions']}\n"
+            header_message += f"💵 Total Unrealized PnL: {position_stats['total_pnl']:.2f} USDT\n"
+            
+            # Send header message
+            await update.message.reply_text(header_message, parse_mode='HTML')
+            
+        except Exception as e:
+            logger.error(f"Error handling balance command: {str(e)}")
+            await update.message.reply_text("An error occurred while generating the balance.")
 
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle incoming Telegram commands."""
@@ -374,6 +434,8 @@ class TelegramService:
                 await self._handle_unpause_command(update, context)
             elif command == '/report':
                 await self._handle_report_command(update, context)
+            elif command == '/balance':
+                await self._handle_balance_command(update, context)
             else:
                 await update.message.reply_text(
                     "Unknown command. Use /help to see available commands."
