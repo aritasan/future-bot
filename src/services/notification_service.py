@@ -2,16 +2,17 @@
 Service for handling notifications and alerts.
 """
 import logging
-from typing import Dict
+from typing import Dict, Optional
 import asyncio
 from datetime import datetime
+from src.services.telegram_service import TelegramService
 
 logger = logging.getLogger(__name__)
 
 class NotificationService:
     """Service for handling notifications and alerts."""
     
-    def __init__(self, config: Dict):
+    def __init__(self, config: Dict, telegram_service: TelegramService):
         """Initialize the notification service.
         
         Args:
@@ -25,6 +26,7 @@ class NotificationService:
         self._last_notification = {}
         self._notification_cooldown = 60  # Minimum 60 seconds between notifications
         self._max_notifications_per_hour = 10  # Maximum 10 notifications per hour
+        self.telegram_service = telegram_service
         
     async def initialize(self) -> bool:
         """Initialize the notification service.
@@ -217,6 +219,45 @@ class NotificationService:
             
         except Exception as e:
             logger.error(f"Error sending notification: {str(e)}")
+            return False
+            
+    def set_telegram_service(self, telegram_service):
+        """Set the Telegram service for sending messages.
+        
+        Args:
+            telegram_service: Telegram service instance
+        """
+        self.telegram_service = telegram_service
+        
+    async def send_message(self, message: str) -> bool:
+        """Send a message through the configured notification channels.
+        
+        Args:
+            message: Message to send
+            
+        Returns:
+            bool: True if message sent successfully, False otherwise
+        """
+        try:
+            if not self._is_initialized:
+                logger.error("Notification service not initialized")
+                return False
+                
+            if self._is_closed:
+                logger.error("Notification service is closed")
+                return False
+                
+            # Send through Telegram if available
+            if self.telegram_service:
+                try:
+                    await self.telegram_service.send_message(message)
+                except Exception as e:
+                    logger.error(f"Error sending Telegram message: {str(e)}")
+                    
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error sending message: {str(e)}")
             return False
             
     async def close(self) -> None:

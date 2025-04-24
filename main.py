@@ -244,7 +244,10 @@ async def main():
         telegram_service = TelegramService(config)
         health_monitor = HealthMonitor(config)
         indicator_service = IndicatorService(config)
-        notification_service = NotificationService(config)
+        notification_service = NotificationService(
+            config=config,
+            telegram_service=telegram_service
+        )
         strategy = EnhancedTradingStrategy(
             config=config,
             binance_service=binance_service,
