@@ -1416,32 +1416,32 @@ class EnhancedTradingStrategy:
             # Check volume condition
             volume_ratio = float(market_conditions.get('volume_ratio', 1.0))
             if volume_ratio < volume_threshold:
-                logger.info("Volume below threshold")
+                # logger.info("Volume below threshold")
                 return False
 
             # Check volatility condition
             volatility = market_conditions.get('volatility', 'LOW')
             if volatility == 'HIGH':
-                logger.info("Volatility too high")
+                # logger.info("Volatility too high")
                 return False
 
             # Check RSI condition
             rsi = float(market_conditions.get('rsi', 50))
             if oversold_threshold < rsi < overbought_threshold:
-                logger.info("RSI not in favorable range")
+                # logger.info("RSI not in favorable range")
                 return False
 
             # Check BTC correlation
             btc_correlation = float(market_conditions.get('btc_correlation', 0))
             if abs(btc_correlation) < btc_correlation_threshold:
-                logger.info("BTC correlation below threshold")
+                # logger.info("BTC correlation below threshold")
                 return False
 
             # Check time since last DCA
             last_dca_time = float(market_conditions.get('last_dca_time', 0))
             current_time = float(time.time())
             if current_time - last_dca_time < float(dca_config['min_time_between_attempts']):
-                logger.info("Not enough time since last DCA")
+                # logger.info("Not enough time since last DCA")
                 return False
 
             # Check max drawdown
