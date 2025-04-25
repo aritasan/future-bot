@@ -391,7 +391,7 @@ async def main():
 
 if __name__ == "__main__":
     # Set event loop policy for Windows
-    if sys.platform == 'win32':
+    if sys.platform.lower() == 'win32':
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     
     try:

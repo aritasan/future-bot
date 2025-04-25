@@ -183,9 +183,16 @@ def is_same_symbol(symbol1: str, symbol2: str) -> bool:
 
 def is_same_side(side1: str, side2: str) -> bool:
     """Check if two sides are the same"""
-    is_side1_long = side1.upper() == "LONG" or side1.upper() == "BUY"
-    is_side2_long = side2.upper() == "LONG" or side2.upper() == "BUY"
-    is_side1_short = side1.upper() == "SHORT" or side1.upper() == "SELL"
-    is_side2_short = side2.upper() == "SHORT" or side2.upper() == "SELL"
-    return is_side1_long == is_side2_long or is_side1_short == is_side2_short
+    is_side1_long = is_long_side(side1)
+    if is_side1_long:
+        return is_long_side(side2)
+    
+    return is_short_side(side2)
 
+def is_long_side(side: str) -> bool:
+    """Check if a side is long"""
+    return side.upper() == "LONG" or side.upper() == "BUY"
+
+def is_short_side(side: str) -> bool:
+    """Check if a side is short"""
+    return side.upper() == "SHORT" or side.upper() == "SELL"

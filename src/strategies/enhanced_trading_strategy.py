@@ -14,7 +14,7 @@ from src.services.sentiment_service import SentimentService
 from src.services.binance_service import BinanceService
 from src.services.telegram_service import TelegramService
 from src.services.notification_service import NotificationService
-from src.utils.helpers import is_same_symbol
+from src.utils.helpers import is_long_side, is_short_side
 
 logger = logging.getLogger(__name__)
 
@@ -455,7 +455,7 @@ class EnhancedTradingStrategy:
             
             # Calculate base stop loss using ATR
             logger.info(f"Calculating stop loss for {symbol} {position_type} {position_type.upper()}")
-            if position_type.upper() == "LONG":
+            if is_long_side(position_type):
                 stop_loss = float(current_price) - (float(atr) * stop_loss_multiplier)
             else:
                 stop_loss = float(current_price) + (float(atr) * stop_loss_multiplier)
@@ -467,14 +467,14 @@ class EnhancedTradingStrategy:
             volatility = market_conditions.get('volatility', 'LOW')
             if volatility == 'HIGH':
                 # Increase stop loss distance in high volatility
-                if position_type.upper() == "LONG":
+                if is_long_side(position_type):
                     stop_loss = float(current_price) - (float(atr) * stop_loss_multiplier * 1.5)
                 else:
                     stop_loss = float(current_price) + (float(atr) * stop_loss_multiplier * 1.5)
             
             # Ensure minimum distance from current price
             min_distance = float(self.config['risk_management']['min_stop_distance'])
-            if position_type.upper() == "LONG":
+            if is_long_side(position_type):
                 # For LONG positions, ensure stop loss is below current price
                 stop_loss = min(stop_loss, float(current_price) * (1 - min_distance))
             else:
@@ -499,14 +499,14 @@ class EnhancedTradingStrategy:
             
             # Calculate take profit based on risk-reward ratio
             logger.info(f"Calculating take profit for {symbol} {position_type} {position_type.upper()}")
-            if position_type.upper() == "LONG":
+            if is_long_side(position_type):
                 take_profit = current_price + (price_diff * risk_reward_ratio)
             else:
                 take_profit = current_price - (price_diff * risk_reward_ratio)
             
             # Ensure minimum distance from current price
             min_distance = float(self.config['risk_management']['min_tp_distance'])
-            if position_type.upper() == "LONG":
+            if is_long_side(position_type):
                 # For LONG positions, ensure take profit is above current price
                 take_profit = max(take_profit, current_price * (1 + min_distance))
             else:
@@ -613,7 +613,7 @@ class EnhancedTradingStrategy:
                 return False
                 
             # Check if price moved significantly
-            if position["side"].upper() == "BUY":
+            if is_long_side(position["side"]):
                 price_change = (current_price - position["entry_price"]) / position["entryPrice"]
                 if price_change > 0.02:  # 2% move
                     return True
@@ -624,9 +624,9 @@ class EnhancedTradingStrategy:
                     
             # Check if trend is strengthening
             current_trend = self.get_trend(df)
-            if position["side"].upper() == "BUY" and current_trend == "UP":
+            if is_long_side(position["side"]) and current_trend == "UP":
                 return True
-            elif position["side"].upper() == "SELL" and current_trend == "DOWN":
+            elif is_short_side(position["side"]) and current_trend == "DOWN":
                 return True
                 
             return False
@@ -889,14 +889,14 @@ class EnhancedTradingStrategy:
                         break
 
             # Calculate trailing stop price
-            if position_type.upper() == 'LONG':
+            if is_long_side(position_type):
                 trailing_stop = current_price - base_distance
             else:
                 trailing_stop = current_price + base_distance
 
             # Ensure minimum distance
             min_distance = self.config['risk_management']['min_stop_distance']
-            if position_type.upper() == 'LONG':
+            if is_long_side(position_type):
                 trailing_stop = max(trailing_stop, current_price * (1 - min_distance))
             else:
                 trailing_stop = min(trailing_stop, current_price * (1 + min_distance))
@@ -1332,7 +1332,7 @@ class EnhancedTradingStrategy:
             # Place DCA order
             order_params = {
                 'symbol': symbol,
-                'side': 'BUY' if position_type.upper() == 'LONG' else 'SELL',
+                'side': 'BUY' if is_long_side(position_type) else 'SELL',
                 'type': 'MARKET',
                 'amount': dca_size,
                 'reduceOnly': False
@@ -1566,7 +1566,7 @@ class EnhancedTradingStrategy:
                 if time.time() - last_update < self.config['risk_management']['trailing_stop']['update_interval']:
                     return
                     
-            position_side = "LONG" if position_type.upper() == "BUY" or position_type.upper() == "LONG" else "SHORT"
+            position_side = "LONG" if is_long_side(position_type) else "SHORT"
             # Get position details
             position = await self.binance_service.get_position(symbol, position_side)
             if not position:
@@ -1615,9 +1615,9 @@ class EnhancedTradingStrategy:
                 logger.warning(f"Emergency stop triggered for {symbol} at {new_stop_loss}")
                 
             # Only update if new stop is more favorable
-            if position_type.upper() == "BUY" and new_stop_loss > current_stop_loss:
+            if is_long_side(position_type) and new_stop_loss > current_stop_loss:
                 await self._update_stop_loss(symbol, new_stop_loss, position_type)
-            elif position_type.upper() == "SELL" and new_stop_loss < current_stop_loss:
+            elif is_short_side(position_type) and new_stop_loss < current_stop_loss:
                 await self._update_stop_loss(symbol, new_stop_loss, position_type)
                 
             # Update last update time
@@ -1711,7 +1711,7 @@ class EnhancedTradingStrategy:
         """Calculate emergency stop level based on current market price and position type."""
         emergency_distance = self.config['risk_management']['emergency_stop']['distance']
         
-        if position_type.upper() == "BUY":
+        if is_long_side(position_type):
             return current_price * (1 - emergency_distance)
         else:
             return current_price * (1 + emergency_distance)
@@ -1734,17 +1734,17 @@ class EnhancedTradingStrategy:
 
             # Check minimum distance
             min_distance = current_price * self.config['risk_management']['min_stop_distance']
-            if position_type.upper() == "BUY" or position_type.upper() == "LONG":
+            if is_long_side(position_type):
                 if current_price - new_stop_loss < min_distance:
                     logger.warning(f"Stop loss too close to current price for {symbol}. Adjusting...")
                     new_stop_loss = current_price - min_distance
-            elif position_type.upper() == "SELL" or position_type.upper() == "SHORT":
+            elif is_short_side(position_type):
                 if new_stop_loss - current_price < min_distance:
                     logger.warning(f"Stop loss too close to current price for {symbol}. Adjusting...")
                     new_stop_loss = current_price + min_distance
 
             # Get current position
-            position_side = "LONG" if position_type.upper() == "BUY" or position_type.upper() == "LONG" else "SHORT"
+            position_side = "LONG" if is_long_side(position_type) else "SHORT"
             position = await self.binance_service.get_position(symbol, position_side)
             if not position:
                 logger.error(f"Failed to get position for {symbol} with side {position_side}")
@@ -1781,17 +1781,17 @@ class EnhancedTradingStrategy:
 
             # Check minimum distance
             min_distance = current_price * self.config['risk_management']['min_tp_distance']
-            if position_type.upper() == "BUY" or position_type.upper() == "LONG":
+            if is_long_side(position_type):
                 if new_take_profit - current_price < min_distance:
                     logger.warning(f"Take profit too close to current price for {symbol}. Adjusting...")
                     new_take_profit = current_price + min_distance
-            elif position_type.upper() == "SELL" or position_type.upper() == "SHORT":
+            elif is_short_side(position_type):
                 if current_price - new_take_profit < min_distance:
                     logger.warning(f"Take profit too close to current price for {symbol}. Adjusting...")
                     new_take_profit = current_price - min_distance
 
             # Get current position
-            position_side = "LONG" if position_type.upper() == "BUY" or position_type.upper() == "LONG" else "SHORT"
+            position_side = "LONG" if is_long_side(position_type) else "SHORT"
             position = await self.binance_service.get_position(symbol, position_side)
             if not position:
                 logger.error(f"Failed to get position for {symbol} with side {position_side}")
@@ -1861,7 +1861,7 @@ class EnhancedTradingStrategy:
                 return
 
             # Get current position
-            position_side = "LONG" if signals['position_type'].upper() == "BUY" or signals['position_type'].upper() == "LONG" else "SHORT"
+            position_side = "LONG" if is_long_side(signals['position_type']) else "SHORT"
             position = await self.binance_service.get_position(symbol, position_side)
             
             if position and float(position.get('info').get('positionAmt', 0)) != 0:
@@ -1924,7 +1924,7 @@ class EnhancedTradingStrategy:
                 return
 
             # Get current position
-            position_side = "LONG" if signal['position_type'].upper() == "BUY" or signal['position_type'].upper() == "LONG" else "SHORT"
+            position_side = "LONG" if is_long_side(signal['position_type']) else "SHORT"
             current_position = await self.binance_service.get_position(symbol, position_side)
             if current_position:
                 # Cancel existing SL/TP orders
@@ -1937,7 +1937,7 @@ class EnhancedTradingStrategy:
 
                 # Calculate new total position size
                 current_size = float(current_position.get('info').get('positionAmt', 0))
-                new_total_size = current_size + position_size if signal['position_type'].upper() == 'LONG' else current_size - position_size
+                new_total_size = current_size + position_size if is_long_side(signal['position_type']) else current_size - position_size
                 
                 # Calculate new SL/TP based on average entry price
                 entry_price = float(current_position.get('entryPrice', 0))
@@ -1960,7 +1960,7 @@ class EnhancedTradingStrategy:
             # Place the order
             order_params = {
                 'symbol': symbol,
-                'side': 'buy' if signal['position_type'].upper() == 'LONG' else 'sell',
+                'side': 'buy' if is_long_side(signal['position_type']) else 'sell',
                 'type': 'market',
                 'amount': position_size,
                 'stop_loss': stop_loss,

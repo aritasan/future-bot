@@ -8,7 +8,7 @@ import ccxt.async_support as ccxt
 from datetime import timedelta
 import time
 import asyncio
-from src.utils.helpers import is_same_symbol, is_same_side
+from src.utils.helpers import is_same_symbol, is_same_side, is_long_side
 
 logger = logging.getLogger(__name__)
 
@@ -632,7 +632,7 @@ class BinanceService:
             
             if open_orders:
                 for order in open_orders:
-                    if order['type'] == 'STOP_MARKET' and order['side'] == close_side:
+                    if order['type'].upper() == 'STOP_MARKET' and is_same_side(order['side'], close_side):
                         existing_sl = order
                         break
             
@@ -675,7 +675,7 @@ class BinanceService:
         try:
             # Get current position details
             position_side = position.get('positionSide', 'LONG')
-            close_side = "SELL" if position_side == "LONG" else "BUY"
+            close_side = "SELL" if is_long_side(position_side) else "BUY"
             amount = float(position.get('positionAmt', 0))
             
             if amount == 0:
@@ -688,7 +688,7 @@ class BinanceService:
             
             if open_orders:
                 for order in open_orders:
-                    if order['type'] == 'TAKE_PROFIT_MARKET' and order['side'] == close_side:
+                    if order['type'].upper() == 'TAKE_PROFIT_MARKET' and is_same_side(order['side'], close_side):
                         existing_tp = order
                         break
             
