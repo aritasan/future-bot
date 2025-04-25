@@ -219,31 +219,31 @@ class EnhancedTradingStrategy:
             # Get market data
             df = await indicator_service.calculate_indicators(symbol)
             if df is None or df.empty:
-                print(f"No data for {symbol}")
+                # print(f"No data for {symbol}")
                 return None
                 
             # Multi-timeframe analysis
             timeframe_analysis = await self.analyze_multiple_timeframes(symbol)
             if not timeframe_analysis:
-                print(f"No timeframe analysis for {symbol}")
+                # print(f"No timeframe analysis for {symbol}")
                 return None
                 
             # BTC volatility analysis
             btc_volatility = await self.analyze_btc_volatility()
             if not btc_volatility:
-                print(f"No BTC volatility analysis for {symbol}")
+                # print(f"No BTC volatility analysis for {symbol}")
                 return None
                 
             # Altcoin correlation analysis
             altcoin_correlation = await self.analyze_altcoin_correlation(symbol, btc_volatility)
             if not altcoin_correlation:
-                print(f"No altcoin correlation analysis for {symbol}")
+                # print(f"No altcoin correlation analysis for {symbol}")
                 return None
                 
             # Market sentiment analysis
             sentiment = await self.analyze_market_sentiment(symbol)
             if not sentiment:
-                print(f"No sentiment analysis for {symbol}")
+                # print(f"No sentiment analysis for {symbol}")
                 return None
                 
             # Calculate signal score
@@ -287,9 +287,9 @@ class EnhancedTradingStrategy:
                 # Determine position type based on signal score
                 # if signal_score > 0.6 or signal_score < -0.6:
                 #     print(f"{symbol} signal_score: {signal_score}")
-                if signal_score > 0.6:  # Strong buy signal
+                if signal_score > self.config['trading']['buy_threshold']:  # Strong buy signal
                     position_type = 'long'
-                elif signal_score < -0.6:  # Strong sell signal
+                elif signal_score < self.config['trading']['sell_threshold']:  # Strong sell signal
                     position_type = 'short'
                 else:
                     return None
@@ -321,7 +321,7 @@ class EnhancedTradingStrategy:
             current_price = float(df['close'].iloc[-1])
             position_size = await self._calculate_position_size(symbol, self.config['trading']['risk_per_trade'], current_price)
             if not position_size:
-                print(f"Could not calculate position size for {symbol}")
+                # print(f"Could not calculate position size for {symbol}")
                 return None
                 
             # Return final signal
@@ -352,7 +352,7 @@ class EnhancedTradingStrategy:
             }
             
         except Exception as e:
-            print(f"Error generating signals for {symbol}: {str(e)}")
+            # print(f"Error generating signals for {symbol}: {str(e)}")
             return None
             
     async def analyze_market_sentiment(self, symbol: str) -> Dict:

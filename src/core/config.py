@@ -30,14 +30,6 @@ TIMEFRAME_WEIGHTS = {
     "4h": 0.2
 }
 
-# Signal score weights
-SIGNAL_SCORE_WEIGHTS = {
-    "technical": 0.3,
-    "market": 0.2,
-    "timeframe": 0.2,
-    "btc": 0.15,
-    "sentiment": 0.15
-}
 
 # Drawdown warning levels
 DRAWDOWN_WARNING_LEVELS = [0.5, 0.7, 0.9]
@@ -68,19 +60,6 @@ CPU_THRESHOLD = 80  # percent
 MEMORY_THRESHOLD = 80  # percent
 DISK_THRESHOLD = 80  # percent
 
-# Trading pairs
-TRADING_PAIRS = [
-    'BTC/USDT',
-    'ETH/USDT',
-    'BNB/USDT',
-    'ADA/USDT',
-    'DOGE/USDT',
-    'XRP/USDT',
-    'DOT/USDT',
-    'UNI/USDT',
-    'LINK/USDT',
-    'LTC/USDT'
-]
 
 # Timeframes
 TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d']
@@ -162,9 +141,7 @@ def load_config() -> Dict[str, Any]:
                 'min_adx': MIN_ADX,
                 'max_bb_width': MAX_BB_WIDTH,
                 'timeframe_weights': TIMEFRAME_WEIGHTS,
-                'signal_score_weights': SIGNAL_SCORE_WEIGHTS,
                 'drawdown_warning_levels': DRAWDOWN_WARNING_LEVELS,
-                'trading_pairs': TRADING_PAIRS,
                 'timeframes': TIMEFRAMES,
                 'default_timeframe': DEFAULT_TIMEFRAME,
                 'default_leverage': DEFAULT_LEVERAGE,
@@ -175,6 +152,8 @@ def load_config() -> Dict[str, Any]:
                 'amount_precision': PRICE_PRECISION,
                 'max_order_size': 1000,
                 'leverage': DEFAULT_LEVERAGE,
+                'buy_threshold': 0.6,
+                'sell_threshold': -0.6,
                 'position_mode': "hedge"
             },
             'risk_management': {
@@ -250,23 +229,6 @@ def load_config() -> Dict[str, Any]:
                         'time_windows': [1800, 3600, 7200],  # 30m, 1h, 2h
                         'distance_multipliers': [1.0, 1.2, 1.5]  # Increase distance over time
                     }
-                },
-                
-                # New integration parameters
-                'integration': {
-                    'dca_trailing_stop': {
-                        'enabled': True,
-                        'min_profit_for_dca': 0.02,  # 2% minimum profit for DCA
-                        'trailing_stop_after_dca': True,
-                        'dca_after_trailing_stop': False
-                    }
-                },
-                
-                # New position management parameters
-                'position_management': {
-                    'max_concurrent_dca': 3,  # Maximum concurrent DCA positions
-                    'max_total_risk': 0.15,   # 15% maximum total risk
-                    'risk_reduction_factor': 0.7  # Risk reduction factor for new positions
                 },
                 
                 # Emergency stop parameters
