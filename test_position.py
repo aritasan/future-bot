@@ -9,6 +9,34 @@ from src.services.binance_service import BinanceService
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+def log_position_details(symbol: str, position: dict, position_type: str) -> None:
+    """Log position details for a given position.
+    
+    Args:
+        symbol: Trading pair symbol
+        position: Position data dictionary
+        position_type: Type of position (LONG/SHORT)
+    """
+    if not position:
+        logger.info(f"No {position_type} position found for {symbol}")
+        return
+        
+    logger.info(f"Raw position data: {json.dumps(position, indent=2)}")
+    logger.info(f"Position details for {symbol}:")
+    logger.info(f"Symbol: {position.get('symbol')}")
+    logger.info(f"Position Amount: {float(position.get('info').get('positionAmt', 0))}")
+    logger.info(f"Entry Price: {float(position.get('entryPrice', 0))}")
+    logger.info(f"Unrealized PnL: {float(position.get('info').get('unRealizedProfit', 0))}")
+    logger.info(f"Leverage: {position.get('leverage')}")
+    logger.info(f"Margin Type: {position.get('marginType')}")
+    logger.info(f"Position Side: {position.get('info').get('positionSide')}")
+    
+    # Calculate position value
+    amt = float(position.get('info').get('positionAmt', 0))
+    price = float(position.get('entryPrice', 0))
+    value = abs(amt * price)
+    logger.info(f"Position Value: {value:.2f} USDT")
+
 async def test_get_position():
     try:
         # Load config
@@ -26,27 +54,13 @@ async def test_get_position():
         for symbol in test_symbols:
             logger.info(f"\nTesting get_position for {symbol}")
             
-            # Get position
-            position = await binance_service.get_position(symbol)
+            # Get positions
+            position_long = await binance_service.get_position(symbol, 'LONG')
+            position_short = await binance_service.get_position(symbol, 'SHORT')
             
-            if position:
-                logger.info(f"Raw position data: {json.dumps(position, indent=2)}")
-                logger.info(f"Position details for {symbol}:")
-                logger.info(f"Symbol: {position.get('symbol')}")
-                logger.info(f"Position Amount: {float(position.get('info').get('positionAmt', 0))}")
-                logger.info(f"Entry Price: {float(position.get('entryPrice', 0))}")
-                logger.info(f"Unrealized PnL: {float(position.get('info').get('unRealizedProfit', 0))}")
-                logger.info(f"Leverage: {position.get('leverage')}")
-                logger.info(f"Margin Type: {position.get('marginType')}")
-                logger.info(f"Position Side: {position.get('info').get('positionSide')}")
-                
-                # Calculate position value
-                amt = float(position.get('info').get('positionAmt', 0))
-                price = float(position.get('entryPrice', 0))
-                value = abs(amt * price)
-                logger.info(f"Position Value: {value:.2f} USDT")
-            else:
-                logger.info(f"No position found for {symbol}")
+            # Log position details
+            log_position_details(symbol, position_long, 'LONG')
+            log_position_details(symbol, position_short, 'SHORT')
                 
         # Close service
         await binance_service.close()
