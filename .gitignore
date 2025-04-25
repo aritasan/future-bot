@@ -1,0 +1,11 @@
+.qodo
+.env
+data/
+*.log
+*.json
+*.csv
+*.pickle
+*.pkl
+*.pth
+*.pt
+logs/
