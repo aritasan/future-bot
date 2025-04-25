@@ -1511,33 +1511,65 @@ class EnhancedTradingStrategy:
             return None
 
     async def _get_market_conditions(self, symbol: str) -> Dict:
-        """Get current market conditions for DCA decision making.
+        """Get current market conditions for a symbol.
         
         Args:
             symbol: Trading pair symbol
             
         Returns:
-            Dict: Market conditions including trend, volatility, and volume
+            Dict: Market conditions including:
+                - df: DataFrame with price data
+                - trend: Current trend
+                - volatility: Market volatility
+                - volume: Volume status
+                - atr: Average True Range
+                - volume_ratio: Volume ratio
+                - long_dca_attempts: Number of DCA attempts for LONG position
+                - short_dca_attempts: Number of DCA attempts for SHORT position
+                - long_active_dca_positions: List of active DCA positions for LONG
+                - short_active_dca_positions: List of active DCA positions for SHORT
         """
         try:
-            # Get indicators for the symbol
-            df = await self.indicator_service.calculate_indicators(symbol)
+            # Get historical data
+            df = await self.indicator_service.get_historical_data(symbol)
             if df is None or df.empty:
-                return {}
+                logger.error(f"Failed to get historical data for {symbol}")
+                return None
                 
-            # Analyze trend
-            trend = "UP" if df['close'].iloc[-1] > df['EMA_FAST'].iloc[-1] else "DOWN"
+            # Get current trend
+            trend = self.get_trend(df)
             
-            # Analyze volatility
-            atr = df['ATR'].iloc[-1]
-            atr_ma = df['ATR'].rolling(20).mean().iloc[-1]
-            volatility = "HIGH" if atr > atr_ma * 1.5 else "MEDIUM" if atr > atr_ma else "LOW"
+            # Calculate volatility
+            volatility = await self.analyze_btc_volatility()
             
-            # Analyze volume
-            volume = df['volume'].iloc[-1]
-            volume_ma = df['volume'].rolling(20).mean().iloc[-1]
-            volume_ratio = volume / volume_ma if volume_ma > 0 else 0
-            volume_status = "HIGH" if volume_ratio > 1.5 else "MEDIUM" if volume_ratio > 1 else "LOW"
+            # Get volume status
+            volume_status = self.check_volume_condition(df)
+            
+            # Calculate ATR
+            atr = await self.indicator_service.calculate_atr(symbol)
+            
+            # Calculate volume ratio
+            volume_ratio = df['volume'].iloc[-1] / df['volume'].rolling(window=20).mean().iloc[-1]
+            
+            # Initialize DCA information for both sides
+            long_dca_attempts = 0
+            short_dca_attempts = 0
+            long_active_dca_positions = []
+            short_active_dca_positions = []
+            
+            # Get current position for both LONG and SHORT sides
+            long_position = await self.binance_service.get_position(symbol, position_side='LONG')
+            short_position = await self.binance_service.get_position(symbol, position_side='SHORT')
+            
+            # Check LONG position
+            if long_position and float(long_position.get('contracts', 0)) > 0:
+                long_dca_attempts = int(long_position.get('info', {}).get('dca_attempts', 0))
+                long_active_dca_positions = long_position.get('info', {}).get('active_dca_positions', [])
+                
+            # Check SHORT position
+            if short_position and float(short_position.get('contracts', 0)) > 0:
+                short_dca_attempts = int(short_position.get('info', {}).get('dca_attempts', 0))
+                short_active_dca_positions = short_position.get('info', {}).get('active_dca_positions', [])
             
             return {
                 'df': df,
@@ -1545,13 +1577,17 @@ class EnhancedTradingStrategy:
                 'volatility': volatility,
                 'volume': volume_status,
                 'atr': atr,
-                'volume_ratio': volume_ratio
+                'volume_ratio': volume_ratio,
+                'long_dca_attempts': long_dca_attempts,
+                'short_dca_attempts': short_dca_attempts,
+                'long_active_dca_positions': long_active_dca_positions,
+                'short_active_dca_positions': short_active_dca_positions
             }
             
         except Exception as e:
-            logger.error(f"Error getting market conditions: {str(e)}")
-            return {}
-            
+            logger.error(f"Error getting market conditions for {symbol}: {str(e)}")
+            return None
+
     async def _update_trailing_stop(self, symbol: str, position_type: str) -> None:
         """Update trailing stop for a position with advanced features.
         
@@ -1571,7 +1607,7 @@ class EnhancedTradingStrategy:
             position = await self.binance_service.get_position(symbol, position_side)
             if not position:
                 return
-                
+
             # Get current market data
             current_price = float(position['markPrice'])
             entry_price = float(position['entryPrice'])
@@ -1592,7 +1628,7 @@ class EnhancedTradingStrategy:
             
             # Get current stop loss
             current_stop_loss = float(position.get('stopLoss', 0))
-            
+
             # Check if we should move to break-even
             if self._should_move_to_break_even(
                 current_price, unrealized_pnl, position_age, position_size
@@ -1622,10 +1658,10 @@ class EnhancedTradingStrategy:
                 
             # Update last update time
             self._last_update[symbol] = time.time()
-            
+
         except Exception as e:
             logger.error(f"Error updating trailing stop for {symbol}: {str(e)}")
-            
+
     def _should_move_to_break_even(self, current_price: float, unrealized_pnl: float, position_age: float,
                                  position_size: float) -> bool:
         """Check if we should move stop loss to break-even.
@@ -1715,97 +1751,87 @@ class EnhancedTradingStrategy:
             return current_price * (1 - emergency_distance)
         else:
             return current_price * (1 + emergency_distance)
-            
+
     async def _update_stop_loss(self, symbol: str, new_stop_loss: float,
                               position_type: str) -> None:
-        """Update stop loss order.
+        """
+        Update stop loss for a position.
         
         Args:
             symbol: Trading pair symbol
-            new_stop_loss: New stop loss level
+            new_stop_loss: New stop loss price
             position_type: Position type (BUY/SELL/LONG/SHORT)
         """
         try:
-            # Get current price
-            current_price = await self.binance_service.get_current_price(symbol)
-            if not current_price:
-                logger.error(f"Failed to get current price for {symbol}")
-                return
-
-            # Check minimum distance
-            min_distance = current_price * self.config['risk_management']['min_stop_distance']
-            if is_long_side(position_type):
-                if current_price - new_stop_loss < min_distance:
-                    logger.warning(f"Stop loss too close to current price for {symbol}. Adjusting...")
-                    new_stop_loss = current_price - min_distance
-            elif is_short_side(position_type):
-                if new_stop_loss - current_price < min_distance:
-                    logger.warning(f"Stop loss too close to current price for {symbol}. Adjusting...")
-                    new_stop_loss = current_price + min_distance
-
-            # Get current position
+            # Convert position_type to position_side for HEDGE mode
             position_side = "LONG" if is_long_side(position_type) else "SHORT"
+            
+            # Get current position
             position = await self.binance_service.get_position(symbol, position_side)
-            if not position:
-                logger.error(f"Failed to get position for {symbol} with side {position_side}")
+            if not position or float(position.get('contracts', 0)) == 0:
+                logger.warning(f"No active {position_side} position found for {symbol}")
                 return
-
-            # Update stop loss using binance service
-            success = await self.binance_service._update_stop_loss(symbol, position, new_stop_loss)
+                
+            # Update stop loss using binance_service
+            success = await self.binance_service._update_stop_loss(
+                symbol=symbol,
+                position=position,
+                new_stop_loss=new_stop_loss
+            )
+            
             if success:
-                logger.info(f"Updated stop loss for {symbol} to {new_stop_loss}")
-                await self.notification_service.send_message(
-                    f"Updated stop loss for {symbol} to {new_stop_loss}"
+                logger.info(f"Updated stop loss for {symbol} {position_side} to {new_stop_loss}")
+                await self.telegram_service.send_stop_loss_notification(
+                    symbol=symbol,
+                    position_side=position_side,
+                    entry_price=float(position.get('entryPrice', 0)),
+                    stop_price=new_stop_loss,
+                    pnl_percent=float(position.get('unrealizedPnl', 0))
                 )
             else:
-                logger.error(f"Failed to update stop loss for {symbol}")
+                logger.error(f"Failed to update stop loss for {symbol} {position_side}")
                 
         except Exception as e:
             logger.error(f"Error updating stop loss for {symbol}: {str(e)}")
 
     async def _update_take_profit(self, symbol: str, new_take_profit: float,
                                position_type: str) -> None:
-        """Update take profit order.
+        """
+        Update take profit for a position.
         
         Args:
             symbol: Trading pair symbol
-            new_take_profit: New take profit level
+            new_take_profit: New take profit price
             position_type: Position type (BUY/SELL/LONG/SHORT)
         """
         try:
-            # Get current price
-            current_price = await self.binance_service.get_current_price(symbol)
-            if not current_price:
-                logger.error(f"Failed to get current price for {symbol}")
-                return
-
-            # Check minimum distance
-            min_distance = current_price * self.config['risk_management']['min_tp_distance']
-            if is_long_side(position_type):
-                if new_take_profit - current_price < min_distance:
-                    logger.warning(f"Take profit too close to current price for {symbol}. Adjusting...")
-                    new_take_profit = current_price + min_distance
-            elif is_short_side(position_type):
-                if current_price - new_take_profit < min_distance:
-                    logger.warning(f"Take profit too close to current price for {symbol}. Adjusting...")
-                    new_take_profit = current_price - min_distance
-
-            # Get current position
+            # Convert position_type to position_side for HEDGE mode
             position_side = "LONG" if is_long_side(position_type) else "SHORT"
+            
+            # Get current position
             position = await self.binance_service.get_position(symbol, position_side)
-            if not position:
-                logger.error(f"Failed to get position for {symbol} with side {position_side}")
+            if not position or float(position.get('contracts', 0)) == 0:
+                logger.warning(f"No active {position_side} position found for {symbol}")
                 return
-
-            # Update take profit using binance service
-            success = await self.binance_service._update_take_profit(symbol, position, new_take_profit)
+                
+            # Update take profit using binance_service
+            success = await self.binance_service._update_take_profit(
+                symbol=symbol,
+                position=position,
+                new_take_profit=new_take_profit
+            )
+            
             if success:
-                logger.info(f"Updated take profit for {symbol} to {new_take_profit}")
-                await self.notification_service.send_message(
-                    f"Updated take profit for {symbol} to {new_take_profit}"
+                logger.info(f"Updated take profit for {symbol} {position_side} to {new_take_profit}")
+                await self.telegram_service.send_take_profit_notification(
+                    symbol=symbol,
+                    position_side=position_side,
+                    entry_price=float(position.get('entryPrice', 0)),
+                    tp_price=new_take_profit,
+                    pnl_percent=float(position.get('unrealizedPnl', 0))
                 )
             else:
-                logger.error(f"Failed to update take profit for {symbol}")
+                logger.error(f"Failed to update take profit for {symbol} {position_side}")
                 
         except Exception as e:
             logger.error(f"Error updating take profit for {symbol}: {str(e)}")
@@ -2008,7 +2034,7 @@ class EnhancedTradingStrategy:
             logger.error(f"Error stopping monitoring tasks: {str(e)}")
             
     async def _monitor_positions(self) -> None:
-        """Monitor open positions and update trailing stops."""
+        """Monitor and manage open positions."""
         try:
             positions = await self.binance_service.get_positions()
             if not positions:
@@ -2020,10 +2046,20 @@ class EnhancedTradingStrategy:
                     if symbol:
                         # Check if we should close the position
                         if await self.should_close_position(position):
-                            # Position will be closed by should_close_position method
-                            # and appropriate notifications will be sent
-                            await self.binance_service.close_position(symbol, position['info']['positionSide'])
-                        
+                            await self.binance_service.close_position(symbol)
+                            continue
+                            
+                        # Check if we should update stops
+                        current_price = await self.binance_service.get_current_price(symbol)
+                        if current_price and await self.should_update_stops(position, current_price):
+                            new_stops = await self.calculate_new_stops(position, current_price)
+                            if new_stops:
+                                position_side = position.get('side', 'LONG')
+                                if 'stop_loss' in new_stops:
+                                    await self._update_stop_loss(symbol, new_stops['stop_loss'], position_side)
+                                if 'take_profit' in new_stops:
+                                    await self._update_take_profit(symbol, new_stops['take_profit'], position_side)
+                                    
         except Exception as e:
             logger.error(f"Error monitoring positions: {str(e)}")
             
@@ -2642,3 +2678,4 @@ class EnhancedTradingStrategy:
                 
         except Exception as e:
             logger.error(f"Error managing existing position for {symbol}: {str(e)}")
+                
