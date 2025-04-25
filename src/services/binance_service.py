@@ -33,17 +33,24 @@ class BinanceService:
         self._market_cache = {}
         self._position_cache = {}
         self._balance_cache = {}
-        self._cache_ttl = 60  # 1 minute
-        self._last_update = {}
-        self._time_offset = 0  # Time difference between local and server time
-        self._last_sync_time = 0  # Last time synchronization timestamp
-        self._sync_interval = 300  # Sync every 5 minutes
-        self._max_retries = 3  # Maximum number of retries
-        self._retry_delay = 1  # Initial retry delay in seconds
-        self._max_retry_delay = 32  # Maximum retry delay in seconds
-        self._cache = {}  # In-memory cache for indicators
-        self._ws_connections = {}  # WebSocket connections
-        self._ws_subscriptions = {}  # WebSocket subscriptions
+        self._cache_ttl = {
+            'market': 60,  # 1 minute
+            'ticker': 30,  # 30 seconds
+            'order': 30,   # 30 seconds
+            'position': 30, # 30 seconds
+            'balance': 60,  # 1 minute
+            'klines': 60,   # 1 minute
+            'markets': 3600 # 1 hour
+        }
+        self._time_offset = 0
+        self._last_sync_time = 0
+        self._sync_interval = 300  # 5 minutes
+        self._max_retries = 3
+        self._retry_delay = 1
+        self._max_retry_delay = 32
+        self._cache = {}  # Unified cache storage
+        self._ws_connections = {}
+        self._ws_subscriptions = {}
         
     async def initialize(self) -> bool:
         """Initialize the Binance service.
@@ -96,160 +103,345 @@ class BinanceService:
             return False
             
     async def place_order(self, order_params: Dict) -> Optional[Dict]:
-        """Place an order with enhanced error handling and retry logic."""
+        """Place an order on Binance.
+        
+        Args:
+            order_params: Dictionary containing order parameters
+                Required keys:
+                - symbol: Trading pair symbol
+                - side: Order side (BUY/SELL)
+                - type: Order type (MARKET/LIMIT/STOP_MARKET/STOP_LIMIT)
+                - amount: Order amount
+                Optional keys:
+                - price: Price for limit orders
+                - stop_loss: Stop loss price
+                - take_profit: Take profit price
+                
+        Returns:
+            Optional[Dict]: Order details if successful, None otherwise
+        """
         try:
-            symbol = order_params.get('symbol')
-            side = order_params.get('side')
-            order_type = order_params.get('type', 'market')
-            amount = order_params.get('amount')
-            price = order_params.get('price')
-            stop_loss = order_params.get('stop_loss')
-            take_profit = order_params.get('take_profit')
-            position_side = order_params.get('position_side')
-            close_position = order_params.get('closePosition', order_params.get('close_position', order_params.get('params', {}).get('closePosition', False)))
-            
-            # Validate required parameters
-            if not all([symbol, side, amount]):
-                logger.error(f"Missing required parameters for order: {order_params}")
+            if not self._is_initialized:
+                logger.error("Binance service not initialized")
                 return None
                 
-            # Get current market price if not provided
-            if not price and order_type.lower() == 'limit':
-                ticker = await self.get_ticker(symbol)
-                if not ticker:
-                    logger.error(f"Failed to get ticker for {symbol}")
+            if self._is_closed:
+                logger.error("Binance service is closed")
+                return None
+                
+            # Validate required parameters
+            required_params = ['symbol', 'side', 'type', 'amount']
+            for param in required_params:
+                if param not in order_params:
+                    logger.error(f"Missing required parameter: {param}")
                     return None
-                price = ticker.get('last')
-                
-            # Determine position side and order side for Hedge Mode
-            if side.lower() == "buy":
-                position_side = "LONG"
-                close_side = "SELL"
-            else:
-                position_side = "SHORT"
-                close_side = "BUY"
-                
-            # Place the main order
-            main_order_params = {
-                "positionSide": position_side
-            }
-
-            # For market orders, reduceOnly should be in the main params
-            if order_type.lower() == 'market' and close_position:
-                main_order_params['closePosition'] = True
-
-            # For stop/take profit orders, reduceOnly should be in the params
-            if order_type.lower() in ['stop_market', 'take_profit_market']:
-                main_order_params['stopPrice'] = order_params.get('params', {}).get('stopPrice')
-                main_order_params['positionSide'] = order_params.get('params', {}).get('positionSide')
-                main_order_params['workingType'] = "MARK_PRICE"
-                main_order_params['priceProtect'] = True
-                main_order_params['timeInForce'] = "GTC"
-
-            # Check for existing SL/TP orders
-            open_orders_symbol = await self.get_open_orders(symbol)
-            existing_sl = None
-            existing_tp = None
+                    
+            # Convert side and type to uppercase
+            order_params['side'] = order_params['side'].upper()
+            order_params['type'] = order_params['type'].upper()
             
-            if open_orders_symbol:
-                for order_symbol in open_orders_symbol:
-                    if order_symbol['type'].upper() == 'STOP_MARKET' and is_same_side(order_symbol['side'], close_side):
-                        existing_sl = order_symbol
-                    elif order_symbol['type'].upper() == 'TAKE_PROFIT_MARKET' and is_same_side(order_symbol['side'], close_side):
-                        existing_tp = order_symbol
-
-            order = await self.exchange.create_order(
-                symbol=symbol,
-                type=order_type,
-                side=side,
-                amount=amount,
-                params=main_order_params
+            # Get symbol and position side
+            symbol = order_params['symbol']
+            
+            # Check for existing SL/TP orders
+            existing_orders = await self.get_open_orders(symbol)
+            if existing_orders:
+                existing_sl = next((order for order in existing_orders 
+                                  if order['type'].upper() == 'STOP_MARKET' and 
+                                  order['side'] != order_params['side']), None)
+                existing_tp = next((order for order in existing_orders 
+                                  if order['type'].upper() == 'TAKE_PROFIT_MARKET' and 
+                                  order['side'] != order_params['side']), None)
+                                  
+                # Cancel existing SL/TP orders
+                if existing_sl:
+                    await self.cancel_order(symbol, existing_sl['id'])
+                if existing_tp:
+                    await self.cancel_order(symbol, existing_tp['id'])
+                    
+            # Place main order first
+            main_order_params = {
+                'symbol': symbol,
+                'side': order_params['side'],
+                'type': order_params['type'].upper(),
+                'params': {
+                    'positionSide': 'LONG' if is_long_side(order_params['side']) else 'SHORT',
+                },
+                'amount': order_params['amount']
+            }
+            
+              
+            # Place main order
+            main_order = await self._make_request(
+                self.exchange.create_order,
+                **main_order_params
             )
             
-            if not order:
-                logger.error(f"Failed to place order for {symbol}")
+            if not main_order:
+                logger.error(f"Failed to place main order for {symbol} {main_order_params}")
                 return None
-                
-            # Cache the order
-            cache_key = f"{symbol}_{side}_{order_type}"
-            self.order_cache[cache_key] = order
+               
+            logger.info(f"Order placed successfully: {main_order}")
             
-            # Place stop loss order if provided
-            if stop_loss:
-                try:
-                    # Cancel existing stop loss if it exists
-                    if existing_sl:
-                        await self.cancel_order(symbol, existing_sl['id'])
-                        logger.info(f"Cancelled existing stop loss order for {symbol} with position side {position_side}")
-                    
-                    # Place stop loss order
-                    logger.info(f"Placing stop loss order for {symbol} at {stop_loss} with position side {position_side}")
-                    sl_params = {
-                        "stopPrice": stop_loss,
-                        "positionSide": position_side,
-                        "workingType": "MARK_PRICE",
-                        "priceProtect": True,
-                        "timeInForce": "GTC",  # Good Till Cancel
-                        "closePosition": True  # Close the entire position
+            # Place SL/TP orders if specified
+            if 'stop_loss' in order_params:
+                sl_order_params = {
+                    'symbol': symbol,
+                    'side': 'SELL' if is_long_side(order_params['side']) else 'BUY',
+                    'type': 'STOP_MARKET',
+                    'amount': order_params['amount'],
+                    'params': {
+                        'stopPrice': order_params['stop_loss'],
+                        'positionSide': 'LONG' if is_long_side(order_params['side']) else 'SHORT',
+                        'workingType': 'MARK_PRICE',
+                        'priceProtect': True,
+                        'timeInForce': 'GTC',
+                        'closePosition': True
                     }
+                }
+                
+                sl_order = await self._make_request(
+                    self.exchange.create_order,
+                    **sl_order_params
+                )
+                
+                if not sl_order:
+                    logger.error(f"Failed to place stop loss order for {symbol}")
                     
-                    sl_order = await self.exchange.create_order(
-                        symbol=symbol,
-                        type="STOP_MARKET",
-                        side=close_side,
-                        amount=amount,
-                        params=sl_params
-                    )
-                    
-                    if sl_order:
-                        logger.info(f"Stop loss order placed: {sl_order}")
-                    else:
-                        logger.error(f"Failed to place stop loss order for {symbol}")
-                except Exception as e:
-                    logger.error(f"{symbol} Error placing stop loss order: {str(e)}")
-                    
-            # Place take profit order if provided
-            if take_profit:
-                try:
-                    # Cancel existing take profit if it exists
-                    if existing_tp:
-                        await self.cancel_order(symbol, existing_tp['id'])
-                        logger.info(f"Cancelled existing take profit order for {symbol} with position side {position_side}")
-                    
-                    # Place take profit order
-                    logger.info(f"Placing take profit order for {symbol} at {take_profit} with position side {position_side}")
-                    tp_params = {
-                        "stopPrice": take_profit,
-                        "positionSide": position_side,
-                        "workingType": "MARK_PRICE",
-                        "priceProtect": True,
-                        "timeInForce": "GTC",  # Good Till Cancel
-                        "closePosition": True  # Close the entire position
+            if 'take_profit' in order_params:
+                tp_order_params = {
+                    'symbol': symbol,
+                    'side': 'SELL' if is_long_side(order_params['side']) else 'BUY',
+                    'type': 'TAKE_PROFIT_MARKET',
+                    'amount': order_params['amount'],
+                    'params': {
+                        'stopPrice': order_params['take_profit'],
+                        'positionSide': 'LONG' if is_long_side(order_params['side']) else 'SHORT',
+                        'workingType': 'MARK_PRICE',
+                        'priceProtect': True,
+                        'timeInForce': 'GTC',
+                        'closePosition': True
                     }
+                }
+                
+                tp_order = await self._make_request(
+                    self.exchange.create_order,
+                    **tp_order_params
+                )
+                
+                if not tp_order:
+                    logger.error(f"Failed to place take profit order for {symbol}")
                     
-                    tp_order = await self.exchange.create_order(
-                        symbol=symbol,
-                        type="TAKE_PROFIT_MARKET",
-                        side=close_side,
-                        amount=amount,
-                        params=tp_params
-                    )
-                    if tp_order:
-                        logger.info(f"Take profit order placed: {tp_order}")
-                    else:
-                        logger.error(f"Failed to place take profit order for {symbol}")
-                except Exception as e:
-                    logger.error(f"{symbol} Error placing take profit order: {str(e)}")
-                    
-            logger.info(f"Order placed: {order}")
-            return order
+            return main_order
             
         except Exception as e:
             import traceback
             traceback.print_exc()
-            logger.error(f"Error placing order {symbol}: {str(e)}")
+            logger.error(f"Error placing order: {str(e)}")
             return None
             
+    async def _validate_order_params(self, order_params: Dict) -> bool:
+        """Validate order parameters.
+        
+        Args:
+            order_params: Dictionary containing order parameters
+            
+        Returns:
+            bool: True if parameters are valid, False otherwise
+        """
+        required_params = ['symbol', 'type', 'side', 'amount']
+        for param in required_params:
+            if param not in order_params:
+                logger.error(f"Missing required parameter: {param}")
+                return False
+            
+        # Validate order type
+        if not await self._validate_order_type(order_params['type']):
+            return False
+            
+        return True
+        
+            
+    async def _validate_order_type(self, order_type: str) -> bool:
+        """Validate order type.
+        
+        Args:
+            order_type: Order type
+            
+        Returns:
+            bool: True if order type is valid, False otherwise
+        """
+        valid_types = ['MARKET', 'LIMIT', 'STOP_MARKET', 'TAKE_PROFIT_MARKET']
+        if order_type.upper() not in valid_types:
+            logger.error(f"Invalid order type: {order_type}")
+            return False
+        return True
+        
+    async def _handle_sl_tp_order(self, order_params: Dict) -> Optional[Dict]:
+        """Handle stop loss and take profit orders.
+        
+        Args:
+            order_params: Dictionary containing order parameters
+            
+        Returns:
+            Optional[Dict]: Order details if successful, None otherwise
+        """
+        try:
+            symbol = order_params['symbol']
+            order_type = order_params['type']
+            
+            # Get existing orders
+            existing_orders = await self.get_open_orders(symbol)
+            if not existing_orders:
+                return await self._place_main_order(order_params)
+                
+            # Find existing SL/TP orders
+            existing_sl = next((o for o in existing_orders if o['type'] == 'STOP_MARKET'), None)
+            existing_tp = next((o for o in existing_orders if o['type'] == 'TAKE_PROFIT_MARKET'), None)
+            
+            # Cancel existing order if needed
+            if order_type == 'STOP_MARKET' and existing_sl:
+                if not await self.cancel_order(symbol, existing_sl['id']):
+                    logger.error(f"Failed to cancel existing stop loss order for {symbol}")
+                    return None
+            elif order_type == 'TAKE_PROFIT_MARKET' and existing_tp:
+                if not await self.cancel_order(symbol, existing_tp['id']):
+                    logger.error(f"Failed to cancel existing take profit order for {symbol}")
+                    return None
+                
+            # Place new order
+            return await self._place_main_order(order_params)
+            
+        except Exception as e:
+            logger.error(f"Error handling SL/TP order: {str(e)}")
+            return None
+            
+    async def _place_main_order(self, order_params: Dict) -> Optional[Dict]:
+        """Place the main order.
+        
+        Args:
+            order_params: Dictionary containing order parameters
+            
+        Returns:
+            Optional[Dict]: Order details if successful, None otherwise
+        """
+        try:
+            # Add required parameters
+            params = order_params.copy()
+            params['workingType'] = 'MARK_PRICE'
+            params['timeInForce'] = 'GTC'
+            
+            # Place order
+            order = await self._make_request(
+                self.exchange.create_order,
+                **params
+            )
+            
+            if order:
+                logger.info(f"Order placed successfully: {order['id']}")
+                return order
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error placing main order: {str(e)}")
+            return None
+            
+    async def _update_stop_order(self, symbol: str, position: Dict, new_price: float, 
+                               order_type: str) -> bool:
+        """Update stop loss or take profit order.
+        
+        Args:
+            symbol: Trading pair symbol
+            position: Position details
+            new_price: New stop price
+            order_type: Order type (STOP_MARKET/TAKE_PROFIT_MARKET)
+            
+        Returns:
+            bool: True if update successful, False otherwise
+        """
+        try:
+            if not self._is_initialized:
+                logger.error("Binance service not initialized")
+                return False
+                
+            if self._is_closed:
+                logger.error("Binance service is closed")
+                return False
+                
+            # Get current position
+            current_position = await self.get_position(symbol, position.get('info', {}).get('positionSide', None))
+            if not current_position:
+                logger.error(f"No position found for {symbol}")
+                return False
+                
+            # Get existing orders
+            existing_orders = await self.get_open_orders(symbol)
+            if not existing_orders:
+                logger.error(f"No orders found for {symbol}")
+                return False
+                
+            # Find existing order
+            existing_order = next((o for o in existing_orders if o['type'].upper() == order_type.upper()), None)
+            if not existing_order:
+                logger.error(f"No {order_type} order found for {symbol}")
+                return False
+                
+            # Cancel existing order
+            if not await self.cancel_order(symbol, existing_order['id']):
+                logger.error(f"Failed to cancel existing {order_type} order")
+                return False
+                
+            # Prepare new order parameters
+            order_params = {
+                'symbol': symbol,
+                'type': order_type,
+                'side': 'SELL' if position['position_side'] == 'LONG' else 'BUY',
+                'amount': abs(float(current_position['contracts'])),
+                'price': new_price,
+                'stopPrice': new_price,
+                'workingType': 'MARK_PRICE',
+                'timeInForce': 'GTC'
+            }
+            
+            # Place new order
+            new_order = await self._place_main_order(order_params)
+            if not new_order:
+                logger.error(f"Failed to place new {order_type} order")
+                return False
+                
+            logger.info(f"{order_type} order updated successfully: {new_order['id']}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error updating {order_type} order: {str(e)}")
+            return False
+            
+    async def _update_stop_loss(self, symbol: str, position: Dict, new_stop_loss: float) -> bool:
+        """Update stop loss order.
+        
+        Args:
+            symbol: Trading pair symbol
+            position: Position details
+            new_stop_loss: New stop loss price
+            
+        Returns:
+            bool: True if update successful, False otherwise
+        """
+        return await self._update_stop_order(symbol, position, new_stop_loss, 'STOP_MARKET')
+        
+    async def _update_take_profit(self, symbol: str, position: Dict, new_take_profit: float) -> bool:
+        """Update take profit order.
+        
+        Args:
+            symbol: Trading pair symbol
+            position: Position details
+            new_take_profit: New take profit price
+            
+        Returns:
+            bool: True if update successful, False otherwise
+        """
+        return await self._update_stop_order(symbol, position, new_take_profit, 'TAKE_PROFIT_MARKET')
+
     async def get_account_balance(self) -> Optional[Dict]:
         """Get account balance.
         
@@ -259,14 +451,14 @@ class BinanceService:
         try:
             # Check cache first
             cache_key = "account_balance"
-            cached_data = await self._get_cached_data(cache_key, ttl=60)  # Cache for 1 minute
+            cached_data = await self._get_cached_data(cache_key, 'balance')
             if cached_data:
                 return cached_data
 
             # Use REST API with retry mechanism
             balance = await self._make_request(self.exchange.fetch_balance)
             if balance:
-                self._set_cached_data(cache_key, balance)
+                self._set_cached_data(cache_key, balance, 'balance')
             return balance
         except Exception as e:
             logger.error(f"Error getting account balance: {str(e)}")
@@ -281,14 +473,14 @@ class BinanceService:
         try:
             # Check cache first
             cache_key = "positions"
-            cached_data = await self._get_cached_data(cache_key, ttl=30)  # Cache for 30 seconds
+            cached_data = await self._get_cached_data(cache_key, 'position')
             if cached_data:
                 return cached_data
 
             # Use REST API with retry mechanism
             positions = await self._make_request(self.exchange.fetch_positions)
             if positions:
-                self._set_cached_data(cache_key, positions)
+                self._set_cached_data(cache_key, positions, 'position')
             return positions
         except Exception as e:
             logger.error(f"Error getting positions: {str(e)}")
@@ -318,7 +510,6 @@ class BinanceService:
                     # Check position side if specified
                     if position_side:
                         if is_same_side(position.get('info').get('positionSide'), position_side) and float(position.get('contracts', 0)) != 0:
-                            logger.info(f"Position found for {symbol} {position_side}: {position}")
                             return position
                     # If position_side not specified, return first position found
                     elif float(position.get('contracts', 0)) != 0:
@@ -334,20 +525,20 @@ class BinanceService:
         try:
             # Check cache first
             cache_key = f"ticker_{symbol}"
-            cached_data = await self._get_cached_data(cache_key)
+            cached_data = await self._get_cached_data(cache_key, 'ticker')
             if cached_data:
                 return cached_data
 
             # Try to use WebSocket if available
             if symbol in self._ws_connections and 'ticker' in self._ws_connections[symbol]:
                 ticker = await self._ws_connections[symbol]['ticker']
-                self._set_cached_data(cache_key, ticker)
+                self._set_cached_data(cache_key, ticker, 'ticker')
                 return ticker
 
             # Fallback to REST API
             ticker = await self._make_request(self.exchange.fetch_ticker, symbol)
             if ticker:
-                self._set_cached_data(cache_key, ticker)
+                self._set_cached_data(cache_key, ticker, 'ticker')
             return ticker
         except Exception as e:
             logger.error(f"Error getting ticker for {symbol}: {str(e)}")
@@ -404,16 +595,21 @@ class BinanceService:
             logger.error(f"Error fetching OHLCV data: {str(e)}")
             return None
             
-    def clear_cache(self):
-        """Clear all cached data."""
-        self.order_cache.clear()
-        self.balance_cache.clear()
-        self.position_cache.clear()
-        self.last_update.clear()
-        self._market_cache.clear()
-        self._position_cache.clear()
-        self._balance_cache.clear()
+    def clear_cache(self, cache_type: str = None):
+        """Clear cache data.
         
+        Args:
+            cache_type: Type of cache to clear. If None, clears all cache.
+        """
+        if cache_type:
+            # Clear specific cache type
+            keys_to_remove = [k for k in self._cache.keys() if k.startswith(f"{cache_type}_")]
+            for key in keys_to_remove:
+                self._cache.pop(key, None)
+        else:
+            # Clear all cache
+            self._cache.clear()
+            
     async def close(self):
         """Close the Binance service."""
         try:
@@ -430,26 +626,21 @@ class BinanceService:
                 await self.exchange.close()
                 
             self._is_closed = True
-            logger.info("Binance service closed")
         except Exception as e:
             logger.error(f"Error closing Binance service: {str(e)}")
             
     async def get_market_data(self, symbol: str) -> Optional[Dict]:
         """Get market data with caching."""
         try:
-            current_time = time.time()
             cache_key = f"market_{symbol}"
+            cached_data = await self._get_cached_data(cache_key, 'market')
+            if cached_data:
+                return cached_data
             
-            if cache_key in self._market_cache:
-                cached_data, timestamp = self._market_cache[cache_key]
-                if current_time - timestamp < self._cache_ttl:
-                    return cached_data
-            
-            # Fetch fresh data if cache expired
+            # Fetch fresh data
             data = await self._fetch_market_data(symbol)
             if data:
-                self._market_cache[cache_key] = (data, current_time)
-                self._last_update[cache_key] = current_time
+                self._set_cached_data(cache_key, data, 'market')
             return data
             
         except Exception as e:
@@ -459,19 +650,15 @@ class BinanceService:
     async def get_position_statistics(self) -> Dict:
         """Get position statistics with caching."""
         try:
-            current_time = time.time()
             cache_key = "position_stats"
-            
-            if cache_key in self._position_cache:
-                cached_data, timestamp = self._position_cache[cache_key]
-                if current_time - timestamp < self._cache_ttl:
-                    return cached_data
+            cached_data = await self._get_cached_data(cache_key, 'position')
+            if cached_data:
+                return cached_data
             
             # Calculate fresh statistics
             stats = await self._calculate_position_statistics()
             if stats:
-                self._position_cache[cache_key] = (stats, current_time)
-                self._last_update[cache_key] = current_time
+                self._set_cached_data(cache_key, stats, 'position')
             return stats
             
         except Exception as e:
@@ -596,7 +783,7 @@ class BinanceService:
         try:
             # Check cache first
             cache_key = f"klines_{symbol}_{timeframe}_{limit}"
-            cached_data = await self._get_cached_data(cache_key)
+            cached_data = await self._get_cached_data(cache_key, 'klines')
             if cached_data:
                 return cached_data
 
@@ -608,124 +795,12 @@ class BinanceService:
                 limit=limit
             )
             if klines:
-                self._set_cached_data(cache_key, klines)
+                self._set_cached_data(cache_key, klines, 'klines')
             return klines
         except Exception as e:
             logger.error(f"Error getting klines for {symbol}: {str(e)}")
             return None
             
-    async def _update_stop_loss(self, symbol: str, position: Dict, new_stop_loss: float) -> bool:
-        """Update stop loss for a position."""
-        try:
-            # Get current position details
-            position_side = position.get('positionSide', 'LONG')
-            close_side = "SELL" if position_side == "LONG" else "BUY"
-            amount = float(position.get('positionAmt', 0))
-            
-            if amount == 0:
-                logger.warning(f"No position to update stop loss for {symbol} with position side {position_side}")
-                return False
-                
-            # Get existing stop loss order
-            open_orders = await self.get_open_orders(symbol)
-            existing_sl = None
-            
-            if open_orders:
-                for order in open_orders:
-                    if order['type'].upper() == 'STOP_MARKET' and is_same_side(order['side'], close_side):
-                        existing_sl = order
-                        break
-            
-            # Cancel existing stop loss if it exists
-            if existing_sl:
-                await self.cancel_order(symbol, existing_sl['id'])
-                logger.info(f"Cancelled existing stop loss order for {symbol} with position side {position_side}")
-            
-            # Place new stop loss order
-            sl_params = {
-                "stopPrice": new_stop_loss,
-                "positionSide": position_side,
-                "workingType": "MARK_PRICE",
-                "priceProtect": True,
-                "timeInForce": "GTC",
-                "closePosition": True
-            }
-            
-            sl_order = await self.exchange.create_order(
-                symbol=symbol,
-                type="STOP_MARKET",
-                side=close_side,
-                amount=abs(amount),
-                params=sl_params
-            )
-            
-            if sl_order:
-                logger.info(f"Updated stop loss for {symbol} to {new_stop_loss}")
-                return True
-            else:
-                logger.error(f"Failed to update stop loss for {symbol}")
-                return False
-                
-        except Exception as e:
-            logger.error(f"Error updating stop loss for {symbol} with position side {position_side}: {str(e)}")
-            return False
-
-    async def _update_take_profit(self, symbol: str, position: Dict, new_take_profit: float) -> bool:
-        """Update take profit for a position."""
-        try:
-            # Get current position details
-            position_side = position.get('positionSide', 'LONG')
-            close_side = "SELL" if is_long_side(position_side) else "BUY"
-            amount = float(position.get('positionAmt', 0))
-            
-            if amount == 0:
-                logger.warning(f"No position to update take profit for {symbol}")
-                return False
-                
-            # Get existing take profit order
-            open_orders = await self.get_open_orders(symbol)
-            existing_tp = None
-            
-            if open_orders:
-                for order in open_orders:
-                    if order['type'].upper() == 'TAKE_PROFIT_MARKET' and is_same_side(order['side'], close_side):
-                        existing_tp = order
-                        break
-            
-            # Cancel existing take profit if it exists
-            if existing_tp:
-                await self.cancel_order(symbol, existing_tp['id'])
-                logger.info(f"Cancelled existing take profit order for {symbol}")
-            
-            # Place new take profit order
-            tp_params = {
-                "stopPrice": new_take_profit,
-                "positionSide": position_side,
-                "workingType": "MARK_PRICE",
-                "priceProtect": True,
-                "timeInForce": "GTC",
-                "closePosition": True
-            }
-            
-            tp_order = await self.exchange.create_order(
-                symbol=symbol,
-                type="TAKE_PROFIT_MARKET",
-                side=close_side,
-                amount=abs(amount),
-                params=tp_params
-            )
-            
-            if tp_order:
-                logger.info(f"Updated take profit for {symbol} to {new_take_profit}")
-                return True
-            else:
-                logger.error(f"Failed to update take profit for {symbol}")
-                return False
-                
-        except Exception as e:
-            logger.error(f"Error updating take profit for {symbol} with position side {position_side}: {str(e)}")
-            return False
-
     async def cancel_order(self, symbol: str, order_id: str) -> bool:
         """Cancel an order by its ID.
         
@@ -831,16 +906,31 @@ class BinanceService:
                     logger.error(f"Request failed after {retries} attempts: {str(last_error)}")
                     raise last_error
 
-    async def _get_cached_data(self, key: str, ttl: int = None) -> Optional[Any]:
-        """Get data from cache if available and not expired."""
+    async def _get_cached_data(self, key: str, cache_type: str = None) -> Optional[Any]:
+        """Get data from cache if available and not expired.
+        
+        Args:
+            key: Cache key
+            cache_type: Type of cache (market, ticker, order, etc.)
+            
+        Returns:
+            Optional[Any]: Cached data if available and not expired, None otherwise
+        """
         if key in self._cache:
             data, timestamp = self._cache[key]
-            if time.time() - timestamp < (ttl or self._cache_ttl):
+            ttl = self._cache_ttl.get(cache_type, 60) if cache_type else 60
+            if time.time() - timestamp < ttl:
                 return data
         return None
 
-    def _set_cached_data(self, key: str, data: Any) -> None:
-        """Store data in cache with timestamp."""
+    def _set_cached_data(self, key: str, data: Any, cache_type: str = None) -> None:
+        """Store data in cache with timestamp.
+        
+        Args:
+            key: Cache key
+            data: Data to cache
+            cache_type: Type of cache (market, ticker, order, etc.)
+        """
         self._cache[key] = (data, time.time())
 
     async def _setup_websocket(self, symbol: str, channel: str) -> None:
@@ -883,14 +973,14 @@ class BinanceService:
                 
             # Check cache first
             cache_key = "markets"
-            cached_data = await self._get_cached_data(cache_key, ttl=3600)  # Cache for 1 hour
+            cached_data = await self._get_cached_data(cache_key, 'markets')
             if cached_data:
                 return cached_data
                 
             # Fetch markets from exchange
             markets = await self._make_request(self.exchange.load_markets)
             if markets:
-                self._set_cached_data(cache_key, markets)
+                self._set_cached_data(cache_key, markets, 'markets')
             return markets
             
         except Exception as e:
@@ -917,7 +1007,7 @@ class BinanceService:
                 
             # Check cache first
             cache_key = f"open_orders_{symbol if symbol else 'all'}"
-            cached_data = await self._get_cached_data(cache_key, ttl=30)  # Cache for 30 seconds
+            cached_data = await self._get_cached_data(cache_key, 'order')
             if cached_data:
                 return cached_data
                 
@@ -928,7 +1018,7 @@ class BinanceService:
                 orders = await self._make_request(self.exchange.fetch_open_orders)
                 
             if orders:
-                self._set_cached_data(cache_key, orders)
+                self._set_cached_data(cache_key, orders, 'order')
             return orders
             
         except Exception as e:
