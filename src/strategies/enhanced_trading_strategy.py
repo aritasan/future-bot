@@ -1614,6 +1614,10 @@ class EnhancedTradingStrategy:
             unrealized_pnl = float(position.get('unrealizedPnl', 0))
             position_size = float(position.get('info', {}).get('positionAmt', 0))
             
+            # Only proceed if we have unrealized profit
+            if unrealized_pnl <= 0:
+                return
+            
             # Calculate position age
             position_age = time.time() - self._position_entry_time.get(symbol, time.time())
             
@@ -1650,11 +1654,17 @@ class EnhancedTradingStrategy:
                 )
                 logger.warning(f"Emergency stop triggered for {symbol} at {new_stop_loss}")
                 
-            # Only update if new stop is more favorable
-            if is_long_side(position_type) and new_stop_loss > current_stop_loss:
-                await self._update_stop_loss(symbol, new_stop_loss, position_type)
-            elif is_short_side(position_type) and new_stop_loss < current_stop_loss:
-                await self._update_stop_loss(symbol, new_stop_loss, position_type)
+            # Only update if new stop is more favorable and we have unrealized profit
+            if is_long_side(position_type):
+                # For LONG positions, only move stop loss up
+                if new_stop_loss > current_stop_loss and new_stop_loss < current_price:
+                    await self._update_stop_loss(symbol, new_stop_loss, position_type)
+                    logger.info(f"Updated trailing stop for {symbol} LONG to {new_stop_loss}")
+            else:
+                # For SHORT positions, only move stop loss down
+                if new_stop_loss < current_stop_loss and new_stop_loss > current_price:
+                    await self._update_stop_loss(symbol, new_stop_loss, position_type)
+                    logger.info(f"Updated trailing stop for {symbol} SHORT to {new_stop_loss}")
                 
             # Update last update time
             self._last_update[symbol] = time.time()
