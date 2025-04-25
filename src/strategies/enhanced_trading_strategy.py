@@ -454,7 +454,7 @@ class EnhancedTradingStrategy:
             stop_loss_multiplier = float(self.config['risk_management']['stop_loss_atr_multiplier'])
             
             # Calculate base stop loss using ATR
-            logger.info(f"Calculating stop loss for {symbol} {position_type} {position_type.upper()}")
+            # logger.info(f"Calculating stop loss for {symbol} {position_type} {position_type.upper()}")
             if is_long_side(position_type):
                 stop_loss = float(current_price) - (float(atr) * stop_loss_multiplier)
             else:
@@ -481,7 +481,7 @@ class EnhancedTradingStrategy:
                 # For SHORT positions, ensure stop loss is above current price
                 stop_loss = max(stop_loss, float(current_price) * (1 + min_distance))
             
-            logger.info(f"Calculated stop loss for {symbol} {position_type.lower()}: {stop_loss} (current price: {current_price})")
+            # logger.info(f"Calculated stop loss for {symbol} {position_type.lower()}: {stop_loss} (current price: {current_price})")
             return stop_loss
             
         except Exception as e:
@@ -498,7 +498,7 @@ class EnhancedTradingStrategy:
             price_diff = abs(current_price - stop_loss)
             
             # Calculate take profit based on risk-reward ratio
-            logger.info(f"Calculating take profit for {symbol} {position_type} {position_type.upper()}")
+            # logger.info(f"Calculating take profit for {symbol} {position_type} {position_type.upper()}")
             if is_long_side(position_type):
                 take_profit = current_price + (price_diff * risk_reward_ratio)
             else:
@@ -513,7 +513,7 @@ class EnhancedTradingStrategy:
                 # For SHORT positions, ensure take profit is below current price
                 take_profit = min(take_profit, current_price * (1 - min_distance))
             
-            logger.info(f"Calculated take profit for {symbol} {position_type.lower()}: {take_profit} (current price: {current_price})")
+            # logger.info(f"Calculated take profit for {symbol} {position_type.lower()}: {take_profit} (current price: {current_price})")
             return take_profit
             
         except Exception as e:
@@ -554,7 +554,7 @@ class EnhancedTradingStrategy:
             if stop_loss > 0:
                 if (position_amt > 0 and current_price <= stop_loss) or \
                    (position_amt < 0 and current_price >= stop_loss):
-                    logger.info(f"Stop loss triggered for {symbol} at {current_price}")
+                    # logger.info(f"Stop loss triggered for {symbol} at {current_price}")
                     return True
                     
             # Check take profit
@@ -562,7 +562,7 @@ class EnhancedTradingStrategy:
             if take_profit > 0:
                 if (position_amt > 0 and current_price >= take_profit) or \
                    (position_amt < 0 and current_price <= take_profit):
-                    logger.info(f"Take profit triggered for {symbol} at {current_price}")
+                    # logger.info(f"Take profit triggered for {symbol} at {current_price}")
                     return True
                     
             # Check trend reversal
@@ -1632,40 +1632,48 @@ class EnhancedTradingStrategy:
             )
             
             # Get current stop loss
-            current_stop_loss = float(position.get('stopLoss', 0))
+            # Check for existing SL/TP orders
+            existing_orders = await self.binance_service.get_open_orders(symbol)
+            if existing_orders:
+                existing_sl = next((order for order in existing_orders 
+                                  if order['type'].upper() == 'STOP_MARKET' and 
+                                  order['side'] != position_side), None)
+                current_stop_loss = float(existing_sl.get('stopPrice', 0))
+            else:
+                current_stop_loss = 0
 
             # Check if we should move to break-even
             if self._should_move_to_break_even(
                 current_price, unrealized_pnl, position_age, position_size
             ):
                 new_stop_loss = entry_price
-                logger.info(f"Moving to break-even for {symbol} at {new_stop_loss}")
+                # logger.info(f"Moving to break-even for {symbol} at {new_stop_loss}")
                 
             # Check if we should take partial profit
             if self._should_take_partial_profit(
                 current_price, unrealized_pnl, position_age, position_size
             ):
                 await self._take_partial_profit(symbol, position_size)
-                logger.info(f"Taking partial profit for {symbol}")
+                # logger.info(f"Taking partial profit for {symbol}")
                 
             # Check for emergency stop
             if self._should_emergency_stop(market_conditions):
                 new_stop_loss = self._calculate_emergency_stop(
                     current_price, position_type
                 )
-                logger.warning(f"Emergency stop triggered for {symbol} at {new_stop_loss}")
+                # logger.warning(f"Emergency stop triggered for {symbol} at {new_stop_loss}")
                 
             # Only update if new stop is more favorable and we have unrealized profit
             if is_long_side(position_type):
                 # For LONG positions, only move stop loss up
                 if new_stop_loss > current_stop_loss and new_stop_loss < current_price:
                     await self._update_stop_loss(symbol, new_stop_loss, position_type)
-                    logger.info(f"Updated trailing stop for {symbol} LONG to {new_stop_loss}")
+                    # logger.info(f"Updated trailing stop for {symbol} LONG to {new_stop_loss}")
             else:
                 # For SHORT positions, only move stop loss down
                 if new_stop_loss < current_stop_loss and new_stop_loss > current_price:
                     await self._update_stop_loss(symbol, new_stop_loss, position_type)
-                    logger.info(f"Updated trailing stop for {symbol} SHORT to {new_stop_loss}")
+                    # logger.info(f"Updated trailing stop for {symbol} SHORT to {new_stop_loss}")
                 
             # Update last update time
             self._last_update[symbol] = time.time()
@@ -1791,7 +1799,7 @@ class EnhancedTradingStrategy:
             )
             
             if success:
-                logger.info(f"Updated stop loss for {symbol} {position_side} to {new_stop_loss}")
+                # logger.info(f"Updated stop loss for {symbol} {position_side} to {new_stop_loss}")
                 await self.telegram_service.send_stop_loss_notification(
                     symbol=symbol,
                     position_side=position_side,
@@ -1833,7 +1841,7 @@ class EnhancedTradingStrategy:
             )
             
             if success:
-                logger.info(f"Updated take profit for {symbol} {position_side} to {new_take_profit}")
+                # logger.info(f"Updated take profit for {symbol} {position_side} to {new_take_profit}")
                 await self.telegram_service.send_take_profit_notification(
                     symbol=symbol,
                     position_side=position_side,
