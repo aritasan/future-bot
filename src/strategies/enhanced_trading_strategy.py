@@ -1280,7 +1280,7 @@ class EnhancedTradingStrategy:
         }
 
     async def _handle_dca(self, symbol: str, position: Dict) -> Optional[Dict]:
-        """Handle DCA (Dollar Cost Averaging) for a position with enhanced features.
+        """Handle DCA (Dollar Cost Averaging) for a position.
         
         Args:
             symbol: Trading pair symbol
@@ -1315,7 +1315,6 @@ class EnhancedTradingStrategy:
                 
             # Check if DCA is favorable based on multiple conditions
             if not self._is_dca_favorable(price_drop, market_conditions):
-                # logger.info(f"DCA not favorable for {symbol} at {current_price}")
                 return None
                 
             # Calculate DCA size based on risk management
@@ -1357,10 +1356,23 @@ class EnhancedTradingStrategy:
             await self._update_stop_loss(symbol, new_stop_loss, position_type)
             await self._update_take_profit(symbol, new_take_profit, position_type)
             
-            # Update DCA information
-            market_conditions['dca_attempts'] = market_conditions.get('dca_attempts', 0) + 1
-            market_conditions['last_dca_time'] = time.time()
-            market_conditions['active_dca_positions'] = market_conditions.get('active_dca_positions', 0) + 1
+            # Update DCA information based on position type
+            if is_long_side(position_type):
+                dca_attempts = market_conditions['long_dca_attempts'] + 1
+                active_positions = market_conditions['long_active_dca_positions']
+                active_positions.append({
+                    'entry_price': current_price,
+                    'size': dca_size,
+                    'time': time.time()
+                })
+            else:
+                dca_attempts = market_conditions['short_dca_attempts'] + 1
+                active_positions = market_conditions['short_active_dca_positions']
+                active_positions.append({
+                    'entry_price': current_price,
+                    'size': dca_size,
+                    'time': time.time()
+                })
             
             # Send notification
             dca_details = {
@@ -1371,8 +1383,9 @@ class EnhancedTradingStrategy:
                 'order_id': order.get('orderId'),
                 'stop_loss': new_stop_loss,
                 'take_profit': new_take_profit,
-                'dca_attempt': market_conditions['dca_attempts'],
-                'active_dca_positions': market_conditions['active_dca_positions']
+                'dca_attempt': dca_attempts,
+                'active_dca_positions': len(active_positions),
+                'position_type': position_type
             }
             
             await self.telegram_service.send_dca_notification(dca_details)
