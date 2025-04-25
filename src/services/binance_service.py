@@ -8,7 +8,7 @@ import ccxt.async_support as ccxt
 from datetime import timedelta
 import time
 import asyncio
-from src.utils.helpers import is_same_symbol
+from src.utils.helpers import is_same_symbol, is_same_side
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +106,6 @@ class BinanceService:
             stop_loss = order_params.get('stop_loss')
             take_profit = order_params.get('take_profit')
             position_side = order_params.get('position_side')
-            # reduce_only = order_params.get('reduceOnly', order_params.get('reduce_only', order_params.get('params', {}).get('reduceOnly', False)))
             close_position = order_params.get('closePosition', order_params.get('close_position', order_params.get('params', {}).get('closePosition', False)))
             
             # Validate required parameters
@@ -147,6 +146,17 @@ class BinanceService:
                 main_order_params['priceProtect'] = True
                 main_order_params['timeInForce'] = "GTC"
 
+            # Check for existing SL/TP orders
+            open_orders_symbol = await self.get_open_orders(symbol)
+            existing_sl = None
+            existing_tp = None
+            
+            if open_orders_symbol:
+                for order_symbol in open_orders_symbol:
+                    if order_symbol['type'].upper() == 'STOP_MARKET' and is_same_side(order_symbol['side'], close_side):
+                        existing_sl = order_symbol
+                    elif order_symbol['type'].upper() == 'TAKE_PROFIT_MARKET' and is_same_side(order_symbol['side'], close_side):
+                        existing_tp = order_symbol
 
             order = await self.exchange.create_order(
                 symbol=symbol,
@@ -167,8 +177,13 @@ class BinanceService:
             # Place stop loss order if provided
             if stop_loss:
                 try:
+                    # Cancel existing stop loss if it exists
+                    if existing_sl:
+                        await self.cancel_order(symbol, existing_sl['id'])
+                        logger.info(f"Cancelled existing stop loss order for {symbol} with position side {position_side}")
+                    
                     # Place stop loss order
-                    logger.info(f"Placing stop loss order for {symbol} at {stop_loss}")
+                    logger.info(f"Placing stop loss order for {symbol} at {stop_loss} with position side {position_side}")
                     sl_params = {
                         "stopPrice": stop_loss,
                         "positionSide": position_side,
@@ -196,8 +211,13 @@ class BinanceService:
             # Place take profit order if provided
             if take_profit:
                 try:
+                    # Cancel existing take profit if it exists
+                    if existing_tp:
+                        await self.cancel_order(symbol, existing_tp['id'])
+                        logger.info(f"Cancelled existing take profit order for {symbol} with position side {position_side}")
+                    
                     # Place take profit order
-                    logger.info(f"Placing take profit order for {symbol} at {take_profit}")
+                    logger.info(f"Placing take profit order for {symbol} at {take_profit} with position side {position_side}")
                     tp_params = {
                         "stopPrice": take_profit,
                         "positionSide": position_side,
@@ -225,7 +245,9 @@ class BinanceService:
             return order
             
         except Exception as e:
-            logger.error(f"Error placing order: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            logger.error(f"Error placing order {symbol}: {str(e)}")
             return None
             
     async def get_account_balance(self) -> Optional[Dict]:
@@ -272,11 +294,12 @@ class BinanceService:
             logger.error(f"Error getting positions: {str(e)}")
             return None
             
-    async def get_position(self, symbol: str) -> Optional[Dict]:
-        """Get position for a specific symbol.
+    async def get_position(self, symbol: str, position_side: str = None) -> Optional[Dict]:
+        """Get position for a specific symbol and position side.
         
         Args:
             symbol: Trading pair symbol
+            position_side: Position side (LONG/SHORT). If None, returns first position found.
             
         Returns:
             Optional[Dict]: Position details if successful, None otherwise
@@ -287,16 +310,23 @@ class BinanceService:
             if not positions:
                 return None
                 
-            # Find position for the specified symbol
+            # Find position for the specified symbol and side
             # Convert BIO/USDT:USDT => BIOUSDT
             symbol = symbol.split(':')[0].replace('/', '')
             for position in positions:
-                if is_same_symbol(position.get('info').get('symbol'), symbol) and float(position.get('contracts', 0)) != 0:
-                    return position
+                if is_same_symbol(position.get('info').get('symbol'), symbol):
+                    # Check position side if specified
+                    if position_side:
+                        if is_same_side(position.get('info').get('positionSide'), position_side) and float(position.get('contracts', 0)) != 0:
+                            logger.info(f"Position found for {symbol} {position_side}: {position}")
+                            return position
+                    # If position_side not specified, return first position found
+                    elif float(position.get('contracts', 0)) != 0:
+                        return position
                     
             return None
         except Exception as e:
-            logger.error(f"Error getting position for {symbol}: {str(e)}")
+            logger.error(f"Error getting position for {symbol} with side {position_side}: {str(e)}")
             return None
             
     async def get_ticker(self, symbol: str) -> Optional[Dict]:
@@ -584,72 +614,116 @@ class BinanceService:
             logger.error(f"Error getting klines for {symbol}: {str(e)}")
             return None
             
-    async def update_stop_loss(self, symbol: str, stop_price: float, side: str, position_side: str = None, amount: float = None) -> bool:
-        """Update stop loss order for a position.
-        
-        Args:
-            symbol: Trading pair symbol
-            stop_price: New stop loss price
-            side: Order side (BUY/SELL)
-            position_side: Position side (LONG/SHORT)
-            amount: Order amount (optional)
-            
-        Returns:
-            bool: True if successful, False otherwise
-        """
+    async def _update_stop_loss(self, symbol: str, position: Dict, new_stop_loss: float) -> bool:
+        """Update stop loss for a position."""
         try:
-            # Use REST API with retry mechanism
-            params = {
-                'stopPrice': stop_price
+            # Get current position details
+            position_side = position.get('positionSide', 'LONG')
+            close_side = "SELL" if position_side == "LONG" else "BUY"
+            amount = float(position.get('positionAmt', 0))
+            
+            if amount == 0:
+                logger.warning(f"No position to update stop loss for {symbol} with position side {position_side}")
+                return False
+                
+            # Get existing stop loss order
+            open_orders = await self.get_open_orders(symbol)
+            existing_sl = None
+            
+            if open_orders:
+                for order in open_orders:
+                    if order['type'] == 'STOP_MARKET' and order['side'] == close_side:
+                        existing_sl = order
+                        break
+            
+            # Cancel existing stop loss if it exists
+            if existing_sl:
+                await self.cancel_order(symbol, existing_sl['id'])
+                logger.info(f"Cancelled existing stop loss order for {symbol} with position side {position_side}")
+            
+            # Place new stop loss order
+            sl_params = {
+                "stopPrice": new_stop_loss,
+                "positionSide": position_side,
+                "workingType": "MARK_PRICE",
+                "priceProtect": True,
+                "timeInForce": "GTC",
+                "closePosition": True
             }
             
-            # Only add reduceOnly if we're in a position that requires it
-            # Check if we have an open position for this symbol
-            position = await self.get_position(symbol)
-            if position and float(position.get('info').get('positionAmt', 0)) != 0:
-                params['reduceOnly'] = True
-            
-            if position_side:
-                params['positionSide'] = position_side
-                
-            result = await self._make_request(
-                self.exchange.create_order,
+            sl_order = await self.exchange.create_order(
                 symbol=symbol,
-                type='STOP_MARKET',
-                side=side,
-                amount=amount,
-                params=params
+                type="STOP_MARKET",
+                side=close_side,
+                amount=abs(amount),
+                params=sl_params
             )
-            return bool(result)
+            
+            if sl_order:
+                logger.info(f"Updated stop loss for {symbol} to {new_stop_loss}")
+                return True
+            else:
+                logger.error(f"Failed to update stop loss for {symbol}")
+                return False
+                
         except Exception as e:
-            logger.error(f"Error updating stop loss: {str(e)}")
+            logger.error(f"Error updating stop loss for {symbol} with position side {position_side}: {str(e)}")
             return False
 
-    async def update_take_profit(self, symbol: str, take_profit_price: float, side: str, amount: float) -> bool:
-        """Update take profit order for a position."""
+    async def _update_take_profit(self, symbol: str, position: Dict, new_take_profit: float) -> bool:
+        """Update take profit for a position."""
         try:
-            # Use REST API with retry mechanism
-            params = {
-                'stopPrice': take_profit_price
+            # Get current position details
+            position_side = position.get('positionSide', 'LONG')
+            close_side = "SELL" if position_side == "LONG" else "BUY"
+            amount = float(position.get('positionAmt', 0))
+            
+            if amount == 0:
+                logger.warning(f"No position to update take profit for {symbol}")
+                return False
+                
+            # Get existing take profit order
+            open_orders = await self.get_open_orders(symbol)
+            existing_tp = None
+            
+            if open_orders:
+                for order in open_orders:
+                    if order['type'] == 'TAKE_PROFIT_MARKET' and order['side'] == close_side:
+                        existing_tp = order
+                        break
+            
+            # Cancel existing take profit if it exists
+            if existing_tp:
+                await self.cancel_order(symbol, existing_tp['id'])
+                logger.info(f"Cancelled existing take profit order for {symbol}")
+            
+            # Place new take profit order
+            tp_params = {
+                "stopPrice": new_take_profit,
+                "positionSide": position_side,
+                "workingType": "MARK_PRICE",
+                "priceProtect": True,
+                "timeInForce": "GTC",
+                "closePosition": True
             }
             
-            # Only add reduceOnly if we're in a position that requires it
-            # Check if we have an open position for this symbol
-            position = await self.get_position(symbol)
-            if position and float(position.get('info').get('positionAmt', 0)) != 0:
-                params['reduceOnly'] = True
-                
-            result = await self._make_request(
-                self.exchange.create_order,
+            tp_order = await self.exchange.create_order(
                 symbol=symbol,
-                type='TAKE_PROFIT_MARKET',
-                side=side,
-                amount=amount,
-                params=params
+                type="TAKE_PROFIT_MARKET",
+                side=close_side,
+                amount=abs(amount),
+                params=tp_params
             )
-            return bool(result)
+            
+            if tp_order:
+                logger.info(f"Updated take profit for {symbol} to {new_take_profit}")
+                return True
+            else:
+                logger.error(f"Failed to update take profit for {symbol}")
+                return False
+                
         except Exception as e:
-            logger.error(f"Error updating take profit: {str(e)}")
+            logger.error(f"Error updating take profit for {symbol} with position side {position_side}: {str(e)}")
             return False
 
     async def cancel_order(self, symbol: str, order_id: str) -> bool:
@@ -861,34 +935,31 @@ class BinanceService:
             logger.error(f"Error getting open orders: {str(e)}")
             return None
 
-    async def close_position(self, symbol: str) -> bool:
-        """Close position for a specific symbol.
+    async def close_position(self, symbol: str, position_side: str = None) -> bool:
+        """Close position for a specific symbol and position side.
         
         Args:
             symbol: Trading pair symbol
-            
+            position_side: Position side (LONG/SHORT). If None, returns first position found.
         Returns:
             bool: True if position closed successfully, False otherwise
         """
         try:
             # Get position details
-            position = await self.get_position(symbol)
+            position = await self.get_position(symbol, position_side)
             if not position:
-                logger.warning(f"No position found for {symbol}")
+                logger.warning(f"No position found for {symbol} {position_side}")
                 return False
                 
             # Get position amount
             position_amt = float(position.get('info').get('positionAmt', 0))
             if position_amt == 0:
-                logger.warning(f"No position amount for {symbol}")
+                logger.warning(f"No position amount for {symbol} {position_side}")
                 return False
                 
             # Determine side based on position amount
             side = 'SELL' if position_amt > 0 else 'BUY'
             amount = abs(position_amt)
-            
-            # Get position side
-            position_side = position.get('info').get('positionSide', 'LONG' if position_amt > 0 else 'SHORT')
             
             # Create market order to close position
             order_params = {
@@ -905,16 +976,16 @@ class BinanceService:
             # Place order
             result = await self.place_order(order_params)
             if result:
-                logger.info(f"Position closed for {symbol}: {result}")
+                logger.info(f"Position closed for {symbol} {position_side}: {result}")
                 # Clear position cache
                 self._cache.pop('positions', None)
                 return True
             else:
-                logger.error(f"Failed to close position for {symbol}")
+                logger.error(f"Failed to close position for {symbol} {position_side}")
                 return False
                 
         except Exception as e:
-            logger.error(f"Error closing position for {symbol}: {str(e)}")
+            logger.error(f"Error closing position for {symbol} {position_side}: {str(e)}")
             return False
 
     async def cancel_all_orders(self, symbol: str) -> bool:
