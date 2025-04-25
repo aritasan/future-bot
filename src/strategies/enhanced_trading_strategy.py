@@ -614,7 +614,7 @@ class EnhancedTradingStrategy:
                 
             # Check if price moved significantly
             if is_long_side(position["side"]):
-                price_change = (current_price - position["entry_price"]) / position["entryPrice"]
+                price_change = (current_price - position["entryPrice"]) / position["entryPrice"]
                 if price_change > 0.02:  # 2% move
                     return True
             else:
@@ -2073,7 +2073,6 @@ class EnhancedTradingStrategy:
                         # Check if the position is profitable
                         unrealized_pnl = float(position.get('unrealizedPnl', 0))
                         if unrealized_pnl <= 0:
-                            logger.info(f"Skipping trailing stop update for {symbol} - position is not profitable")
                             continue  # Skip this position but continue with others
                             
                         # Determine position side based on position amount
