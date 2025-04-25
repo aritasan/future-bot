@@ -142,22 +142,6 @@ class BinanceService:
             
             # Get symbol and position side
             symbol = order_params['symbol']
-            
-            # Check for existing SL/TP orders
-            existing_orders = await self.get_open_orders(symbol)
-            if existing_orders:
-                existing_sl = next((order for order in existing_orders 
-                                  if order['type'].upper() == 'STOP_MARKET' and 
-                                  order['side'] != order_params['side']), None)
-                existing_tp = next((order for order in existing_orders 
-                                  if order['type'].upper() == 'TAKE_PROFIT_MARKET' and 
-                                  order['side'] != order_params['side']), None)
-                                  
-                # Cancel existing SL/TP orders
-                if existing_sl:
-                    await self.cancel_order(symbol, existing_sl['id'])
-                if existing_tp:
-                    await self.cancel_order(symbol, existing_tp['id'])
                     
             # Place main order first
             main_order_params = {
@@ -183,6 +167,22 @@ class BinanceService:
                
             logger.info(f"Order placed successfully: {main_order}")
             
+            # Check for existing SL/TP orders
+            existing_orders = await self.get_open_orders(symbol)
+            if existing_orders:
+                existing_sl = next((order for order in existing_orders 
+                                  if order['type'].upper() == 'STOP_MARKET' and 
+                                  order['side'] != order_params['side']), None)
+                existing_tp = next((order for order in existing_orders 
+                                  if order['type'].upper() == 'TAKE_PROFIT_MARKET' and 
+                                  order['side'] != order_params['side']), None)
+                                  
+                # Cancel existing SL/TP orders
+                if existing_sl:
+                    await self.cancel_order(symbol, existing_sl['id'])
+                if existing_tp:
+                    await self.cancel_order(symbol, existing_tp['id'])
+                    
             # Place SL/TP orders if specified
             if 'stop_loss' in order_params:
                 sl_order_params = {
