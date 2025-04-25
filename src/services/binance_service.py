@@ -705,7 +705,6 @@ class BinanceService:
                     # Increase recvWindow to avoid timestamp errors
                     if hasattr(self.exchange, 'options'):
                         self.exchange.options['recvWindow'] = 60000  # 60 seconds
-                        logger.info(f"Time synchronized. Offset: {self._time_offset}ms, recvWindow: 60s")
                     else:
                         logger.warning("Exchange options not available for recvWindow adjustment")
                     return
