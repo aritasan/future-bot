@@ -206,11 +206,11 @@ def load_config() -> Dict[str, Any]:
                 'trailing_stop': {
                     'update_interval': 60,  # Update every 60 seconds
                     'break_even': {
-                        'min_profit': 0.01,  # Minimum 1% profit
+                        'min_profit': 0.1,  # Minimum 10% profit
                         'min_time': 300  # Minimum 5 minutes
                     },
                     'partial_profit': {
-                        'min_profit': 0.02,  # Minimum 2% profit
+                        'min_profit': 0.2,  # Minimum 20% profit
                         'min_time': 600,  # Minimum 10 minutes
                         'close_ratio': 0.5  # Close 50% of position
                     },
@@ -233,7 +233,7 @@ def load_config() -> Dict[str, Any]:
                 
                 # Emergency stop parameters
                 'emergency_stop': {
-                    'volatility_threshold': 0.03,  # 3% volatility threshold
+                    'volatility_threshold': 0.1,  # 10% volatility threshold
                     'volume_threshold': 2.0,  # 2x average volume threshold
                     'distance': 0.02  # 2% emergency stop distance
                 },
@@ -248,21 +248,6 @@ def load_config() -> Dict[str, Any]:
                         'hourly': 3600,
                         'daily': 86400
                     }
-                },
-
-                # New risk accumulation control parameters
-                'risk_accumulation': {
-                    'max_concurrent_positions': 5,  # Maximum 5 concurrent positions
-                    'max_total_risk': 0.2,  # 20% maximum total risk
-                    'risk_reduction_factor': 0.8,  # Reduce risk by 20% for each new position
-                    'position_size_limits': {
-                        'min': 0.01,  # 1% minimum position size
-                        'max': 0.1,   # 10% maximum position size
-                        'default': 0.05  # 5% default position size
-                    },
-                    'correlation_threshold': 0.7,  # Maximum allowed correlation between positions
-                    'volatility_threshold': 0.02,  # Maximum allowed volatility (2%)
-                    'drawdown_threshold': 0.1  # 10% maximum drawdown
                 }
             },
             'cache': {
