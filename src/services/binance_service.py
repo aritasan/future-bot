@@ -165,7 +165,7 @@ class BinanceService:
                 logger.error(f"Failed to place main order for {symbol} {main_order_params}")
                 return None
                
-            logger.info(f"Order placed successfully: {main_order}")
+            logger.info(f"Main order placed successfully for {symbol} {main_order_params['side']}: {main_order['id']}")
             
             # Check for existing SL/TP orders
             existing_orders = await self.get_open_orders(symbol)
@@ -277,44 +277,6 @@ class BinanceService:
             return False
         return True
         
-    async def _handle_sl_tp_order(self, order_params: Dict) -> Optional[Dict]:
-        """Handle stop loss and take profit orders.
-        
-        Args:
-            order_params: Dictionary containing order parameters
-            
-        Returns:
-            Optional[Dict]: Order details if successful, None otherwise
-        """
-        try:
-            symbol = order_params['symbol']
-            order_type = order_params['type']
-            
-            # Get existing orders
-            existing_orders = await self.get_open_orders(symbol)
-            if not existing_orders:
-                return await self._place_main_order(order_params)
-                
-            # Find existing SL/TP orders
-            existing_sl = next((o for o in existing_orders if o['type'] == 'STOP_MARKET'), None)
-            existing_tp = next((o for o in existing_orders if o['type'] == 'TAKE_PROFIT_MARKET'), None)
-            
-            # Cancel existing order if needed
-            if order_type == 'STOP_MARKET' and existing_sl:
-                if not await self.cancel_order(symbol, existing_sl['id']):
-                    logger.error(f"Failed to cancel existing stop loss order for {symbol}")
-                    return None
-            elif order_type == 'TAKE_PROFIT_MARKET' and existing_tp:
-                if not await self.cancel_order(symbol, existing_tp['id']):
-                    logger.error(f"Failed to cancel existing take profit order for {symbol}")
-                    return None
-                
-            # Place new order
-            return await self._place_main_order(order_params)
-            
-        except Exception as e:
-            logger.error(f"Error handling SL/TP order: {str(e)}")
-            return None
             
     async def _place_main_order(self, order_params: Dict) -> Optional[Dict]:
         """Place the main order.
@@ -326,19 +288,14 @@ class BinanceService:
             Optional[Dict]: Order details if successful, None otherwise
         """
         try:
-            # Add required parameters
-            params = order_params.copy()
-            params['workingType'] = 'MARK_PRICE'
-            params['timeInForce'] = 'GTC'
-            
             # Place order
             order = await self._make_request(
                 self.exchange.create_order,
-                **params
+                **order_params
             )
             
             if order:
-                logger.info(f"Order placed successfully: {order['id']}")
+                logger.info(f"Order placed successfully for {order_params['symbol']} {order_params['side']}: {order['id']}")
                 return order
             return None
             
@@ -395,12 +352,15 @@ class BinanceService:
             order_params = {
                 'symbol': symbol,
                 'type': order_type,
-                'side': 'SELL' if position['position_side'] == 'LONG' else 'BUY',
+                'side': 'SELL' if is_long_side(position['info']['positionSide']) else 'BUY',
                 'amount': abs(float(current_position['contracts'])),
-                'price': new_price,
-                'stopPrice': new_price,
-                'workingType': 'MARK_PRICE',
-                'timeInForce': 'GTC'
+                'params': {
+                    'stopPrice': new_price,
+                    'positionSide': position['info']['positionSide'],
+                    'workingType': 'MARK_PRICE',
+                    'timeInForce': 'GTC',
+                    'closePosition': True
+                }
             }
             
             # Place new order
@@ -409,7 +369,7 @@ class BinanceService:
                 logger.error(f"Failed to place new {order_type} order")
                 return False
                 
-            logger.info(f"{order_type} order updated successfully: {new_order['id']}")
+            logger.info(f"{order_type} order updated successfully for {symbol} {position['info']['positionSide']}: {new_order['id']}")
             return True
             
         except Exception as e:
@@ -831,6 +791,7 @@ class BinanceService:
             cache_key = f"open_orders_{symbol}"
             self._cache.pop(cache_key, None)
             
+            logger.info(f"Order {order_id} cancelled for {symbol}")
             return bool(result)
         except Exception as e:
             logger.error(f"Error canceling order {order_id} for {symbol}: {str(e)}")
@@ -1077,40 +1038,3 @@ class BinanceService:
         except Exception as e:
             logger.error(f"Error closing position for {symbol} {position_side}: {str(e)}")
             return False
-
-    async def cancel_all_orders(self, symbol: str) -> bool:
-        """Cancel all open orders for a symbol.
-        
-        Args:
-            symbol: Trading pair symbol
-            
-        Returns:
-            bool: True if all orders were cancelled successfully, False otherwise
-        """
-        try:
-            if not self._is_initialized:
-                logger.error("Binance service not initialized")
-                return False
-                
-            if self._is_closed:
-                logger.error("Binance service is closed")
-                return False
-                
-            # Get all open orders
-            orders = await self.get_open_orders(symbol)
-            if not orders:
-                return True
-                
-            # Cancel each order
-            for order in orders:
-                try:
-                    await self.cancel_order(symbol, order['id'])
-                except Exception as e:
-                    logger.error(f"Error cancelling order {order['id']}: {str(e)}")
-                    continue
-                    
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error cancelling all orders for {symbol}: {str(e)}")
-            return False 

@@ -1927,14 +1927,6 @@ class EnhancedTradingStrategy:
             position_side = "LONG" if is_long_side(signal['position_type']) else "SHORT"
             current_position = await self.binance_service.get_position(symbol, position_side)
             if current_position:
-                # Cancel existing SL/TP orders
-                open_orders = await self.binance_service.get_open_orders(symbol)
-                if open_orders:
-                    for order in open_orders:
-                        if order['type'] in ['STOP_MARKET', 'TAKE_PROFIT_MARKET']:
-                            await self.binance_service.cancel_order(symbol, order['id'])
-                            logger.info(f"Cancelled existing {order['type']} order for {symbol}")
-
                 # Calculate new total position size
                 current_size = float(current_position.get('info').get('positionAmt', 0))
                 new_total_size = current_size + position_size if is_long_side(signal['position_type']) else current_size - position_size
@@ -2049,7 +2041,6 @@ class EnhancedTradingStrategy:
                         # Check if the position is in loss (for DCA, we want to DCA when in loss)
                         unrealized_pnl = float(position.get('unrealizedPnl', 0))
                         if unrealized_pnl > 0:
-                            logger.info(f"Skipping DCA for {symbol} - position is profitable")
                             continue  # Skip this position but continue with others
                             
                         dca_result = await self._handle_dca(symbol, position)
