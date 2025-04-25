@@ -1314,7 +1314,7 @@ class EnhancedTradingStrategy:
                 return None
                 
             # Check if DCA is favorable based on multiple conditions
-            if not self._is_dca_favorable(price_drop, market_conditions):
+            if not self._is_dca_favorable(price_drop, market_conditions, position_type):
                 return None
                 
             # Calculate DCA size based on risk management
@@ -1396,86 +1396,79 @@ class EnhancedTradingStrategy:
             logger.error(f"Error handling DCA for {symbol}: {str(e)}")
             return None
 
-    def _is_dca_favorable(self, price_drop: float, market_conditions: Dict) -> bool:
-        """Check if DCA conditions are favorable."""
+    def _is_dca_favorable(self, price_drop: float, market_conditions: Dict, position_type: str) -> bool:
+        """Check if DCA is favorable based on multiple conditions.
+        
+        Args:
+            price_drop: Percentage price drop from entry
+            market_conditions: Current market conditions
+            position_type: Type of position (LONG/SHORT)
+            
+        Returns:
+            bool: True if DCA is favorable, False otherwise
+        """
         try:
+            if not market_conditions:
+                logger.error("No market conditions provided")
+                return False
+                
+            if position_type not in ['LONG', 'SHORT']:
+                logger.error(f"Invalid position type: {position_type}")
+                return False
+                
             # Get DCA configuration
-            dca_config = self.config['risk_management']['dca']
-            risk_control = dca_config['risk_control']
-
+            dca_config = self.config.get('risk_management', {}).get('dca', {})
+            if not dca_config:
+                logger.error("No DCA configuration found")
+                return False
+                
             # Convert all values to float for comparison
             price_drop = float(price_drop)
             min_price_drop = float(dca_config['price_drop_thresholds'][0])
             volume_threshold = float(dca_config['volume_threshold'])
-            btc_correlation_threshold = float(dca_config['btc_correlation_threshold'])
-            max_drawdown = float(risk_control['max_drawdown'])
-            max_position_size = float(risk_control['max_position_size'])
-            min_profit_target = float(risk_control['min_profit_target'])
-
-            # Convert RSI thresholds to float
-            rsi_thresholds = dca_config['rsi_thresholds']
-            oversold_threshold = float(rsi_thresholds['oversold'])
-            overbought_threshold = float(rsi_thresholds['overbought'])
-
+            
             # Check price drop threshold
             if price_drop < min_price_drop:
                 return False
-
+                
             # Check volume condition
             volume_ratio = float(market_conditions.get('volume_ratio', 1.0))
             if volume_ratio < volume_threshold:
-                # logger.info("Volume below threshold")
                 return False
-
+                
             # Check volatility condition
             volatility = market_conditions.get('volatility', 'LOW')
             if volatility == 'HIGH':
-                # logger.info("Volatility too high")
                 return False
-
-            # Check RSI condition
-            rsi = float(market_conditions.get('rsi', 50))
-            if oversold_threshold < rsi < overbought_threshold:
-                # logger.info("RSI not in favorable range")
+                
+            # Check trend condition based on position type
+            trend = market_conditions.get('trend', 'NEUTRAL')
+            if is_long_side(position_type) and trend == 'DOWN':
                 return False
-
-            # Check BTC correlation
-            btc_correlation = float(market_conditions.get('btc_correlation', 0))
-            if abs(btc_correlation) < btc_correlation_threshold:
-                # logger.info("BTC correlation below threshold")
+            if is_short_side(position_type) and trend == 'UP':
                 return False
-
-            # Check time since last DCA
-            last_dca_time = float(market_conditions.get('last_dca_time', 0))
-            current_time = float(time.time())
-            if current_time - last_dca_time < float(dca_config['min_time_between_attempts']):
-                # logger.info("Not enough time since last DCA")
+                
+            # Check ATR condition
+            atr = float(market_conditions.get('atr', 0))
+            if atr <= 0:
                 return False
-
-            # Check max drawdown
-            current_drawdown = float(market_conditions.get('current_drawdown', 0))
-            if current_drawdown > max_drawdown:
-                logger.info("Max drawdown exceeded")
+                
+            # Check DCA attempts for specific position type
+            dca_attempts = market_conditions.get(f'{position_type.lower()}_dca_attempts', 0)
+            max_dca_attempts = int(dca_config.get('max_attempts', 3))
+            if dca_attempts >= max_dca_attempts:
                 return False
-
-            # Check position size
-            position_size = float(market_conditions.get('position_size', 0))
-            account_balance = float(market_conditions.get('account_balance', 0))
-            if account_balance > 0 and position_size / account_balance > max_position_size:
-                logger.info("Max position size exceeded")
+                
+            # Check active DCA positions for specific position type
+            active_positions = len(market_conditions.get(f'{position_type.lower()}_active_dca_positions', []))
+            max_active_positions = int(dca_config.get('max_active_positions', 2))
+            if active_positions >= max_active_positions:
                 return False
-
-            # Check profit target
-            if float(market_conditions.get('unrealized_pnl', 0)) < min_profit_target:
-                logger.info("Profit target not reached")
-                return False
-
+                
             return True
-
+            
         except Exception as e:
-            import traceback
-            traceback.print_exc()
-            logger.error(f"Error checking DCA conditions: {str(e)}")
+            logger.error(f"Error checking DCA favorability for {position_type}: {str(e)}")
             return False
 
     async def _calculate_dca_size(self, current_size: float, price_drop: float) -> Optional[float]:
