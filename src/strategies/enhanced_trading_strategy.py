@@ -866,47 +866,42 @@ class EnhancedTradingStrategy:
             # Get trailing stop configuration
             trailing_config = self.config['risk_management']['trailing_stop']
             dynamic_config = trailing_config['dynamic']
-            time_based = trailing_config['time_based']
 
-            # Calculate base trailing stop distance
-            base_distance = atr * dynamic_config['atr_multiplier']
+            # Calculate base ATR multiplier
+            atr_multiplier = dynamic_config['atr_multiplier']
 
-            # Adjust distance based on market conditions
-            if market_conditions and dynamic_config['volatility_adjustment']:
+            # Adjust ATR multiplier based on market conditions
+            if market_conditions:
+                # Adjust for volatility
                 volatility = market_conditions.get('volatility', 0)
-                base_distance *= (1 + volatility)
+                if volatility > 0.05:  # High volatility
+                    atr_multiplier *= 1.5
+                elif volatility < 0.02:  # Low volatility
+                    atr_multiplier *= 0.8
 
-            if market_conditions and dynamic_config['trend_adjustment']:
+                # Adjust for trend strength
                 trend_strength = market_conditions.get('trend_strength', 0)
-                base_distance *= (1 + trend_strength)
+                if trend_strength > 0.7:  # Strong trend
+                    atr_multiplier *= 1.2
+                elif trend_strength < 0.3:  # Weak trend
+                    atr_multiplier *= 0.9
 
-            # Adjust distance based on time
-            if time_based['enabled'] and market_conditions:
-                position_age = market_conditions.get('position_age', 0)
-                for i, window in enumerate(time_based['time_windows']):
-                    if position_age <= window:
-                        base_distance *= time_based['distance_multipliers'][i]
-                        break
+            # Calculate final trailing stop distance
+            trailing_distance = atr * atr_multiplier
 
             # Calculate trailing stop price
             if is_long_side(position_type):
-                trailing_stop = current_price - base_distance
+                return current_price - trailing_distance
             else:
-                trailing_stop = current_price + base_distance
-
-            # Ensure minimum distance
-            min_distance = self.config['risk_management']['min_stop_distance']
-            if is_long_side(position_type):
-                trailing_stop = max(trailing_stop, current_price * (1 - min_distance))
-            else:
-                trailing_stop = min(trailing_stop, current_price * (1 + min_distance))
-
-            logger.info(f"Calculated trailing stop for {symbol} {position_type}: {trailing_stop}")
-            return trailing_stop
+                return current_price + trailing_distance
 
         except Exception as e:
-            logger.error(f"Error calculating trailing stop: {str(e)}")
-            return None
+            logger.error(f"Error calculating trailing stop for {symbol}: {str(e)}")
+            # Return a safe default value
+            if is_long_side(position_type):
+                return current_price * 0.99  # 1% below current price
+            else:
+                return current_price * 1.01  # 1% above current price
 
     async def calculate_signal_score(self, df: pd.DataFrame, timeframe_analysis: Dict, 
                                    btc_volatility: Dict, altcoin_correlation: Dict,
