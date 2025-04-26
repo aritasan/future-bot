@@ -1639,9 +1639,7 @@ class EnhancedTradingStrategy:
             
             existing_orders = await self.binance_service.get_open_orders(symbol)
             if existing_orders:
-                existing_sl = next((order for order in existing_orders 
-                                  if order['type'].upper() == 'STOP_MARKET' and 
-                                  order['side'].upper() == open_position_side.upper()), None)
+                existing_sl = await self.binance_service.get_existing_order(symbol, 'STOP_MARKET', open_position_side)
                 current_stop_loss = float(existing_sl.get('stopPrice', 0))
             else:
                 current_stop_loss = 0
@@ -1798,9 +1796,7 @@ class EnhancedTradingStrategy:
             existing_orders = await self.binance_service.get_open_orders(symbol)
             open_position_side = "SELL" if is_long_side(position_type) else "BUY"
             if existing_orders:
-                existing_sl = next((order for order in existing_orders 
-                                  if order['type'].upper() == 'STOP_MARKET' and 
-                                  order['side'].upper() == open_position_side.upper()), None)
+                existing_sl = await self.binance_service.get_existing_order(symbol, 'STOP_MARKET', open_position_side)
                 if not existing_sl:
                     # logger.info(f"No existing stop loss for {symbol}")
                     current_stop_loss = 0
@@ -1861,9 +1857,7 @@ class EnhancedTradingStrategy:
             existing_orders = await self.binance_service.get_open_orders(symbol)
             open_position_side = "SELL" if is_long_side(position_type) else "BUY"
             if existing_orders:
-                existing_tp = next((order for order in existing_orders 
-                                  if order['type'].upper() == 'TAKE_PROFIT_MARKET' and 
-                                  order['side'].upper() == open_position_side.upper()), None)
+                existing_tp = await self.binance_service.get_existing_order(symbol, 'TAKE_PROFIT_MARKET', open_position_side)
                 if not existing_tp:
                     # logger.info(f"No existing take profit for {symbol}")
                     current_take_profit = 0

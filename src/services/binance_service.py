@@ -171,13 +171,10 @@ class BinanceService:
             existing_orders = await self.get_open_orders(symbol)
             open_position_side = "SELL" if is_long_side(order_params['side']) else "BUY"
             if existing_orders:
-                existing_sl = next((order for order in existing_orders 
-                                  if order['type'].upper() == 'STOP_MARKET' and 
-                                  order['side'].upper() == open_position_side.upper()), None)
-                existing_tp = next((order for order in existing_orders 
-                                  if order['type'].upper() == 'TAKE_PROFIT_MARKET' and 
-                                  order['side'].upper() == open_position_side.upper()), None)
-                                  
+                existing_sl = await self.get_existing_order(symbol, 'STOP_MARKET', open_position_side)
+                existing_tp = await self.get_existing_order(symbol, 'TAKE_PROFIT_MARKET', open_position_side)
+                logger.info(f"Existing SL/TP orders for {symbol}: {existing_sl} {existing_tp}")
+
                 # Cancel existing SL/TP orders
                 if existing_sl:
                     await self.cancel_order(symbol, existing_sl['id'])
@@ -355,8 +352,10 @@ class BinanceService:
                 return await self._place_main_order(order_params)
                 
             # Find existing order
-            existing_order = next((o for o in existing_orders if o['type'].upper() == order_type.upper() and 
-                                  o['side'].upper() == order_params['side'].upper()), None)
+            logger.info(f"Existing orders {symbol}: {existing_orders}")
+            open_position_side = "SELL" if is_long_side(position['info']['positionSide']) else "BUY"
+            existing_order = await self.get_existing_order(symbol, order_type, open_position_side)
+            logger.info(f"Existing order {order_type} {symbol} {open_position_side}: {existing_order}")
             if not existing_order:
                 logger.info(f"No {order_type} order found for {symbol}, creating new order")
                 # Create new order since no order of this type exists
@@ -983,6 +982,29 @@ class BinanceService:
             logger.error(f"Error getting open orders: {str(e)}")
             return None
 
+    async def get_existing_order(self, symbol: str, order_type: str, side: str) -> Optional[List[Dict]]:
+        """Get existing order for a symbol.
+        
+        Args:
+            symbol: Trading pair symbol
+        """
+        try:
+            # Get open orders
+            orders = await self.get_open_orders(symbol)
+            if not orders:
+                return None
+
+            # Get existing order
+            for order in orders:
+                if order['type'].upper() == order_type.upper() and order['side'].upper() == side.upper():
+                    return order
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error getting existing order: {str(e)}")
+            return None
+    
+    
     async def close_position(self, symbol: str, position_side: str = None) -> bool:
         """Close position for a specific symbol and position side.
         
