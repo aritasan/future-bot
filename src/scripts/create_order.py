@@ -5,7 +5,7 @@ import asyncio
 import logging
 import sys
 import os
-from typing import Dict, Optional
+from typing import Optional
 
 # Set event loop policy for Windows
 if sys.platform == 'win32':
@@ -85,6 +85,7 @@ async def test_place_order(
         
         if result:
             logger.info(f"Order placed successfully: {result}")
+            telegram_service.send_order_notification(result)
         else:
             logger.error("Failed to place order")
             
@@ -101,9 +102,9 @@ async def main():
     symbol = "BTC/USDT"
     side = "BUY"
     order_type = "MARKET"
-    amount = 0.01  # Small amount for testing
+    amount = 0.005  # Small amount for testing
     stop_loss = 93000  # Optional
-    take_profit = 95000  # Optional
+    take_profit = 96500  # Optional
     
     await test_place_order(
         symbol=symbol,
