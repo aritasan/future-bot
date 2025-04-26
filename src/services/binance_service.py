@@ -169,13 +169,14 @@ class BinanceService:
             
             # Check for existing SL/TP orders
             existing_orders = await self.get_open_orders(symbol)
+            open_position_side = "SELL" if is_long_side(order_params['side']) else "BUY"
             if existing_orders:
                 existing_sl = next((order for order in existing_orders 
                                   if order['type'].upper() == 'STOP_MARKET' and 
-                                  order['side'] != order_params['side']), None)
+                                  order['side'].upper() == open_position_side.upper()), None)
                 existing_tp = next((order for order in existing_orders 
                                   if order['type'].upper() == 'TAKE_PROFIT_MARKET' and 
-                                  order['side'] != order_params['side']), None)
+                                  order['side'].upper() == open_position_side.upper()), None)
                                   
                 # Cancel existing SL/TP orders
                 if existing_sl:
@@ -314,7 +315,7 @@ class BinanceService:
             order_type: Order type (STOP_MARKET/TAKE_PROFIT_MARKET)
             
         Returns:
-            bool: True if update successful, False otherwise
+            bool: True if order updated successfully, False otherwise
         """
         try:
             if not self._is_initialized:
@@ -329,23 +330,6 @@ class BinanceService:
             current_position = await self.get_position(symbol, position.get('info', {}).get('positionSide', None))
             if not current_position:
                 logger.error(f"No position found for {symbol}")
-                return False
-                
-            # Get existing orders
-            existing_orders = await self.get_open_orders(symbol)
-            if not existing_orders:
-                logger.error(f"No orders found for {symbol}")
-                return False
-                
-            # Find existing order
-            existing_order = next((o for o in existing_orders if o['type'].upper() == order_type.upper()), None)
-            if not existing_order:
-                logger.error(f"No {order_type} order found for {symbol}")
-                return False
-                
-            # Cancel existing order
-            if not await self.cancel_order(symbol, existing_order['id']):
-                logger.error(f"Failed to cancel existing {order_type} order")
                 return False
                 
             # Prepare new order parameters
@@ -363,14 +347,28 @@ class BinanceService:
                 }
             }
             
-            # Place new order
-            new_order = await self._place_main_order(order_params)
-            if not new_order:
-                logger.error(f"Failed to place new {order_type} order")
-                return False
+            # Get existing orders
+            existing_orders = await self.get_open_orders(symbol)
+            if not existing_orders:
+                logger.info(f"No orders found for {symbol}, creating new {order_type} order")
+                # Create new order since no orders exist
+                return await self._place_main_order(order_params)
                 
-            logger.info(f"{order_type} order updated successfully for {symbol} {position['info']['positionSide']}: {new_order['id']}")
-            return True
+            # Find existing order
+            existing_order = next((o for o in existing_orders if o['type'].upper() == order_type.upper() and 
+                                  o['side'].upper() == order_params['side'].upper()), None)
+            if not existing_order:
+                logger.info(f"No {order_type} order found for {symbol}, creating new order")
+                # Create new order since no order of this type exists
+                return await self._place_main_order(order_params)
+                
+            # Cancel existing order
+            if not await self.cancel_order(symbol, existing_order['id']):
+                logger.error(f"Failed to cancel existing {order_type} order")
+                return False
+            
+            # Place new order
+            return await self._place_main_order(order_params)
             
         except Exception as e:
             logger.error(f"Error updating {order_type} order: {str(e)}")

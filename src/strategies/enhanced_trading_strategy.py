@@ -1488,8 +1488,10 @@ class EnhancedTradingStrategy:
                 return None
                 
             # Calculate base risk amount
-            base_risk = float(balance.get('total', 0)) * self.config['risk_management']['max_risk_per_trade']
-            
+            usdt_balance = balance.get('USDT', {}).get('total', 0)
+            logger.info(f"USDT balance: {usdt_balance}")
+            base_risk = float(usdt_balance) * self.config['risk_management']['max_risk_per_trade']
+            logger.info(f"Base risk: {base_risk}")
             # Adjust risk based on price drop
             risk_multiplier = 1.0
             price_drop_thresholds = self.config['risk_management']['dca']['price_drop_thresholds']
@@ -1501,7 +1503,7 @@ class EnhancedTradingStrategy:
             dca_size = (base_risk * risk_multiplier) / self.config['risk_management']['min_stop_distance']
             
             # Ensure DCA size is not too large
-            max_position_size = float(balance.get('total', 0)) * self.config['risk_management']['max_risk_per_position']
+            max_position_size = float(usdt_balance) * self.config['risk_management']['max_risk_per_position']
             if current_size + dca_size > max_position_size:
                 dca_size = max_position_size - current_size
                 
@@ -1633,11 +1635,13 @@ class EnhancedTradingStrategy:
             
             # Get current stop loss
             # Check for existing SL/TP orders
+            open_position_side = "SELL" if is_long_side(position_type) else "BUY"
+            
             existing_orders = await self.binance_service.get_open_orders(symbol)
             if existing_orders:
                 existing_sl = next((order for order in existing_orders 
                                   if order['type'].upper() == 'STOP_MARKET' and 
-                                  order['side'] != position_side), None)
+                                  order['side'].upper() == open_position_side.upper()), None)
                 current_stop_loss = float(existing_sl.get('stopPrice', 0))
             else:
                 current_stop_loss = 0
@@ -1792,10 +1796,11 @@ class EnhancedTradingStrategy:
                 return
                 
             existing_orders = await self.binance_service.get_open_orders(symbol)
+            open_position_side = "SELL" if is_long_side(position_type) else "BUY"
             if existing_orders:
                 existing_sl = next((order for order in existing_orders 
                                   if order['type'].upper() == 'STOP_MARKET' and 
-                                  order['side'] != position_side), None)
+                                  order['side'].upper() == open_position_side.upper()), None)
                 if not existing_sl:
                     # logger.info(f"No existing stop loss for {symbol}")
                     current_stop_loss = 0
@@ -1854,10 +1859,11 @@ class EnhancedTradingStrategy:
                 return
                 
             existing_orders = await self.binance_service.get_open_orders(symbol)
+            open_position_side = "SELL" if is_long_side(position_type) else "BUY"
             if existing_orders:
                 existing_tp = next((order for order in existing_orders 
                                   if order['type'].upper() == 'TAKE_PROFIT_MARKET' and 
-                                  order['side'] != position_side), None)
+                                  order['side'].upper() == open_position_side.upper()), None)
                 if not existing_tp:
                     # logger.info(f"No existing take profit for {symbol}")
                     current_take_profit = 0
