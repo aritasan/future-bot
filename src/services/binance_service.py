@@ -173,7 +173,6 @@ class BinanceService:
             if existing_orders:
                 existing_sl = await self.get_existing_order(symbol, 'STOP_MARKET', open_position_side)
                 existing_tp = await self.get_existing_order(symbol, 'TAKE_PROFIT_MARKET', open_position_side)
-                logger.info(f"Existing SL/TP orders for {symbol}: {existing_sl} {existing_tp}")
 
                 # Cancel existing SL/TP orders
                 if existing_sl:
@@ -300,7 +299,62 @@ class BinanceService:
         except Exception as e:
             logger.error(f"Error placing main order: {str(e)}")
             return None
+        
+    
+    async def _cancel_existing_orders(self, symbol: str, order_type: str, position_side: str) -> bool:
+        """Cancel all existing orders of specified type for a symbol.
+        
+        Args:
+            symbol: Trading pair symbol
+            order_type: Order type to cancel (e.g. STOP_MARKET, TAKE_PROFIT_MARKET)
+            position_side: Position side (e.g. LONG, SHORT)
+
+        Returns:
+            bool: True if orders cancelled successfully, False otherwise
+        """
+        try:
+            if not self._is_initialized:
+                logger.error("Binance service not initialized")
+                return False
+                
+            if self._is_closed:
+                logger.error("Binance service is closed")
+                return False
+                
+            # Get existing orders
+            existing_orders = await self.get_open_orders(symbol)
+            if not existing_orders:
+                logger.info(f"No existing orders found for {symbol}")
+                return True
+                
+            # Cancel matching orders
+            cancelled = True
+            attempt = 0
+            maxAttempts = 3
+            while attempt < maxAttempts:
+                for order in existing_orders:
+                    if order['type'].upper() == order_type.upper() and is_same_side(order['info']['positionSide'], position_side):
+                        success = await self._make_request(
+                            self.exchange.cancel_order,
+                            id=order['id'],
+                            symbol=symbol
+                        )
+                        if not success:
+                            cancelled = False
+                            logger.error(f"Failed to cancel {order_type} order {order['id']} for {symbol}")
+                        else:
+                            logger.info(f"Cancelled {order_type} order {order['id']} for {symbol}")
+                        
+                if cancelled:
+                    return True
+                attempt += 1
+                logger.info(f"Attempt {attempt} of {maxAttempts} failed to cancel {order_type} order for {symbol} {position_side}")
+                await asyncio.sleep(5)
+            return False
             
+        except Exception as e:
+            logger.error(f"Error cancelling existing orders: {str(e)}")
+            return False
     async def _update_stop_order(self, symbol: str, position: Dict, new_price: float, 
                                order_type: str) -> bool:
         """Update stop loss or take profit order.
@@ -328,7 +382,12 @@ class BinanceService:
             if not current_position:
                 logger.error(f"No position found for {symbol}")
                 return False
-                
+            
+            # Cancel existing orders
+            if not await self._cancel_existing_orders(symbol, order_type, position['info']['positionSide']):
+                logger.error(f"Failed to cancel existing {order_type} order")
+                return False
+            
             # Prepare new order parameters
             order_params = {
                 'symbol': symbol,
@@ -343,28 +402,6 @@ class BinanceService:
                     'closePosition': True
                 }
             }
-            
-            # Get existing orders
-            existing_orders = await self.get_open_orders(symbol)
-            if not existing_orders:
-                logger.info(f"No orders found for {symbol}, creating new {order_type} order")
-                # Create new order since no orders exist
-                return await self._place_main_order(order_params)
-                
-            # Find existing order
-            logger.info(f"Existing orders {symbol}: {existing_orders}")
-            open_position_side = "SELL" if is_long_side(position['info']['positionSide']) else "BUY"
-            existing_order = await self.get_existing_order(symbol, order_type, open_position_side)
-            logger.info(f"Existing order {order_type} {symbol} {open_position_side}: {existing_order}")
-            if not existing_order:
-                logger.info(f"No {order_type} order found for {symbol}, creating new order")
-                # Create new order since no order of this type exists
-                return await self._place_main_order(order_params)
-                
-            # Cancel existing order
-            if not await self.cancel_order(symbol, existing_order['id']):
-                logger.error(f"Failed to cancel existing {order_type} order")
-                return False
             
             # Place new order
             return await self._place_main_order(order_params)
@@ -1034,7 +1071,6 @@ class BinanceService:
         except Exception as e:
             logger.error(f"Error getting existing order: {str(e)}")
             return None
-    
     
     async def close_position(self, symbol: str, position_side: str = None) -> bool:
         """Close position for a specific symbol and position side.

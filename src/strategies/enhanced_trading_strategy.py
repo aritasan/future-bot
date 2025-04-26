@@ -551,13 +551,22 @@ class EnhancedTradingStrategy:
         """Check if stop loss and take profit should be updated.
         
         Args:
-            position: Position information
+            position: Position details
             current_price: Current market price
             
         Returns:
             bool: True if stops should be updated, False otherwise
         """
         try:
+            # Check minimum update interval (5 minutes)
+            position_key = f"{position['symbol']}_{position['side']}"
+            current_time = time.time()
+            cache_key = f"last_stop_update_{position_key}"
+            # Get last update time from cache
+            last_update = await self.binance_service._get_cached_data(cache_key)
+            if last_update and current_time - last_update < 300:  # 5 minutes
+                return False
+                
             # Get historical data and indicators
             df = await self.indicator_service.calculate_indicators(position["symbol"])
             if df is None or df.empty:
@@ -567,19 +576,35 @@ class EnhancedTradingStrategy:
             if is_long_side(position["side"]):
                 price_change = (current_price - position["entryPrice"]) / position["entryPrice"]
                 if price_change > 0.02:  # 2% move
+                    # Update last update time
+                    self.binance_service._set_cached_data(cache_key, current_time)
                     return True
             else:
                 price_change = (position["entryPrice"] - current_price) / position["entryPrice"]
                 if price_change > 0.02:  # 2% move
+                    # Update last update time
+                    self.binance_service._set_cached_data(cache_key, current_time)
                     return True
                     
-            # Check if trend is strengthening
-            current_trend = self.get_trend(df)
-            if is_long_side(position["side"]) and current_trend == "UP":
-                return True
-            elif is_short_side(position["side"]) and current_trend == "DOWN":
-                return True
-                
+            # # Check if trend is strengthening with confirmation
+            # current_trend = self.get_trend(df)
+            # if is_long_side(position["side"]):
+            #     if current_trend == "UP":
+            #         # Check if price is above EMA and volume is increasing
+            #         if (current_price > df['EMA_FAST'].iloc[-1] and 
+            #             df['volume'].iloc[-1] > df['volume'].iloc[-2] * 1.2):
+            #             # Update last update time
+            #             self.binance_service._set_cached_data(cache_key, current_time)
+            #             return True
+            # else:
+            #     if current_trend == "DOWN":
+            #         # Check if price is below EMA and volume is increasing
+            #         if (current_price < df['EMA_FAST'].iloc[-1] and 
+            #             df['volume'].iloc[-1] > df['volume'].iloc[-2] * 1.2):
+            #             # Update last update time
+            #             self.binance_service._set_cached_data(cache_key, current_time)
+            #             return True
+                    
             return False
             
         except Exception as e:
@@ -1254,8 +1279,7 @@ class EnhancedTradingStrategy:
                 'symbol': symbol,
                 'side': 'BUY' if is_long_side(position_type) else 'SELL',
                 'type': 'MARKET',
-                'amount': dca_size,
-                'reduceOnly': False
+                'amount': dca_size
             }
             
             order = await self.binance_service.place_order(order_params)
@@ -1566,7 +1590,10 @@ class EnhancedTradingStrategy:
             existing_orders = await self.binance_service.get_open_orders(symbol)
             if existing_orders:
                 existing_sl = await self.binance_service.get_existing_order(symbol, 'STOP_MARKET', open_position_side)
-                current_stop_loss = float(existing_sl.get('stopPrice', 0))
+                if not existing_sl:
+                    current_stop_loss = 0
+                else:
+                    current_stop_loss = float(existing_sl.get('stopPrice', 0))
             else:
                 current_stop_loss = 0
 
@@ -1724,14 +1751,10 @@ class EnhancedTradingStrategy:
             if existing_orders:
                 existing_sl = await self.binance_service.get_existing_order(symbol, 'STOP_MARKET', open_position_side)
                 if not existing_sl:
-                    # logger.info(f"No existing stop loss for {symbol}")
                     current_stop_loss = 0
                 else:
-                    # logger.info(f"Existing stop loss for {symbol}: {existing_sl}")
                     current_stop_loss = float(existing_sl.get('stopPrice', 0))
-                    # logger.info(f"Current stop loss for {symbol}: {current_stop_loss}")
             else:
-                # logger.info(f"No existing stop loss for {symbol}")
                 current_stop_loss = 0
                 
             if not (is_long_side(position_type) and new_stop_loss > current_stop_loss * 1.01) and \
@@ -1785,14 +1808,10 @@ class EnhancedTradingStrategy:
             if existing_orders:
                 existing_tp = await self.binance_service.get_existing_order(symbol, 'TAKE_PROFIT_MARKET', open_position_side)
                 if not existing_tp:
-                    # logger.info(f"No existing take profit for {symbol}")
                     current_take_profit = 0
                 else:
-                    # logger.info(f"Existing take profit for {symbol}: {existing_tp}")
                     current_take_profit = float(existing_tp.get('stopPrice', 0))
-                    # logger.info(f"Current take profit for {symbol}: {current_take_profit}")
             else:
-                # logger.info(f"No existing take profit for {symbol}")
                 current_take_profit = 0
                 
             if not (is_long_side(position_type) and new_take_profit > current_take_profit * 1.01) and \
@@ -2387,6 +2406,7 @@ class EnhancedTradingStrategy:
                 new_stops = await self.calculate_new_stops(position, current_price)
                 if new_stops:
                     # Update stop loss
+                    logger.info(f"From _manage_existing_position: Updating stop loss for {symbol}")
                     await self._update_stop_loss(
                         symbol=symbol,
                         new_stop_loss=new_stops['stop_loss'],
@@ -2394,6 +2414,7 @@ class EnhancedTradingStrategy:
                     )
                     
                     # Update take profit
+                    logger.info(f"From _manage_existing_position: Updating take profit for {symbol}")
                     await self._update_take_profit(
                         symbol=symbol,
                         new_take_profit=new_stops['take_profit'],
