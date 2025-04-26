@@ -759,14 +759,14 @@ class BinanceService:
             return None
             
     async def cancel_order(self, symbol: str, order_id: str) -> bool:
-        """Cancel an order by its ID.
+        """Cancel an order.
         
         Args:
             symbol: Trading pair symbol
             order_id: Order ID to cancel
             
         Returns:
-            bool: True if successful, False otherwise
+            bool: True if order canceled successfully, False otherwise
         """
         try:
             if not self._is_initialized:
@@ -777,21 +777,52 @@ class BinanceService:
                 logger.error("Binance service is closed")
                 return False
                 
-            # Use REST API with retry mechanism
-            result = await self._make_request(
-                self.exchange.cancel_order,
-                id=order_id,
-                symbol=symbol
-            )
-            
-            # Clear cache for open orders
-            cache_key = f"open_orders_{symbol}"
-            self._cache.pop(cache_key, None)
-            
-            logger.info(f"Order {order_id} cancelled for {symbol}")
-            return bool(result)
+            # First check if the order still exists
+            try:
+                order = await self._make_request(
+                    self.exchange.fetch_order,
+                    order_id,
+                    symbol
+                )
+                if not order:
+                    logger.info(f"Order {order_id} for {symbol} not found, assuming already canceled")
+                    return True
+                    
+                if order['status'] in ['closed', 'canceled']:
+                    logger.info(f"Order {order_id} for {symbol} is already {order['status']}")
+                    return True
+                    
+            except Exception as e:
+                # If we get an "Unknown order" error, the order is already gone
+                if '-2011' in str(e):  # Unknown order error code
+                    logger.info(f"Order {order_id} for {symbol} not found, assuming already canceled")
+                    return True
+                # For other errors, log and continue with cancellation attempt
+                logger.warning(f"Error checking order status: {str(e)}")
+                
+            # Try to cancel the order
+            try:
+                result = await self._make_request(
+                    self.exchange.cancel_order,
+                    order_id,
+                    symbol
+                )
+                if result:
+                    logger.info(f"Order {order_id} for {symbol} canceled successfully")
+                    return True
+                return False
+                
+            except Exception as e:
+                # If we get an "Unknown order" error during cancellation, the order is already gone
+                if '-2011' in str(e):  # Unknown order error code
+                    logger.info(f"Order {order_id} for {symbol} not found during cancellation, assuming already canceled")
+                    return True
+                # For other errors, log and return False
+                logger.error(f"Error canceling order {order_id} for {symbol}: {str(e)}")
+                return False
+                
         except Exception as e:
-            logger.error(f"Error canceling order {order_id} for {symbol}: {str(e)}")
+            logger.error(f"Error in cancel_order: {str(e)}")
             return False
 
     async def _sync_time(self) -> None:
