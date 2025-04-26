@@ -411,14 +411,14 @@ class BinanceService:
         try:
             # Check cache first
             cache_key = "account_balance"
-            cached_data = await self._get_cached_data(cache_key, 'balance')
+            cached_data = await self._get_cached_data(cache_key)
             if cached_data:
                 return cached_data
 
             # Use REST API with retry mechanism
             balance = await self._make_request(self.exchange.fetch_balance)
             if balance:
-                self._set_cached_data(cache_key, balance, 'balance')
+                self._set_cached_data(cache_key, balance)
             return balance
         except Exception as e:
             logger.error(f"Error getting account balance: {str(e)}")
@@ -433,14 +433,14 @@ class BinanceService:
         try:
             # Check cache first
             cache_key = "positions"
-            cached_data = await self._get_cached_data(cache_key, 'position')
+            cached_data = await self._get_cached_data(cache_key)
             if cached_data:
                 return cached_data
 
             # Use REST API with retry mechanism
             positions = await self._make_request(self.exchange.fetch_positions)
             if positions:
-                self._set_cached_data(cache_key, positions, 'position')
+                self._set_cached_data(cache_key, positions)
             return positions
         except Exception as e:
             logger.error(f"Error getting positions: {str(e)}")
@@ -485,20 +485,20 @@ class BinanceService:
         try:
             # Check cache first
             cache_key = f"ticker_{symbol}"
-            cached_data = await self._get_cached_data(cache_key, 'ticker')
+            cached_data = await self._get_cached_data(cache_key)
             if cached_data:
                 return cached_data
 
             # Try to use WebSocket if available
             if symbol in self._ws_connections and 'ticker' in self._ws_connections[symbol]:
                 ticker = await self._ws_connections[symbol]['ticker']
-                self._set_cached_data(cache_key, ticker, 'ticker')
+                self._set_cached_data(cache_key, ticker)
                 return ticker
 
             # Fallback to REST API
             ticker = await self._make_request(self.exchange.fetch_ticker, symbol)
             if ticker:
-                self._set_cached_data(cache_key, ticker, 'ticker')
+                self._set_cached_data(cache_key, ticker)
             return ticker
         except Exception as e:
             logger.error(f"Error getting ticker for {symbol}: {str(e)}")
@@ -593,14 +593,14 @@ class BinanceService:
         """Get market data with caching."""
         try:
             cache_key = f"market_{symbol}"
-            cached_data = await self._get_cached_data(cache_key, 'market')
+            cached_data = await self._get_cached_data(cache_key)
             if cached_data:
                 return cached_data
             
             # Fetch fresh data
             data = await self._fetch_market_data(symbol)
             if data:
-                self._set_cached_data(cache_key, data, 'market')
+                self._set_cached_data(cache_key, data)
             return data
             
         except Exception as e:
@@ -611,14 +611,14 @@ class BinanceService:
         """Get position statistics with caching."""
         try:
             cache_key = "position_stats"
-            cached_data = await self._get_cached_data(cache_key, 'position')
+            cached_data = await self._get_cached_data(cache_key)
             if cached_data:
                 return cached_data
             
             # Calculate fresh statistics
             stats = await self._calculate_position_statistics()
             if stats:
-                self._set_cached_data(cache_key, stats, 'position')
+                self._set_cached_data(cache_key, stats)
             return stats
             
         except Exception as e:
@@ -743,7 +743,7 @@ class BinanceService:
         try:
             # Check cache first
             cache_key = f"klines_{symbol}_{timeframe}_{limit}"
-            cached_data = await self._get_cached_data(cache_key, 'klines')
+            cached_data = await self._get_cached_data(cache_key)
             if cached_data:
                 return cached_data
 
@@ -755,7 +755,7 @@ class BinanceService:
                 limit=limit
             )
             if klines:
-                self._set_cached_data(cache_key, klines, 'klines')
+                self._set_cached_data(cache_key, klines)
             return klines
         except Exception as e:
             logger.error(f"Error getting klines for {symbol}: {str(e)}")
@@ -867,32 +867,31 @@ class BinanceService:
                     logger.error(f"Request failed after {retries} attempts: {str(last_error)}")
                     raise last_error
 
-    async def _get_cached_data(self, key: str, cache_type: str = None) -> Optional[Any]:
+    async def _get_cached_data(self, key: str) -> Optional[Any]:
         """Get data from cache if available and not expired.
         
         Args:
             key: Cache key
-            cache_type: Type of cache (market, ticker, order, etc.)
             
         Returns:
-            Optional[Any]: Cached data if available and not expired, None otherwise
+            Cached data if available and not expired, None otherwise
         """
         if key in self._cache:
-            data, timestamp = self._cache[key]
-            ttl = self._cache_ttl.get(cache_type, 60) if cache_type else 60
+            data, timestamp, ttl = self._cache[key]
             if time.time() - timestamp < ttl:
                 return data
         return None
 
-    def _set_cached_data(self, key: str, data: Any, cache_type: str = None) -> None:
+    def _set_cached_data(self, key: str, data: Any) -> None:
         """Store data in cache with timestamp.
         
         Args:
             key: Cache key
             data: Data to cache
-            cache_type: Type of cache (market, ticker, order, etc.)
         """
-        self._cache[key] = (data, time.time())
+        # Set TTL based on cache type
+        ttl = self._cache_ttl.get('market', 60) if 'market' in key else 60
+        self._cache[key] = (data, time.time(), ttl)
 
     async def _setup_websocket(self, symbol: str, channel: str) -> None:
         """Setup WebSocket connection for a symbol and channel."""
@@ -934,14 +933,14 @@ class BinanceService:
                 
             # Check cache first
             cache_key = "markets"
-            cached_data = await self._get_cached_data(cache_key, 'markets')
+            cached_data = await self._get_cached_data(cache_key)
             if cached_data:
                 return cached_data
                 
             # Fetch markets from exchange
             markets = await self._make_request(self.exchange.load_markets)
             if markets:
-                self._set_cached_data(cache_key, markets, 'markets')
+                self._set_cached_data(cache_key, markets)
             return markets
             
         except Exception as e:
@@ -968,7 +967,7 @@ class BinanceService:
                 
             # Check cache first
             cache_key = f"open_orders_{symbol if symbol else 'all'}"
-            cached_data = await self._get_cached_data(cache_key, 'order')
+            cached_data = await self._get_cached_data(cache_key)
             if cached_data:
                 return cached_data
                 
@@ -979,7 +978,7 @@ class BinanceService:
                 orders = await self._make_request(self.exchange.fetch_open_orders)
                 
             if orders:
-                self._set_cached_data(cache_key, orders, 'order')
+                self._set_cached_data(cache_key, orders)
             return orders
             
         except Exception as e:
