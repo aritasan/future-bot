@@ -352,7 +352,7 @@ class EnhancedTradingStrategy:
             }
             
         except Exception as e:
-            # print(f"Error generating signals for {symbol}: {str(e)}")
+            logger.error(f"Error generating signals for {symbol}: {str(e)}")
             return None
             
     async def analyze_market_sentiment(self, symbol: str) -> Dict:
@@ -539,7 +539,7 @@ class EnhancedTradingStrategy:
             bool: True if position should be closed, False otherwise
         """
         try:
-            symbol = position['symbol']
+            # symbol = position['symbol']
             entry_price = float(position['entryPrice'])
             current_price = float(position['markPrice'])
             position_amt = float(position['info']['positionAmt'])
@@ -1791,6 +1791,26 @@ class EnhancedTradingStrategy:
                 logger.warning(f"No active {position_side} position found for {symbol}")
                 return
                 
+            existing_orders = await self.binance_service.get_open_orders(symbol)
+            if existing_orders:
+                existing_sl = next((order for order in existing_orders 
+                                  if order['type'].upper() == 'STOP_MARKET' and 
+                                  order['side'] != position_side), None)
+                if not existing_sl:
+                    # logger.info(f"No existing stop loss for {symbol}")
+                    current_stop_loss = 0
+                else:
+                    # logger.info(f"Existing stop loss for {symbol}: {existing_sl}")
+                    current_stop_loss = float(existing_sl.get('stopPrice', 0))
+                    # logger.info(f"Current stop loss for {symbol}: {current_stop_loss}")
+            else:
+                # logger.info(f"No existing stop loss for {symbol}")
+                current_stop_loss = 0
+                
+            if not (is_long_side(position_type) and new_stop_loss > current_stop_loss * 1.01) and \
+                not (is_short_side(position_type) and new_stop_loss < current_stop_loss * 0.99):
+                return
+            
             # Update stop loss using binance_service
             success = await self.binance_service._update_stop_loss(
                 symbol=symbol,
@@ -1799,7 +1819,7 @@ class EnhancedTradingStrategy:
             )
             
             if success:
-                # logger.info(f"Updated stop loss for {symbol} {position_side} to {new_stop_loss}")
+                logger.info(f"Updated stop loss for {symbol} {position_side} from {current_stop_loss} to {new_stop_loss}")
                 await self.telegram_service.send_stop_loss_notification(
                     symbol=symbol,
                     position_side=position_side,
@@ -1833,6 +1853,27 @@ class EnhancedTradingStrategy:
                 logger.warning(f"No active {position_side} position found for {symbol}")
                 return
                 
+            existing_orders = await self.binance_service.get_open_orders(symbol)
+            if existing_orders:
+                existing_tp = next((order for order in existing_orders 
+                                  if order['type'].upper() == 'TAKE_PROFIT_MARKET' and 
+                                  order['side'] != position_side), None)
+                if not existing_tp:
+                    # logger.info(f"No existing take profit for {symbol}")
+                    current_take_profit = 0
+                else:
+                    # logger.info(f"Existing take profit for {symbol}: {existing_tp}")
+                    current_take_profit = float(existing_tp.get('stopPrice', 0))
+                    # logger.info(f"Current take profit for {symbol}: {current_take_profit}")
+            else:
+                # logger.info(f"No existing take profit for {symbol}")
+                current_take_profit = 0
+                
+            if not (is_long_side(position_type) and new_take_profit > current_take_profit * 1.01) and \
+                not (is_short_side(position_type) and new_take_profit < current_take_profit * 0.99):
+                return
+                
+                    
             # Update take profit using binance_service
             success = await self.binance_service._update_take_profit(
                 symbol=symbol,
@@ -1841,7 +1882,7 @@ class EnhancedTradingStrategy:
             )
             
             if success:
-                # logger.info(f"Updated take profit for {symbol} {position_side} to {new_take_profit}")
+                logger.info(f"Updated take profit for {symbol} {position_side} from {current_take_profit} to {new_take_profit}")
                 await self.telegram_service.send_take_profit_notification(
                     symbol=symbol,
                     position_side=position_side,
