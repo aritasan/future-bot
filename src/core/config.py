@@ -204,7 +204,7 @@ def load_config() -> Dict[str, Any]:
                 
                 # Trailing stop parameters
                 'trailing_stop': {
-                    'update_interval': 60,  # Update every 60 seconds
+                    'update_interval': 600,  # Update every 600 seconds
                     'break_even': {
                         'min_profit': 0.1,  # Minimum 10% profit
                         'min_time': 300  # Minimum 5 minutes

@@ -68,6 +68,7 @@ def signal_handler(signum, frame):
     """Handle shutdown signals."""
     global is_running
     logger.info("Received signal %s", signum)
+    logger.info('Frame: %s', frame)
     is_running = False
 
 async def process_symbol(

@@ -2,7 +2,7 @@
 Service for handling notifications and alerts.
 """
 import logging
-from typing import Dict, Optional
+from typing import Dict
 import asyncio
 from datetime import datetime
 from src.services.telegram_service import TelegramService
