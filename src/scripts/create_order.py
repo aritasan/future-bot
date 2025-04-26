@@ -51,10 +51,7 @@ async def test_place_order(
         # Initialize services
         binance_service = BinanceService(config)
         telegram_service = TelegramService(config)
-        notification_service = NotificationService(
-            config=config,
-            telegram_service=telegram_service
-        )
+        
         
         # Initialize Binance service
         if not await binance_service.initialize():
@@ -85,7 +82,7 @@ async def test_place_order(
         
         if result:
             logger.info(f"Order placed successfully: {result}")
-            telegram_service.send_order_notification(result)
+            await telegram_service.send_order_notification(result)
         else:
             logger.error("Failed to place order")
             
