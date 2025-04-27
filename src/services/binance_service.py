@@ -167,68 +167,13 @@ class BinanceService:
                
             logger.info(f"Main order placed successfully for {symbol} {main_order_params['side']}: {main_order['id']}")
             
-            # Check for existing SL/TP orders
-            existing_orders = await self.get_open_orders(symbol)
-            open_position_side = "SELL" if is_long_side(order_params['side']) else "BUY"
-            if existing_orders:
-                existing_sl = await self.get_existing_order(symbol, 'STOP_MARKET', open_position_side)
-                existing_tp = await self.get_existing_order(symbol, 'TAKE_PROFIT_MARKET', open_position_side)
-
-                # Cancel existing SL/TP orders
-                if existing_sl:
-                    await self.cancel_order(symbol, existing_sl['id'])
-                if existing_tp:
-                    await self.cancel_order(symbol, existing_tp['id'])
-                    
             # Place SL/TP orders if specified
             if 'stop_loss' in order_params:
-                sl_order_params = {
-                    'symbol': symbol,
-                    'side': 'SELL' if is_long_side(order_params['side']) else 'BUY',
-                    'type': 'STOP_MARKET',
-                    'amount': order_params['amount'],
-                    'params': {
-                        'stopPrice': order_params['stop_loss'],
-                        'positionSide': 'LONG' if is_long_side(order_params['side']) else 'SHORT',
-                        'workingType': 'MARK_PRICE',
-                        'priceProtect': True,
-                        'timeInForce': 'GTC',
-                        'closePosition': True
-                    }
-                }
-                
-                sl_order = await self._make_request(
-                    self.exchange.create_order,
-                    **sl_order_params
-                )
-                
-                if not sl_order:
-                    logger.error(f"Failed to place stop loss order for {symbol}")
-                    
+                await self._update_stop_loss(symbol, main_order, order_params['stop_loss'])
+
             if 'take_profit' in order_params:
-                tp_order_params = {
-                    'symbol': symbol,
-                    'side': 'SELL' if is_long_side(order_params['side']) else 'BUY',
-                    'type': 'TAKE_PROFIT_MARKET',
-                    'amount': order_params['amount'],
-                    'params': {
-                        'stopPrice': order_params['take_profit'],
-                        'positionSide': 'LONG' if is_long_side(order_params['side']) else 'SHORT',
-                        'workingType': 'MARK_PRICE',
-                        'priceProtect': True,
-                        'timeInForce': 'GTC',
-                        'closePosition': True
-                    }
-                }
-                
-                tp_order = await self._make_request(
-                    self.exchange.create_order,
-                    **tp_order_params
-                )
-                
-                if not tp_order:
-                    logger.error(f"Failed to place take profit order for {symbol}")
-                    
+                await self._update_take_profit(symbol, main_order, order_params['take_profit'])
+
             return main_order
             
         except Exception as e:
