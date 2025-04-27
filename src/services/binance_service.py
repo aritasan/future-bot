@@ -770,7 +770,7 @@ class BinanceService:
                     logger.info(f"Order {order_id} for {symbol} not found, assuming already canceled")
                     return True
                     
-                if order['status'] in ['closed', 'canceled']:
+                if order['status'].lower() in ['closed', 'canceled']:
                     logger.info(f"Order {order_id} for {symbol} is already {order['status']}")
                     return True
                     
