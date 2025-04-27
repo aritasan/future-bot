@@ -3,11 +3,12 @@ Enhanced trading strategy implementation.
 """
 
 import logging
-from typing import Dict, Optional, List
+from typing import Dict, Optional
 import pandas as pd
 import numpy as np
 import time
 import asyncio
+from datetime import datetime
 
 from src.services.indicator_service import IndicatorService
 from src.services.sentiment_service import SentimentService
@@ -206,155 +207,142 @@ class EnhancedTradingStrategy:
             return None
             
     async def generate_signals(self, symbol: str, indicator_service: IndicatorService) -> Optional[Dict]:
-        """Generate trading signals with enhanced market analysis.
-        
-        Args:
-            symbol: Trading pair symbol
-            indicator_service: Service for calculating indicators
-            
-        Returns:
-            Optional[Dict]: Trading signals if valid, None otherwise
-        """
+        """Generate trading signals for a symbol."""
         try:
-            # Get market data
+            # Get historical data
+            df = await indicator_service.get_historical_data(symbol, timeframe='5m', limit=100)
+            if df is None or df.empty:
+                logger.warning(f"No data available for {symbol}")
+                return None
+                
+            # Ensure data is valid
+            if not self._validate_data(df):
+                logger.warning(f"Invalid data for {symbol}")
+                return None
+                
+            # Calculate indicators
             df = await indicator_service.calculate_indicators(symbol)
             if df is None or df.empty:
-                # print(f"No data for {symbol}")
+                logger.warning(f"Failed to calculate indicators for {symbol}")
                 return None
                 
-            # Multi-timeframe analysis
+            # Analyze multiple timeframes
             timeframe_analysis = await self.analyze_multiple_timeframes(symbol)
             if not timeframe_analysis:
-                # print(f"No timeframe analysis for {symbol}")
+                logger.warning(f"Failed to analyze timeframes for {symbol}")
                 return None
                 
-            # BTC volatility analysis
+            # Analyze BTC volatility
             btc_volatility = await self.analyze_btc_volatility()
             if not btc_volatility:
-                # print(f"No BTC volatility analysis for {symbol}")
+                logger.warning("Failed to analyze BTC volatility")
                 return None
                 
-            # Altcoin correlation analysis
+            # Analyze altcoin correlation
             altcoin_correlation = await self.analyze_altcoin_correlation(symbol, btc_volatility)
             if not altcoin_correlation:
-                # print(f"No altcoin correlation analysis for {symbol}")
+                logger.warning(f"Failed to analyze correlation for {symbol}")
                 return None
                 
-            # Market sentiment analysis
+            # Analyze market sentiment
             sentiment = await self.analyze_market_sentiment(symbol)
             if not sentiment:
-                # print(f"No sentiment analysis for {symbol}")
+                logger.warning(f"Failed to analyze sentiment for {symbol}")
                 return None
                 
             # Calculate signal score
             signal_score = await self.calculate_signal_score(
-                df, timeframe_analysis, btc_volatility, 
-                altcoin_correlation, sentiment
+                symbol=symbol,
+                df=df,
+                timeframe_analysis=timeframe_analysis,
+                btc_volatility=btc_volatility,
+                altcoin_correlation=altcoin_correlation,
+                sentiment=sentiment
             )
             
-            # Prepare market conditions for strategy-specific checks
-            market_conditions = {
-                'df': df,
-                'trend': timeframe_analysis.get('trend', ''),
-                'trend_strength': timeframe_analysis.get('trend_strength', 0),
-                'volatility': btc_volatility.get('volatility_level', 'LOW'),
-                'volume': df['volume'].iloc[-1] / df['volume'].mean(),
-                'price_action': {
-                    'breakout_direction': 'up' if df['close'].iloc[-1] > df['BB_upper'].iloc[-1] else 'down' if df['close'].iloc[-1] < df['BB_lower'].iloc[-1] else ''
-                }
-            }
-            
-            # Check strategy-specific signals
-            trend_signal = self._check_trend_following_signal(symbol, market_conditions)
-            breakout_signal = self._check_breakout_signal(symbol, market_conditions)
-            
-            # If either strategy generates a valid signal, use it
-            strategy_signal = trend_signal or breakout_signal
-            if strategy_signal and strategy_signal.get('should_trade', False):
-                signal_score = strategy_signal['signal_score']
-                position_type = strategy_signal['side']
-                
-                # Add additional signal information
-                signal_info = {
-                    'strength': strategy_signal.get('strength', 0),
-                    'confidence': strategy_signal.get('confidence', 0),
-                    'entry_price': strategy_signal.get('entry_price', 0),
-                    'stop_loss': strategy_signal.get('stop_loss', 0),
-                    'take_profit': strategy_signal.get('take_profit', 0),
-                    'conditions': strategy_signal.get('conditions', {})
-                }
-            else:
-                # Determine position type based on signal score
-                # if signal_score > 0.6 or signal_score < -0.6:
-                #     print(f"{symbol} signal_score: {signal_score}")
-                if signal_score > self.config['trading']['buy_threshold']:  # Strong buy signal
-                    position_type = 'long'
-                elif signal_score < self.config['trading']['sell_threshold']:  # Strong sell signal
-                    position_type = 'short'
-                else:
-                    return None
-                
-                # Default signal information
-                signal_info = {
-                    'strength': abs(signal_score),
-                    'confidence': 0.7 if abs(signal_score) > 0.8 else 0.5,
-                    'entry_price': float(df['close'].iloc[-1]),
-                    'stop_loss': 0,
-                    'take_profit': 0,
-                    'conditions': {}
-                }
-                
-            # Check conditions
-            if not self.check_volume_condition(df):
-                # print(f"Volume condition not met for {symbol}")
-                return None
-                
-            if not self.check_volatility_condition(df):
-                # print(f"Volatility condition not met for {symbol}")
-                return None
-                
-            # if not self.check_bollinger_condition(df):
-            #     print(f"Bollinger condition not met for {symbol}")
+            # Validate signal conditions
+            # if not self.check_volume_condition(df):
+            #     logger.debug(f"Volume condition not met for {symbol}")
             #     return None
                 
-            # Calculate position size
-            current_price = float(df['close'].iloc[-1])
-            position_size = await self._calculate_position_size(symbol, self.config['trading']['risk_per_trade'], current_price)
-            if not position_size:
-                # print(f"Could not calculate position size for {symbol}")
+            # if not self.check_volatility_condition(df):
+            #     logger.debug(f"Volatility condition not met for {symbol}")
+            #     return None
+                
+            # if not self.check_adx_condition(df):
+            #     print(f"ADX condition not met for {symbol}")
+            #     return None
+                
+            # Determine signal type
+            logger.debug(f"Signal score: {signal_score}")
+            if signal_score >= self.config['trading']['buy_threshold']:
+                signal_type = "LONG"
+            elif signal_score <= self.config['trading']['sell_threshold']:
+                signal_type = "SHORT"
+            else:
+                logger.debug(f"Signal score {signal_score:.2f} below threshold for {symbol}")
                 return None
                 
-            # Return final signal
+            # Log signal details
+            logger.info(f"Generated {signal_type} signal for {symbol} with score {signal_score:.2f}")
+            logger.debug(f"Signal components for {symbol}:")
+            logger.debug(f"- Trend: {timeframe_analysis.get('trend', 'NEUTRAL')}")
+            logger.debug(f"- Volume: {'OK' if self.check_volume_condition(df) else 'LOW'}")
+            logger.debug(f"- Volatility: {btc_volatility.get('volatility_level', 'LOW')}")
+            logger.debug(f"- Correlation: {altcoin_correlation.get('correlation', 0):.2f}")
+            logger.debug(f"- Sentiment: {sentiment.get('sentiment', 0):.2f}")
+            
             return {
                 'symbol': symbol,
-                'side': position_type,
-                'position_type': position_type,
-                'signal_score': signal_score,
-                'should_trade': True,
-                'position_size': position_size,
-                'current_price': current_price,
-                'market_analysis': {
-                    'trend': timeframe_analysis.get('trend', ''),
-                    'trend_strength': timeframe_analysis.get('trend_strength', 0),
-                    'volatility': btc_volatility.get('volatility', 0),
-                    'volume_ratio': df['volume'].iloc[-1] / df['volume'].mean(),
-                    'price_action': market_conditions['price_action']
-                },
-                'risk_metrics': {
-                    'atr': float(df['ATR'].iloc[-1]),
-                    'rsi': float(df['RSI'].iloc[-1]),
-                    'adx': float(df['ADX'].iloc[-1]) if 'ADX' in df.columns else 0,
-                    'correlation': altcoin_correlation.get('correlation', 0)
-                },
-                'timeframe_analysis': timeframe_analysis,
-                'sentiment_analysis': sentiment,
-                **signal_info
+                'position_type': signal_type,
+                'score': signal_score,
+                'price': df['close'].iloc[-1],
+                'timestamp': datetime.now().isoformat(),
+                'analysis': {
+                    'trend': timeframe_analysis,
+                    'volume': self.check_volume_condition(df),
+                    'volatility': btc_volatility,
+                    'correlation': altcoin_correlation,
+                    'sentiment': sentiment
+                }
             }
             
         except Exception as e:
             logger.error(f"Error generating signals for {symbol}: {str(e)}")
             return None
             
+    def _validate_data(self, df: pd.DataFrame) -> bool:
+        """Validate the input data before processing.
+        
+        Args:
+            df: DataFrame to validate
+            
+        Returns:
+            bool: True if data is valid, False otherwise
+        """
+        try:
+            # Check required columns
+            required_columns = ['open', 'high', 'low', 'close', 'volume']
+            if not all(col in df.columns for col in required_columns):
+                logger.error("Missing required columns")
+                return False
+                
+            # Check for NaN values
+            if df[required_columns].isnull().any().any():
+                logger.error("Data contains NaN values")
+                return False
+                
+            # Check for zero or negative values
+            if (df[required_columns] <= 0).any().any():
+                logger.error("Data contains zero or negative values")
+                return False
+                
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error validating data: {str(e)}")
+            return False
+
     async def analyze_market_sentiment(self, symbol: str) -> Dict:
         """Analyze market sentiment using multiple indicators.
         
@@ -811,12 +799,12 @@ class EnhancedTradingStrategy:
             analysis = await self._calculate_altcoin_correlation(symbol)
             if analysis:
                 # Adjust correlation based on BTC volatility
-                if btc_volatility and 'volatility' in btc_volatility:
-                    btc_vol = btc_volatility['volatility']
-                    if btc_vol > 0.02:  # High BTC volatility
+                if btc_volatility and 'volatility_level' in btc_volatility:
+                    btc_vol = btc_volatility['volatility_level']
+                    if btc_vol == 'HIGH':  # High BTC volatility
                         analysis['correlation'] *= 1.2  # Increase correlation during high volatility
                         analysis['volatility_adjusted'] = True
-                    elif btc_vol < 0.01:  # Low BTC volatility
+                    elif btc_vol == 'LOW':  # Low BTC volatility
                         analysis['correlation'] *= 0.8  # Decrease correlation during low volatility
                         analysis['volatility_adjusted'] = True
                     else:
@@ -879,58 +867,25 @@ class EnhancedTradingStrategy:
             else:
                 return current_price * 1.01  # 1% above current price
 
-    async def calculate_signal_score(self, df: pd.DataFrame, timeframe_analysis: Dict, 
+    async def calculate_signal_score(self, symbol: str, df: pd.DataFrame, timeframe_analysis: Dict, 
                                    btc_volatility: Dict, altcoin_correlation: Dict,
                                    sentiment: Dict) -> float:
-        """Calculate a signal score based on multiple factors.
-        
-        Args:
-            df: DataFrame with price data
-            timeframe_analysis: Analysis results from multiple timeframes
-            btc_volatility: BTC volatility analysis
-            altcoin_correlation: Altcoin correlation analysis
-            sentiment: Market sentiment analysis
-            
-        Returns:
-            float: Signal score between 0 and 1
-        """
+        """Calculate signal score based on multiple factors."""
         try:
-            # Initialize score components
-            trend_score = 0.0
-            volume_score = 0.0
-            volatility_score = 0.0
-            correlation_score = 0.0
-            sentiment_score = 0.0
+            # Get trend score (30% weight)
+            trend_score = 0.3 * self._calculate_trend_score(timeframe_analysis)
             
-            # Calculate trend score
-            if timeframe_analysis:
-                trend_strength = timeframe_analysis.get('strength', 0)
-                trend_direction = timeframe_analysis.get('trend', 0)
-                trend_score = (trend_strength * trend_direction) / 100.0
-                
-            # Calculate volume score
-            if self.check_volume_condition(df):
-                volume_score = 0.2
-                
-            # Calculate volatility score
-            if btc_volatility:
-                volatility_level = btc_volatility.get('volatility_level', 'LOW')
-                if volatility_level == 'LOW':
-                    volatility_score = 0.3
-                elif volatility_level == 'MEDIUM':
-                    volatility_score = 0.2
-                else:
-                    volatility_score = 0.1
-                    
-            # Calculate correlation score
-            if altcoin_correlation:
-                correlation = altcoin_correlation.get('correlation', 0)
-                correlation_score = abs(correlation) * 0.2
-                
-            # Calculate sentiment score
-            if sentiment:
-                sentiment_value = sentiment.get('sentiment', 0)
-                sentiment_score = (sentiment_value + 1) * 0.15  # Normalize to 0-0.3
+            # Get volume score (20% weight)
+            volume_score = 0.2 * self._calculate_volume_score(df)
+            
+            # Get volatility score (20% weight)
+            volatility_score = 0.2 * self._calculate_volatility_score(btc_volatility)
+            
+            # Get correlation score (20% weight)
+            correlation_score = 0.2 * self._calculate_correlation_score(altcoin_correlation)
+            
+            # Get sentiment score (10% weight)
+            sentiment_score = 0.1 * self._calculate_sentiment_score(sentiment)
                 
             # Calculate final score
             final_score = (
@@ -941,20 +896,21 @@ class EnhancedTradingStrategy:
                 sentiment_score
             )
             
-            # Ensure score is between 0 and 1
-            final_score = max(0.0, min(1.0, final_score))
+            # Ensure score is between -1 and 1
+            final_score = max(min(final_score, 1.0), -1.0)
             
-            logger.debug(f"Signal score components: trend={trend_score:.2f}, "
-                        f"volume={volume_score:.2f}, volatility={volatility_score:.2f}, "
-                        f"correlation={correlation_score:.2f}, sentiment={sentiment_score:.2f}, "
-                        f"final={final_score:.2f}")
-                        
+            # Log score components
+            logger.debug(f"{symbol} Signal score components: trend={trend_score:.2f}, "
+                      f"volume={volume_score:.2f}, volatility={volatility_score:.2f}, "
+                      f"correlation={correlation_score:.2f}, sentiment={sentiment_score:.2f}, "
+                      f"final={final_score:.2f}")
+            
             return final_score
             
         except Exception as e:
             logger.error(f"Error calculating signal score: {str(e)}")
             return 0.0
-            
+
     def check_volume_condition(self, df: pd.DataFrame) -> bool:
         """Check volume condition.
         
@@ -969,6 +925,7 @@ class EnhancedTradingStrategy:
             if volume_ma.iloc[-1] == 0:
                 return False
             volume_ratio = df["volume"].iloc[-1] / volume_ma.iloc[-1]
+            logger.debug(f"Volume ratio: {volume_ratio}")
             return volume_ratio >= self.min_volume_ratio
             
         except Exception as e:
@@ -1149,53 +1106,76 @@ class EnhancedTradingStrategy:
                 btc_returns = btc_returns.replace([np.inf, -np.inf], np.nan)
                 alt_returns = alt_returns.replace([np.inf, -np.inf], np.nan)
                 
-                # Create clean DataFrames for correlation
-                corr_df = pd.DataFrame({
-                    'btc': btc_returns,
-                    'alt': alt_returns
-                })
+                # Calculate trend alignment
+                btc_trend = 'UP' if btc_df['close'].iloc[-1] > btc_df['close'].iloc[-20] else 'DOWN'
+                alt_trend = 'UP' if alt_df['close'].iloc[-1] > alt_df['close'].iloc[-20] else 'DOWN'
+                trend_alignment = 1.0 if btc_trend == alt_trend else -1.0
                 
-                # Drop any NaN values
-                corr_df = corr_df.dropna()
+                # Calculate correlation with different lags
+                max_lag = 3  # Maximum lag to consider
+                correlations = []
+                for lag in range(max_lag + 1):
+                    # Shift altcoin returns by lag
+                    alt_shifted = alt_returns.shift(lag)
+                    
+                    # Create clean DataFrame for correlation
+                    corr_df = pd.DataFrame({
+                        'btc': btc_returns,
+                        'alt': alt_shifted
+                    })
+                    
+                    # Drop any NaN values
+                    corr_df = corr_df.dropna()
+                    
+                    if len(corr_df) < 10:
+                        continue
+                    
+                    # Calculate standard deviations
+                    btc_std = corr_df['btc'].std()
+                    alt_std = corr_df['alt'].std()
+                    
+                    # Check for very small or zero standard deviations
+                    min_std = 1e-8
+                    if btc_std < min_std or alt_std < min_std:
+                        continue
+                    
+                    # Calculate correlation manually
+                    btc_norm = (corr_df['btc'] - corr_df['btc'].mean()) / btc_std
+                    alt_norm = (corr_df['alt'] - corr_df['alt'].mean()) / alt_std
+                    correlation = (btc_norm * alt_norm).mean()
+                    
+                    if np.isfinite(correlation):
+                        correlations.append((lag, correlation))
                 
-                if len(corr_df) < 10:
-                    logging.warning(f"Insufficient data points after cleaning: {len(corr_df)}")
+                if not correlations:
+                    logging.warning("No valid correlations found")
                     return self._get_default_correlation()
                 
-                # Calculate standard deviations with minimum threshold
-                btc_std = corr_df['btc'].std()
-                alt_std = corr_df['alt'].std()
-                
-                # Check for very small or zero standard deviations
-                min_std = 1e-8
-                if btc_std < min_std or alt_std < min_std:
-                    logging.warning(f"Near-zero standard deviation detected: BTC={btc_std}, ALT={alt_std}")
-                    return self._get_default_correlation()
-                
-                # Calculate correlation manually to avoid numpy warning
-                btc_norm = (corr_df['btc'] - corr_df['btc'].mean()) / btc_std
-                alt_norm = (corr_df['alt'] - corr_df['alt'].mean()) / alt_std
-                correlation = (btc_norm * alt_norm).mean()
-                
-                if not np.isfinite(correlation):
-                    logging.warning("Non-finite correlation value detected")
-                    return self._get_default_correlation()
+                # Find best correlation and its lag
+                best_lag, best_correlation = max(correlations, key=lambda x: abs(x[1]))
                 
                 # Calculate reaction metrics
-                reaction_strength = abs(correlation)
+                reaction_strength = abs(best_correlation)
                 is_strongly_correlated = reaction_strength > 0.7
                 is_reacting = reaction_strength > 0.5
                 
+                # Adjust correlation based on trend alignment
+                adjusted_correlation = best_correlation * trend_alignment
+                
                 result = {
-                    'correlation': float(correlation),
-                    'returns_correlation': float(correlation),
+                    'correlation': float(adjusted_correlation),
+                    'returns_correlation': float(best_correlation),
                     'reaction_strength': float(reaction_strength),
                     'is_strongly_correlated': is_strongly_correlated,
                     'is_reacting': is_reacting,
                     'reaction': 'STRONG' if is_strongly_correlated else 'MODERATE' if is_reacting else 'WEAK',
                     'data_points': len(corr_df),
                     'btc_std': float(btc_std),
-                    'alt_std': float(alt_std)
+                    'alt_std': float(alt_std),
+                    'lag': best_lag,
+                    'trend_alignment': float(trend_alignment),
+                    'btc_trend': btc_trend,
+                    'alt_trend': alt_trend
                 }
                 
                 logging.debug(f"Correlation calculation complete for {symbol}:")
@@ -1204,6 +1184,8 @@ class EnhancedTradingStrategy:
                 logging.debug(f"ALT std: {result['alt_std']:.6f}")
                 logging.debug(f"Correlation: {result['correlation']:.4f}")
                 logging.debug(f"Reaction: {result['reaction']}")
+                logging.debug(f"Best lag: {result['lag']}")
+                logging.debug(f"Trend alignment: {result['trend_alignment']}")
                 
                 return result
                 
@@ -1279,7 +1261,7 @@ class EnhancedTradingStrategy:
                 
             # Calculate DCA size
             current_size = float(position.get('contracts', 0))
-            dca_size = await self._calculate_dca_size(current_size, price_drop)
+            dca_size = await self._calculate_dca_size(current_size, price_drop, position_type)
             if not dca_size or dca_size <= 0:
                 logger.error(f"Invalid DCA size calculated for {symbol}: {dca_size}")
                 return None
@@ -1369,7 +1351,7 @@ class EnhancedTradingStrategy:
                 logger.error("No market conditions provided")
                 return False
                 
-            if position_type not in ['LONG', 'SHORT']:
+            if position_type.upper() not in ['LONG', 'SHORT']:
                 logger.error(f"Invalid position type: {position_type}")
                 return False
                 
@@ -1428,40 +1410,55 @@ class EnhancedTradingStrategy:
             logger.error(f"Error checking DCA favorability for {position_type}: {str(e)}")
             return False
 
-    async def _calculate_dca_size(self, current_size: float, price_drop: float) -> Optional[float]:
-        """Calculate DCA size based on risk management rules.
+    async def _calculate_dca_size(self, current_size: float, price_drop: float, position_type: str) -> Optional[float]:
+        """Calculate DCA size based on current position size and price movement.
         
         Args:
             current_size: Current position size
-            price_drop: Current price drop percentage
+            price_drop: Price movement percentage (positive for LONG, negative for SHORT)
+            position_type: Position type (LONG/SHORT)
             
         Returns:
-            Optional[float]: Calculated DCA size if successful, None otherwise
+            Optional[float]: DCA size or None if invalid
         """
         try:
-            # Get account balance
-            balance = await self.binance_service.get_account_balance()
-            if not balance:
+            # Validate inputs
+            if current_size <= 0:
+                logger.error(f"Invalid current size for DCA: {current_size}")
                 return None
                 
-            # Calculate base risk amount
-            usdt_balance = balance.get('USDT', {}).get('total', 0)
-            base_risk = float(usdt_balance) * self.config['risk_management']['max_risk_per_trade']
-            # Adjust risk based on price drop
-            risk_multiplier = 1.0
-            price_drop_thresholds = self.config['risk_management']['dca']['price_drop_thresholds']
-            for threshold in price_drop_thresholds:
-                if price_drop >= threshold:
-                    risk_multiplier *= self.config['risk_management']['dca']['risk_reduction']
-                    
-            # Calculate final DCA size
-            dca_size = (base_risk * risk_multiplier) / self.config['risk_management']['min_stop_distance']
-            
-            # Ensure DCA size is not too large
-            max_position_size = float(usdt_balance) * self.config['risk_management']['max_risk_per_position']
-            if current_size + dca_size > max_position_size:
-                dca_size = max_position_size - current_size
+            if position_type.upper() not in ["LONG", "SHORT"]:
+                logger.error(f"Invalid position type for DCA: {position_type}")
+                return None
                 
+            # Get DCA configuration
+            dca_config = self.config['trading']['dca']
+            max_dca_size = dca_config['max_dca_size']
+            min_dca_size = dca_config['min_dca_size']
+            max_dca_percentage = dca_config['max_dca_percentage']
+            
+            # Calculate base DCA size based on price movement
+            # For LONG: price_drop is positive (price decreased)
+            # For SHORT: price_drop is negative (price increased)
+            price_movement = abs(price_drop)  # Use absolute value for calculation
+            base_dca_size = current_size * (price_movement / 100.0) * 0.5
+            
+            # Ensure DCA size is within limits
+            dca_size = min(
+                max(base_dca_size, min_dca_size),  # Minimum DCA size
+                max_dca_size,  # Maximum absolute DCA size
+                current_size * (max_dca_percentage / 100.0)  # Maximum percentage of current size
+            )
+            
+            # Final validation
+            if dca_size <= 0:
+                logger.error(f"Calculated invalid DCA size: {dca_size}")
+                return None
+                
+            logger.debug(f"DCA size calculation: current_size={current_size}, "
+                        f"price_drop={price_drop}, position_type={position_type}, "
+                        f"base_dca={base_dca_size}, final_dca={dca_size}")
+                        
             return dca_size
             
         except Exception as e:
@@ -1822,8 +1819,7 @@ class EnhancedTradingStrategy:
             if not (is_long_side(position_type) and new_take_profit > current_take_profit * 1.01) and \
                 not (is_short_side(position_type) and new_take_profit < current_take_profit * 0.99):
                 return
-                
-                    
+
             # Update take profit using binance_service
             success = await self.binance_service._update_take_profit(
                 symbol=symbol,
@@ -1906,16 +1902,21 @@ class EnhancedTradingStrategy:
             else:
                 # No existing position, check if we should open a new one
                 if not self.telegram_service.is_trading_paused():
-                    await self._execute_trade(symbol, signals)
+                    await self._execute_trade(signals)
                 else:
                     logger.info(f"Trading paused - Skipping new trade for {symbol}")
                     
         except Exception as e:
             logger.error(f"Error processing trading signals: {str(e)}")
             
-    async def _execute_trade(self, symbol: str, signal: Dict) -> None:
+    async def _execute_trade(self, signal: Dict) -> None:
         """Execute a trade based on the signal."""
         try:
+            symbol = signal.get('symbol')
+            if not symbol:
+                logger.error("No symbol in signal")
+                return
+
             # Get current price
             current_price = await self.binance_service.get_current_price(symbol)
             if not current_price:
@@ -2439,3 +2440,163 @@ class EnhancedTradingStrategy:
         except Exception as e:
             logger.error(f"Error managing existing position for {symbol}: {str(e)}")
                 
+    def _calculate_trend_score(self, timeframe_analysis: Dict) -> float:
+        """Calculate trend score based on multiple timeframe analysis.
+        
+        Args:
+            df: DataFrame with price data
+            timeframe_analysis: Analysis of multiple timeframes
+            
+        Returns:
+            float: Trend score between -1 and 1
+        """
+        try:
+            if not timeframe_analysis:
+                return 0.0
+                
+            trend = timeframe_analysis.get('trend', 'NEUTRAL')
+            if trend == 'UP':
+                return 1.0
+            elif trend == 'DOWN':
+                return -1.0
+            else:
+                return 0.0
+                
+        except Exception as e:
+            logger.error(f"Error calculating trend score: {str(e)}")
+            return 0.0
+            
+    def _calculate_volume_score(self, df: pd.DataFrame) -> float:
+        """Calculate volume score based on volume conditions.
+        
+        Args:
+            df: DataFrame with price and volume data
+            
+        Returns:
+            float: Volume score between -1.0 and 1.0
+        """
+        try:
+            if df is None or df.empty:
+                logger.warning("Empty DataFrame provided for volume score calculation")
+                return 0.0
+                
+            # Calculate volume moving average
+            volume_ma = df["volume"].rolling(window=20).mean()
+            
+            # Calculate volume ratio
+            volume_ratio = df["volume"].iloc[-1] / volume_ma.iloc[-1]
+            
+            # Calculate score based on volume ratio
+            if volume_ratio >= 2.0:  # Very high volume
+                return 1.0
+            elif volume_ratio >= 1.5:  # High volume
+                return 0.8
+            elif volume_ratio >= 1.2:  # Above average volume
+                return 0.6
+            elif volume_ratio >= 1.0:  # Average volume
+                return 0.4
+            elif volume_ratio >= 0.8:  # Below average volume
+                return 0.2
+            elif volume_ratio >= 0.5:  # Low volume
+                return -0.2
+            else:  # Very low volume
+                return -0.4
+                
+        except Exception as e:
+            logger.error(f"Error calculating volume score: {str(e)}")
+            return 0.0
+            
+    def _calculate_volatility_score(self, btc_volatility: Dict) -> float:
+        """Calculate volatility score based on BTC volatility and trend.
+        
+        Args:
+            df: DataFrame with price data
+            btc_volatility: BTC volatility analysis
+            
+        Returns:
+            float: Volatility score between -1 and 1
+        """
+        try:
+            if not btc_volatility:
+                return 0.0
+                
+            volatility = btc_volatility.get('volatility_level', 'LOW')
+            btc_trend = btc_volatility.get('trend', 'NEUTRAL')
+            
+            # Base volatility score
+            if volatility == 'HIGH':
+                base_score = 1.0
+            elif volatility == 'MEDIUM':
+                base_score = 0.5
+            else:
+                base_score = 0.0
+                
+            # Adjust score based on BTC trend
+            if btc_trend == 'UP':
+                return base_score  # Keep positive score for LONG signals
+            elif btc_trend == 'DOWN':
+                return -base_score  # Negative score for SHORT signals
+            else:
+                return 0.0  # Neutral trend, no adjustment
+                
+        except Exception as e:
+            logger.error(f"Error calculating volatility score: {str(e)}")
+            return 0.0
+            
+    def _calculate_correlation_score(self, altcoin_correlation: Dict) -> float:
+        """Calculate correlation score based on altcoin correlation with BTC.
+        
+        Args:
+            altcoin_correlation: Altcoin correlation analysis
+            
+        Returns:
+            float: Correlation score between -1 and 1
+        """
+        try:
+            if not altcoin_correlation:
+                return 0.0
+                
+            correlation = altcoin_correlation.get('correlation', 0)
+            btc_trend = altcoin_correlation.get('btc_trend', 'NEUTRAL')
+            
+            # Base correlation score
+            base_score = correlation
+            
+            # Adjust score based on BTC trend and correlation
+            if btc_trend == 'UP':
+                if correlation > 0:
+                    return base_score  # Positive correlation with uptrend
+                else:
+                    return -base_score  # Negative correlation with uptrend
+            elif btc_trend == 'DOWN':
+                if correlation > 0:
+                    return -base_score  # Positive correlation with downtrend
+                else:
+                    return base_score  # Negative correlation with downtrend
+            else:
+                return base_score  # Neutral trend, use raw correlation
+                
+        except Exception as e:
+            logger.error(f"Error calculating correlation score: {str(e)}")
+            return 0.0
+            
+    def _calculate_sentiment_score(self, sentiment: Dict) -> float:
+        """Calculate sentiment score based on market sentiment.
+        
+        Args:
+            sentiment: Market sentiment analysis
+            
+        Returns:
+            float: Sentiment score between -1 and 1
+        """
+        try:
+            if not sentiment:
+                return 0.0
+                
+            sentiment_value = sentiment.get('sentiment', 0)
+            return sentiment_value  # Use raw sentiment value
+            
+        except Exception as e:
+            logger.error(f"Error calculating sentiment score: {str(e)}")
+            return 0.0
+
