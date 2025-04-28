@@ -323,13 +323,17 @@ class BinanceService:
                 return False
                 
             # Get current position
-            current_position = await self.get_position(symbol, position.get('info', {}).get('positionSide', None))
-            if not current_position:
-                logger.error(f"No position found for {symbol}")
-                return False
+            # logger.info(f"_update_stop_order: Position: {position}")
+            position_side = position.get('info', {}).get('positionSide', None)
+            # logger.info(f"_update_stop_order: Position side: {position_side}")
+            # current_position = await self.get_position(symbol, position_side)
+            # logger.info(f"_update_stop_order: Current position: {current_position}")
+            # if not current_position:
+            #     logger.error(f"No position found for {symbol}")
+            #     return False
             
             # Cancel existing orders
-            if not await self._cancel_existing_orders(symbol, order_type, position['info']['positionSide']):
+            if not await self._cancel_existing_orders(symbol, order_type, position_side):
                 logger.error(f"Failed to cancel existing {order_type} order")
                 return False
             
@@ -338,7 +342,7 @@ class BinanceService:
                 'symbol': symbol,
                 'type': order_type,
                 'side': 'SELL' if is_long_side(position['info']['positionSide']) else 'BUY',
-                'amount': abs(float(current_position['contracts'])),
+                'amount': abs(float(position['amount'])),
                 'params': {
                     'stopPrice': new_price,
                     'positionSide': position['info']['positionSide'],
@@ -441,17 +445,31 @@ class BinanceService:
             if not positions:
                 return None
                 
+            # Normalize symbol format
+            # Handle both formats: ATOMUSDT and ATOM/USDT
+            normalized_symbol = symbol.split(':')[0].replace('/', '')
+            
             # Find position for the specified symbol and side
-            # Convert BIO/USDT:USDT => BIOUSDT
-            symbol = symbol.split(':')[0].replace('/', '')
             for position in positions:
-                if is_same_symbol(position.get('info').get('symbol'), symbol):
+                if not position or not isinstance(position, dict):
+                    continue
+                    
+                # Get position info
+                info = position.get('info', {})
+                if not info:
+                    continue
+                    
+                # Normalize position symbol
+                pos_symbol = info.get('symbol', '').replace('/', '')
+                
+                # Check if symbols match
+                if is_same_symbol(pos_symbol, normalized_symbol):
                     # Check position side if specified
                     if position_side:
-                        if is_same_side(position.get('info').get('positionSide'), position_side) and float(position.get('contracts', 0)) != 0:
+                        if is_same_side(info.get('positionSide', ''), position_side) and float(info.get('positionAmt', 0)) != 0:
                             return position
                     # If position_side not specified, return first position found
-                    elif float(position.get('contracts', 0)) != 0:
+                    elif float(info.get('positionAmt', 0)) != 0:
                         return position
                     
             return None
