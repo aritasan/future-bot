@@ -152,8 +152,8 @@ def load_config() -> Dict[str, Any]:
                 'amount_precision': PRICE_PRECISION,
                 'max_order_size': 1000,
                 'leverage': DEFAULT_LEVERAGE,
-                'buy_threshold': 0.2,
-                'sell_threshold': -0.2,
+                'buy_threshold': 0.25,
+                'sell_threshold': -0.25,
                 'position_mode': "hedge"
             },
             'risk_management': {
