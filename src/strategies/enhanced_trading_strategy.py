@@ -217,7 +217,6 @@ class EnhancedTradingStrategy:
                 
             # Ensure data is valid
             if not self._validate_data(df):
-                logger.warning(f"Invalid data for {symbol}")
                 return None
                 
             # Calculate indicators
@@ -1432,34 +1431,24 @@ class EnhancedTradingStrategy:
                 return None
                 
             # Get DCA configuration
-            dca_config = self.config['trading']['dca']
-            max_dca_size = dca_config['max_dca_size']
-            min_dca_size = dca_config['min_dca_size']
-            max_dca_percentage = dca_config['max_dca_percentage']
+            # dca_config = self.config['risk_management']['dca']
             
             # Calculate base DCA size based on price movement
             # For LONG: price_drop is positive (price decreased)
             # For SHORT: price_drop is negative (price increased)
             price_movement = abs(price_drop)  # Use absolute value for calculation
-            base_dca_size = current_size * (price_movement / 100.0) * 0.5
-            
-            # Ensure DCA size is within limits
-            dca_size = min(
-                max(base_dca_size, min_dca_size),  # Minimum DCA size
-                max_dca_size,  # Maximum absolute DCA size
-                current_size * (max_dca_percentage / 100.0)  # Maximum percentage of current size
-            )
+            base_dca_size = current_size * (price_movement / 100.0)
             
             # Final validation
-            if dca_size <= 0:
-                logger.error(f"Calculated invalid DCA size: {dca_size}")
+            if base_dca_size <= 0:
+                logger.error(f"Calculated invalid DCA size: {base_dca_size}")
                 return None
                 
             logger.debug(f"DCA size calculation: current_size={current_size}, "
                         f"price_drop={price_drop}, position_type={position_type}, "
-                        f"base_dca={base_dca_size}, final_dca={dca_size}")
+                        f"base_dca={base_dca_size}, final_dca={base_dca_size}")
                         
-            return dca_size
+            return base_dca_size
             
         except Exception as e:
             logger.error(f"Error calculating DCA size: {str(e)}")
