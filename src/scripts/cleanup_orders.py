@@ -65,7 +65,7 @@ class OrderCleanup:
                 # Check if order is SL or TP
                 order_type = order.get('type', '').lower()
                 print(f"order: {order}")
-                if order_type in ['stop_market', 'take_profit_market']:
+                if order_type.lower() in ['stop_market', 'take_profit_market']:
                     # Cancel the order
                     success = await self.binance_service.cancel_order(
                         symbol=symbol,
