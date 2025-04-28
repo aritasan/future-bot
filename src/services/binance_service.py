@@ -342,7 +342,7 @@ class BinanceService:
                 'symbol': symbol,
                 'type': order_type,
                 'side': 'SELL' if is_long_side(position['info']['positionSide']) else 'BUY',
-                'amount': abs(float(position['amount'])),
+                'amount': abs(float(position.get('info', {}).get('positionAmt', position.get('amount', 0)))),
                 'params': {
                     'stopPrice': new_price,
                     'positionSide': position['info']['positionSide'],
@@ -476,7 +476,71 @@ class BinanceService:
         except Exception as e:
             logger.error(f"Error getting position for {symbol} with side {position_side}: {str(e)}")
             return None
+       
+    async def cleanup_orders(self) -> Optional[Dict[str, int]]:
+        """Clean up orders.
+        
+        Returns:
+            Optional[Dict[str, int]]: Dictionary with symbol as key and number of deleted orders as value, or None if error
+        """
+        try:
+            # Get all open orders
+            open_orders = await self._make_request(self.exchange.fetch_open_orders)
+            if not open_orders:
+                return {}
+
+            # Group orders by symbol, position side and order type
+            orders_by_symbol = {}
+            deleted_orders = {}
             
+            for order in open_orders:
+                if not order or not isinstance(order, dict):
+                    continue
+
+                order_type = order.get('type')
+                if order_type.upper() not in ['STOP_MARKET', 'TAKE_PROFIT_MARKET']:
+                    continue
+
+                symbol = order.get('symbol')
+                position_side = order.get('info', {}).get('positionSide')
+                
+                if not symbol or not position_side:
+                    continue
+
+                # Key format: BTCUSDT_LONG_STOP_MARKET or BTCUSDT_SHORT_TAKE_PROFIT_MARKET
+                key = f"{symbol}_{position_side}_{order_type}"
+                if key not in orders_by_symbol:
+                    orders_by_symbol[key] = []
+                orders_by_symbol[key].append(order)
+
+            # For each symbol/side/type combination, keep only the latest order
+            for key, orders in orders_by_symbol.items():
+                if len(orders) <= 1:
+                    continue
+
+                # Sort by timestamp descending to keep the most recent
+                sorted_orders = sorted(orders, key=lambda x: x.get('timestamp', 0), reverse=True)
+                
+                # Cancel all except the latest order
+                for order in sorted_orders[1:]:
+                    try:
+                        await self._make_request(
+                            self.exchange.cancel_order,
+                            order['id'],
+                            order['symbol']
+                        )
+                        symbol = order['symbol']
+                        print(f"Order: {order}")
+                        deleted_orders[symbol] = deleted_orders.get(symbol, 0) + 1
+                        logger.info(f"Cancelled duplicate {key} order {order['id']} for {symbol}")
+                    except Exception as e:
+                        logger.error(f"Error cancelling order {order['id']}: {str(e)}")
+
+            return deleted_orders
+
+        except Exception as e:
+            logger.error(f"Error cleaning up orders: {str(e)}")
+            return None
     async def get_ticker(self, symbol: str) -> Optional[Dict]:
         """Get ticker information for a symbol."""
         try:

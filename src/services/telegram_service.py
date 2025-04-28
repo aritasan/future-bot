@@ -51,6 +51,7 @@ class TelegramService:
             self.application.add_handler(CommandHandler("unpause", self._handle_unpause_command))
             self.application.add_handler(CommandHandler("report", self._handle_report_command))
             self.application.add_handler(CommandHandler("balance", self._handle_balance_command))
+            self.application.add_handler(CommandHandler("cleanup", self._handle_cleanup_command))
 
             # Initialize application
             await self.application.initialize()
@@ -208,6 +209,7 @@ class TelegramService:
                 "/pause - Pause the bot\n"
                 "/unpause - Unpause the bot\n"
                 "/balance - Show current balance\n"
+                "/cleanup - Clean up orders\n"
                 "/report - Show detailed report"
             )
             await update.message.reply_text(help_text, parse_mode='HTML')
@@ -413,6 +415,26 @@ class TelegramService:
             logger.error(f"Error handling balance command: {str(e)}")
             await update.message.reply_text("An error occurred while generating the balance.")
 
+    async def _handle_cleanup_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle the /cleanup command."""
+        try:
+            if not self._is_initialized:
+                await update.message.reply_text("Bot is not initialized. Please try again later.")  
+
+            deleted_orders = await self.binance_service.cleanup_orders()
+            if deleted_orders:
+                message = "🧹 <b>Order Cleanup</b>\n\n"
+                for symbol, count in deleted_orders.items():
+                    message += f"✅ Cleaned up {count} orders for {symbol}\n"
+                await update.message.reply_text(message, parse_mode='HTML')
+            else:
+                await update.message.reply_text("No orders to clean up.")
+
+        except Exception as e:
+            logger.error(f"Error handling cleanup command: {str(e)}")
+            await update.message.reply_text("An error occurred while cleaning up orders.")
+
+
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle incoming Telegram commands."""
         try:
@@ -436,6 +458,8 @@ class TelegramService:
                 await self._handle_report_command(update, context)
             elif command == '/balance':
                 await self._handle_balance_command(update, context)
+            elif command == '/cleanup':
+                await self._handle_cleanup_command(update, context)
             else:
                 await update.message.reply_text(
                     "Unknown command. Use /help to see available commands."
