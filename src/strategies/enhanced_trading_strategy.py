@@ -209,16 +209,6 @@ class EnhancedTradingStrategy:
     async def generate_signals(self, symbol: str, indicator_service: IndicatorService) -> Optional[Dict]:
         """Generate trading signals for a symbol."""
         try:
-            # Get historical data
-            df = await indicator_service.get_historical_data(symbol, timeframe='5m', limit=100)
-            if df is None or df.empty:
-                logger.warning(f"No data available for {symbol}")
-                return None
-                
-            # Ensure data is valid
-            if not self._validate_data(df):
-                return None
-                
             # Calculate indicators
             df = await indicator_service.calculate_indicators(symbol)
             if df is None or df.empty:
@@ -309,39 +299,7 @@ class EnhancedTradingStrategy:
         except Exception as e:
             logger.error(f"Error generating signals for {symbol}: {str(e)}")
             return None
-            
-    def _validate_data(self, df: pd.DataFrame) -> bool:
-        """Validate the input data before processing.
-        
-        Args:
-            df: DataFrame to validate
-            
-        Returns:
-            bool: True if data is valid, False otherwise
-        """
-        try:
-            # Check required columns
-            required_columns = ['open', 'high', 'low', 'close', 'volume']
-            if not all(col in df.columns for col in required_columns):
-                logger.error("Missing required columns")
-                return False
-                
-            # Check for NaN values
-            if df[required_columns].isnull().any().any():
-                logger.error("Data contains NaN values")
-                return False
-                
-            # Check for zero or negative values
-            if (df[required_columns] <= 0).any().any():
-                logger.error("Data contains zero or negative values")
-                return False
-                
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error validating data: {str(e)}")
-            return False
-
+    
     async def analyze_market_sentiment(self, symbol: str) -> Dict:
         """Analyze market sentiment using multiple indicators.
         
