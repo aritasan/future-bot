@@ -17,7 +17,6 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')
 from src.core.config import load_config
 from src.services.binance_service import BinanceService
 from src.services.telegram_service import TelegramService
-from src.services.notification_service import NotificationService
 
 # Configure logging
 logging.basicConfig(
@@ -96,20 +95,31 @@ async def test_place_order(
 async def main():
     """Main function to run the test."""
     # Example parameters - modify these as needed
-    symbol = "BTC/USDT"
-    side = "BUY"
-    order_type = "MARKET"
-    amount = 0.005  # Small amount for testing
-    stop_loss = 93000  # Optional
-    take_profit = 96500  # Optional
+    # symbol = "BTC/USDT"
+    # side = "BUY"
+    # order_type = "MARKET"
+    # amount = 0.005  # Small amount for testing
+    # stop_loss = 93500  # Optional
+    # take_profit = 97500  # Optional
+    # order_params = {
+    #     'symbol': 'BTC/USDT',
+    #     'side': 'BUY',
+    #     'type': 'MARKET',
+    #     'amount': 0.005,
+    #     'stop_loss': 93500,
+    #     'take_profit': 97500
+    # }
+    order_params = {
+        'symbol': 'ETHFI/USDT',
+        'side': 'BUY',
+        'order_type': 'MARKET',
+        'amount': 200,
+        'stop_loss': 0.55,
+        'take_profit': 0.65
+    }
     
     await test_place_order(
-        symbol=symbol,
-        side=side,
-        order_type=order_type,
-        amount=amount,
-        stop_loss=stop_loss,
-        take_profit=take_profit
+        **order_params
     )
 
 if __name__ == "__main__":

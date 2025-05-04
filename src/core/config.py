@@ -152,9 +152,18 @@ def load_config() -> Dict[str, Any]:
                 'amount_precision': PRICE_PRECISION,
                 'max_order_size': 1000,
                 'leverage': DEFAULT_LEVERAGE,
-                'buy_threshold': 0.25,
-                'sell_threshold': -0.25,
-                'position_mode': "hedge"
+                'buy_threshold': 0.35,
+                'sell_threshold': -0.35,
+                'position_mode': "hedge",
+                "signal_thresholds": {
+                    "long_entry": 0.25,  # Increased from 0.25 for stricter entry conditions
+                    "short_entry": -0.25,  # Decreased from -0.25 for stricter entry conditions
+                    "exit": 0.0,  # Neutral threshold for exit signals
+                    "trend_strength": 0.5,  # Minimum trend strength required
+                    "volume_ratio": 1.2,  # Minimum volume ratio required
+                    "volatility_ratio": 1.5,  # Maximum volatility ratio allowed
+                    "correlation_threshold": 0.7  # Minimum correlation with BTC required
+                }
             },
             'risk_management': {
                 # General risk parameters

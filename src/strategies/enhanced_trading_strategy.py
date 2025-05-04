@@ -3,12 +3,14 @@ Enhanced trading strategy implementation.
 """
 
 import logging
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 import pandas as pd
 import numpy as np
 import time
 import asyncio
 from datetime import datetime
+import json
+import os
 
 from src.services.indicator_service import IndicatorService
 from src.services.sentiment_service import SentimentService
@@ -116,6 +118,34 @@ class EnhancedTradingStrategy:
         self._max_orders_per_hour = 10  # Maximum 3 orders per hour
         self._max_risk_per_symbol = 0.3  # Maximum 30% risk per symbol
         
+        # Thêm các tham số cấu hình mới
+        self.base_thresholds = {
+            'funding_rate': 0.01,
+            'open_interest': 1000000,
+            'volume_ratio': 1.0,
+            'max_correlation': 0.8,
+            'max_portfolio_exposure': 0.5
+        }
+        
+        self.base_weights = {
+            'trend': 0.15,
+            'volume': 0.1,
+            'volatility': 0.1,
+            'correlation': 0.1,
+            'sentiment': 0.1,
+            'structure': 0.15,
+            'volume_profile': 0.1,
+            'funding_rate': 0.05,
+            'open_interest': 0.05,
+            'order_book': 0.1
+        }
+        
+        self.adjustment_factors = {
+            'volatility_threshold': 0.05,
+            'weight_adjustment': 0.05,
+            'score_adjustment': 0.2
+        }
+        
     async def initialize(self) -> bool:
         """Initialize the strategy.
         
@@ -209,12 +239,36 @@ class EnhancedTradingStrategy:
     async def generate_signals(self, symbol: str, indicator_service: IndicatorService) -> Optional[Dict]:
         """Generate trading signals for a symbol."""
         try:
-            # Calculate indicators
-            df = await indicator_service.calculate_indicators(symbol)
-            if df is None or df.empty:
-                logger.warning(f"Failed to calculate indicators for {symbol}")
+            # Get data for multiple timeframes
+            timeframes = ['5m', '15m', '1h', '4h']
+            timeframe_data = {}
+            for tf in timeframes:
+                df = await indicator_service.calculate_indicators(symbol, timeframe=tf)
+                if df is not None and not df.empty:
+                    timeframe_data[tf] = df
+
+            if not timeframe_data:
+                logger.warning(f"Failed to get data for any timeframe for {symbol}")
                 return None
-                
+
+            # Analyze market structure
+            market_structure = self._analyze_market_structure(timeframe_data)
+            
+            # Analyze volume profile
+            volume_profile = self._analyze_volume_profile(timeframe_data['5m'])
+            
+            # Get funding rate
+            funding_rate = await self.binance_service.get_funding_rate(symbol)
+            
+            # Get open interest
+            open_interest = await self.binance_service.get_open_interest(symbol)
+            
+            # Analyze order book
+            order_book = await self.binance_service.get_order_book(symbol)
+            
+            # Calculate indicators for main timeframe
+            df = timeframe_data['5m']
+            
             # Analyze multiple timeframes
             timeframe_analysis = await self.analyze_multiple_timeframes(symbol)
             if not timeframe_analysis:
@@ -239,51 +293,58 @@ class EnhancedTradingStrategy:
                 logger.warning(f"Failed to analyze sentiment for {symbol}")
                 return None
                 
-            # Calculate signal score
+            # Calculate signal score with new components
             signal_score = await self.calculate_signal_score(
                 symbol=symbol,
                 df=df,
                 timeframe_analysis=timeframe_analysis,
                 btc_volatility=btc_volatility,
                 altcoin_correlation=altcoin_correlation,
-                sentiment=sentiment
+                sentiment=sentiment,
+                market_structure=market_structure,
+                volume_profile=volume_profile,
+                funding_rate=funding_rate,
+                open_interest=open_interest,
+                order_book=order_book
             )
             
-            # Validate signal conditions
-            # if not self.check_volume_condition(df):
-            #     logger.debug(f"Volume condition not met for {symbol}")
-            #     return None
-                
-            # if not self.check_volatility_condition(df):
-            #     logger.debug(f"Volatility condition not met for {symbol}")
-            #     return None
-                
-            # if not self.check_adx_condition(df):
-            #     print(f"ADX condition not met for {symbol}")
-            #     return None
-                
-            # Determine signal type
-            logger.debug(f"Signal score: {signal_score}")
-            if signal_score >= self.config['trading']['buy_threshold']:
-                signal_type = "LONG"
-            elif signal_score <= self.config['trading']['sell_threshold']:
-                signal_type = "SHORT"
+            # Determine position type based on signal score
+            if signal_score >= self.config['trading']['signal_thresholds']['long_entry']:
+                position_type = "LONG"
+            elif signal_score <= self.config['trading']['signal_thresholds']['short_entry']:
+                position_type = "SHORT"
             else:
-                logger.debug(f"Signal score {signal_score:.2f} below threshold for {symbol}")
+                # print(f"Signal score {signal_score:.2f} below threshold for {symbol}")
+                return None
+                
+            # Check additional entry conditions
+            if not await self._check_entry_conditions(
+                df=df,
+                volume_profile=volume_profile,
+                funding_rate=funding_rate,
+                open_interest=open_interest,
+                order_book=order_book,
+                position_type=position_type
+            ):
+                print(f"Entry conditions not met for {symbol}")
                 return None
                 
             # Log signal details
-            logger.info(f"Generated {signal_type} signal for {symbol} with score {signal_score:.2f}")
-            logger.debug(f"Signal components for {symbol}:")
-            logger.debug(f"- Trend: {timeframe_analysis.get('trend', 'NEUTRAL')}")
-            logger.debug(f"- Volume: {'OK' if self.check_volume_condition(df) else 'LOW'}")
-            logger.debug(f"- Volatility: {btc_volatility.get('volatility_level', 'LOW')}")
-            logger.debug(f"- Correlation: {altcoin_correlation.get('correlation', 0):.2f}")
-            logger.debug(f"- Sentiment: {sentiment.get('sentiment', 0):.2f}")
+            # print(f"{symbol} Signal score: {signal_score}")
+            logger.info(f"Generated {position_type} signal for {symbol} with score {signal_score:.2f}")
+            logger.info(f"Signal components for {symbol}:")
+            logger.info(f"- Trend: {timeframe_analysis.get('trend', 'NEUTRAL')}")
+            logger.info(f"- Volume: {'OK' if self.check_volume_condition(df) else 'LOW'}")
+            logger.info(f"- Volatility: {btc_volatility.get('volatility_level', 'LOW')}")
+            logger.info(f"- Correlation: {altcoin_correlation.get('correlation', 0):.2f}")
+            logger.info(f"- Sentiment: {sentiment.get('sentiment', 0):.2f}")
+            logger.info(f"- Market Structure: {market_structure.get('structure', 'NEUTRAL')}")
+            logger.info(f"- Funding Rate: {funding_rate:.4f}")
+            logger.info(f"- Open Interest: {open_interest}")
             
             return {
                 'symbol': symbol,
-                'position_type': signal_type,
+                'position_type': position_type,
                 'score': signal_score,
                 'price': df['close'].iloc[-1],
                 'timestamp': datetime.now().isoformat(),
@@ -292,14 +353,376 @@ class EnhancedTradingStrategy:
                     'volume': self.check_volume_condition(df),
                     'volatility': btc_volatility,
                     'correlation': altcoin_correlation,
-                    'sentiment': sentiment
+                    'sentiment': sentiment,
+                    'market_structure': market_structure,
+                    'volume_profile': volume_profile,
+                    'funding_rate': funding_rate,
+                    'open_interest': open_interest,
+                    'order_book': order_book
                 }
             }
             
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             logger.error(f"Error generating signals for {symbol}: {str(e)}")
             return None
-    
+
+    def _analyze_market_structure(self, timeframe_data: Dict) -> Dict:
+        """Analyze market structure for multiple timeframes.
+        
+        Args:
+            timeframe_data: Dictionary containing data for different timeframes
+            
+        Returns:
+            Dict: Market structure analysis results
+        """
+        try:
+            if not timeframe_data:
+                logger.error("No timeframe data provided")
+                return {}
+                
+            structure_analysis = {}
+            
+            for timeframe, df in timeframe_data.items():
+                if df is None or df.empty:
+                    logger.warning(f"No data available for timeframe {timeframe}")
+                    continue
+                    
+                try:
+                    # Calculate support and resistance levels
+                    levels = self._calculate_support_resistance(df)
+                    
+                    # Get current price
+                    current_price = df['close'].iloc[-1]
+                    
+                    # Determine market structure
+                    if levels['nearest_support'] is not None and levels['nearest_resistance'] is not None:
+                        # Calculate distance to nearest levels
+                        support_distance = (current_price - levels['nearest_support']) / current_price
+                        resistance_distance = (levels['nearest_resistance'] - current_price) / current_price
+                        
+                        # Determine structure type
+                        if support_distance < 0.01:  # Near support
+                            structure = 'support'
+                        elif resistance_distance < 0.01:  # Near resistance
+                            structure = 'resistance'
+                        else:
+                            structure = 'neutral'
+                            
+                        structure_analysis[timeframe] = {
+                            'structure': structure,
+                            'support_levels': levels['support_levels'],
+                            'resistance_levels': levels['resistance_levels'],
+                            'nearest_support': levels['nearest_support'],
+                            'nearest_resistance': levels['nearest_resistance'],
+                            'current_price': current_price
+                        }
+                except Exception as e:
+                    logger.error(f"Error analyzing market structure for timeframe {timeframe}: {str(e)}")
+                    continue
+                    
+            return structure_analysis
+            
+        except Exception as e:
+            logger.error(f"Error in market structure analysis: {str(e)}")
+            return {}
+            
+    def _analyze_volume_profile(self, df: pd.DataFrame) -> Dict:
+        """Analyze volume profile for price data.
+        
+        Args:
+            df: Price data DataFrame
+            
+        Returns:
+            Dict: Volume profile analysis results
+        """
+        try:
+            if df is None or df.empty:
+                logger.error("No data provided for volume profile analysis")
+                return {}
+                
+            # Calculate value area
+            value_area = self._calculate_value_area(df)
+            
+            if not value_area:
+                logger.error("Failed to calculate value area")
+                return {}
+                
+            # Get current price
+            current_price = df['close'].iloc[-1]
+            
+            # Determine volume profile position
+            if value_area['value_area_high'] is not None and value_area['value_area_low'] is not None:
+                # Calculate position within value area
+                value_area_range = value_area['value_area_high'] - value_area['value_area_low']
+                if value_area_range > 0:
+                    position = (current_price - value_area['value_area_low']) / value_area_range
+                else:
+                    position = 0.5
+                    
+                return {
+                    'value_area_high': value_area['value_area_high'],
+                    'value_area_low': value_area['value_area_low'],
+                    'value_area_position': position,
+                    'current_price': current_price,
+                    'volume_profile': value_area['volume_profile']
+                }
+            else:
+                logger.error("Invalid value area data")
+                return {}
+                
+        except Exception as e:
+            logger.error(f"Error in volume profile analysis: {str(e)}")
+            return {}
+
+    async def _check_entry_conditions(self, df: pd.DataFrame, 
+                              volume_profile: Dict, funding_rate: float,
+                              open_interest: float, order_book: Dict,
+                              position_type: str) -> bool:
+        """Check if entry conditions are met based on market structure and other factors."""
+        try:
+            # Check volume profile
+            if not self._check_volume_profile_conditions(volume_profile, position_type):
+                print(f"Volume profile conditions not met for {position_type}")
+                return False
+                
+            # Check order book
+            if not self._check_order_book_conditions(order_book, position_type):
+                print(f"Order book conditions not met for {position_type}")
+                return False
+                
+            # Check candlestick patterns
+            if not self._check_candlestick_patterns(df, position_type):
+                print(f"Candlestick patterns conditions not met for {position_type}")
+                return False
+                
+            # Check funding rate
+            if position_type == 'LONG' and funding_rate > 0.0001:
+                print(f"Funding rate conditions not met for {position_type}")
+                return False
+            elif position_type == 'SHORT' and funding_rate < -0.0001:
+                print(f"Funding rate conditions not met for {position_type}")
+                return False
+                
+            # Check open interest
+            if open_interest < 100000:  # Minimum OI threshold
+                print(f"Open interest conditions not met for {position_type}")
+                return False
+                
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error checking entry conditions: {str(e)}")
+            return False
+
+    async def _check_correlation_conditions(self, symbol: str, position_type: str) -> bool:
+        """Check correlation conditions with existing positions."""
+        try:
+            # Lấy các vị thế hiện có
+            current_positions = await self._get_current_positions()
+            
+            # Chỉ kiểm tra correlation với các vị thế cùng loại
+            relevant_positions = [p for p in current_positions if p['position_side'] == position_type]
+            
+            # Tính correlation với các vị thế hiện có
+            for position in relevant_positions:
+                correlation = await self._calculate_correlation(symbol, position['symbol'])
+                if abs(correlation) > self.base_thresholds['max_correlation']:
+                    logger.warning(f"High correlation detected between {symbol} and {position['symbol']}: {correlation}")
+                    return False
+                    
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error checking correlation conditions: {str(e)}")
+            return False
+
+    async def _get_current_positions(self) -> List[Dict]:
+        """Get current open positions."""
+        try:
+            return await self.binance_service.get_positions()
+        except Exception as e:
+            logger.error(f"Error getting current positions: {str(e)}")
+            return []
+
+    async def _calculate_correlation(self, symbol1: str, symbol2: str) -> float:
+        """Calculate correlation between two symbols."""
+        try:
+            # Lấy dữ liệu lịch sử
+            df1 = await self.indicator_service.get_historical_data(symbol1, timeframe='1h', limit=100)
+            df2 = await self.indicator_service.get_historical_data(symbol2, timeframe='1h', limit=100)
+            
+            if df1 is None or df2 is None or df1.empty or df2.empty:
+                return 0.0
+                
+            # Tính correlation
+            returns1 = df1['close'].pct_change()
+            returns2 = df2['close'].pct_change()
+            
+            return returns1.corr(returns2)
+            
+        except Exception as e:
+            logger.error(f"Error calculating correlation: {str(e)}")
+            return 0.0
+
+    def _check_volume_profile_conditions(self, volume_profile: Dict, position_type: str) -> bool:
+        """Check volume profile conditions for a specific position type."""
+        try:
+            if not volume_profile or 'volume_profile' not in volume_profile:
+                print(f"Volume profile data is missing or invalid")
+                return False
+                
+            # Get current price and value area
+            current_price = volume_profile.get('current_price')
+            value_area_high = volume_profile.get('value_area_high')
+            value_area_low = volume_profile.get('value_area_low')
+            
+            if current_price is None or value_area_high is None or value_area_low is None:
+                print(f"Missing required price data in volume profile")
+                return False
+                
+            # Get volume profile data
+            profile_data = volume_profile['volume_profile']
+            if not profile_data:
+                print(f"No volume profile data available")
+                return False
+                
+            # Calculate total volume
+            total_volume = sum(profile_data.values())
+            if total_volume == 0:
+                print(f"Total volume is zero")
+                return False
+                
+            # Check position type specific conditions
+            if position_type == "LONG":
+                # For LONG: check volume in lower price levels
+                lower_volume = sum(vol for price, vol in profile_data.items() 
+                                 if price < current_price)
+                if lower_volume / total_volume < 0.3:  # At least 30% volume in lower levels
+                    print(f"Not enough volume in lower price levels for LONG position")
+                    return False
+                    
+                # Check if current price is near value area low
+                if current_price > value_area_low * 1.02:  # Within 2% of value area low
+                    print(f"Current price not near value area low for LONG position: {current_price} {value_area_low}")
+                    return False
+                    
+            else:  # SHORT position
+                # For SHORT: check volume in higher price levels
+                higher_volume = sum(vol for price, vol in profile_data.items() 
+                                  if price > current_price)
+                if higher_volume / total_volume < 0.3:  # At least 30% volume in higher levels
+                    print(f"Not enough volume in higher price levels for SHORT position")
+                    return False
+                    
+                # Check if current price is near value area high
+                if current_price < value_area_high * 0.98:  # Within 2% of value area high
+                    print(f"Current price not near value area high for SHORT position: {current_price} {value_area_high}")
+                    return False
+                    
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error checking volume profile conditions: {str(e)}")
+            return False
+
+    def _check_order_book_conditions(self, order_book: Dict, position_type: str) -> bool:
+        """Check order book conditions for a specific position type."""
+        try:
+            if not order_book or 'bids' not in order_book or 'asks' not in order_book:
+                return False
+                
+            # Lấy giá hiện tại
+            current_price = (float(order_book['bids'][0][0]) + float(order_book['asks'][0][0])) / 2
+            
+            if position_type == "LONG":
+                # Cho LONG: kiểm tra depth ở bên bid
+                bid_depth = sum(float(bid[1]) for bid in order_book['bids'])
+                ask_depth = sum(float(ask[1]) for ask in order_book['asks'])
+                
+                # Tỷ lệ depth bid/ask phải lớn hơn 1.2
+                if bid_depth / ask_depth < 1.2:
+                    return False
+                    
+                # Kiểm tra spread
+                spread = (float(order_book['asks'][0][0]) - float(order_book['bids'][0][0])) / current_price
+                if spread > 0.001:  # Spread quá lớn
+                    return False
+                    
+            else:  # SHORT
+                # Cho SHORT: kiểm tra depth ở bên ask
+                bid_depth = sum(float(bid[1]) for bid in order_book['bids'])
+                ask_depth = sum(float(ask[1]) for ask in order_book['asks'])
+                
+                # Tỷ lệ depth ask/bid phải lớn hơn 1.2
+                if ask_depth / bid_depth < 1.2:
+                    return False
+                    
+                # Kiểm tra spread
+                spread = (float(order_book['asks'][0][0]) - float(order_book['bids'][0][0])) / current_price
+                if spread > 0.001:  # Spread quá lớn
+                    return False
+                    
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error checking order book conditions: {str(e)}")
+            return False
+
+    def _check_candlestick_patterns(self, df: pd.DataFrame, position_type: str) -> bool:
+        """Check candlestick patterns for a specific position type."""
+        try:
+            if df.empty or len(df) < 3:
+                return False
+                
+            # Lấy 3 nến gần nhất
+            last_3_candles = df.iloc[-3:]
+            
+            if position_type == "LONG":
+                # Kiểm tra các mẫu nến tăng giá
+                # 1. Hammer hoặc Inverted Hammer
+                last_candle = last_3_candles.iloc[-1]
+                body_size = abs(last_candle['close'] - last_candle['open'])
+                lower_wick = min(last_candle['open'], last_candle['close']) - last_candle['low']
+                upper_wick = last_candle['high'] - max(last_candle['open'], last_candle['close'])
+                
+                is_hammer = (lower_wick > 2 * body_size and upper_wick < body_size)
+                is_inverted_hammer = (upper_wick > 2 * body_size and lower_wick < body_size)
+                
+                if not (is_hammer or is_inverted_hammer):
+                    return False
+                    
+                # 2. Kiểm tra xu hướng giảm trước đó
+                prev_2_candles = last_3_candles.iloc[:-1]
+                if not all(prev_2_candles['close'] < prev_2_candles['open']):
+                    return False
+                    
+            else:  # SHORT
+                # Kiểm tra các mẫu nến giảm giá
+                # 1. Shooting Star hoặc Hanging Man
+                last_candle = last_3_candles.iloc[-1]
+                body_size = abs(last_candle['close'] - last_candle['open'])
+                lower_wick = min(last_candle['open'], last_candle['close']) - last_candle['low']
+                upper_wick = last_candle['high'] - max(last_candle['open'], last_candle['close'])
+                
+                is_shooting_star = (upper_wick > 2 * body_size and lower_wick < body_size)
+                is_hanging_man = (lower_wick > 2 * body_size and upper_wick < body_size)
+                
+                if not (is_shooting_star or is_hanging_man):
+                    return False
+                    
+                # 2. Kiểm tra xu hướng tăng trước đó
+                prev_2_candles = last_3_candles.iloc[:-1]
+                if not all(prev_2_candles['close'] > prev_2_candles['open']):
+                    return False
+                    
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error checking candlestick patterns: {str(e)}")
+            return False
+
     async def analyze_market_sentiment(self, symbol: str) -> Dict:
         """Analyze market sentiment using multiple indicators.
         
@@ -826,46 +1249,52 @@ class EnhancedTradingStrategy:
 
     async def calculate_signal_score(self, symbol: str, df: pd.DataFrame, timeframe_analysis: Dict, 
                                    btc_volatility: Dict, altcoin_correlation: Dict,
-                                   sentiment: Dict) -> float:
-        """Calculate signal score based on multiple factors."""
+                                   sentiment: Dict, market_structure: Dict,
+                                   volume_profile: Dict, funding_rate: float,
+                                   open_interest: float, order_book: Dict) -> float:
+        """Calculate signal score with dynamic weights and logging."""
         try:
-            # Get trend score (30% weight)
-            trend_score = 0.3 * self._calculate_trend_score(timeframe_analysis)
+            # Xác định position type dựa trên trend
+            position_type = 'LONG' if self.get_trend(df) == 'UP' else 'SHORT'
             
-            # Get volume score (20% weight)
-            volume_score = 0.2 * self._calculate_volume_score(df)
+            # Lấy trọng số động
+            weights = await self._get_dynamic_weights(position_type)
             
-            # Get volatility score (20% weight)
-            volatility_score = 0.2 * self._calculate_volatility_score(btc_volatility)
+            # Tính điểm cho từng yếu tố
+            scores = {
+                'trend': self._calculate_timeframe_score(timeframe_analysis, position_type),
+                'volume': self._calculate_volume_score(df, position_type),
+                'volatility': self._calculate_volatility_score(btc_volatility, position_type),
+                'correlation': self._calculate_correlation_score(altcoin_correlation, position_type),
+                'sentiment': self._calculate_sentiment_score(sentiment, position_type),
+                'structure': self._calculate_structure_score(market_structure, position_type),
+                'volume_profile': self._calculate_volume_profile_score(volume_profile, position_type),
+                'funding_rate': self._calculate_funding_rate_score(funding_rate, position_type),
+                'open_interest': self._calculate_open_interest_score(open_interest, position_type),
+                'order_book': self._calculate_order_book_score(order_book, position_type)
+            }
             
-            # Get correlation score (20% weight)
-            correlation_score = 0.2 * self._calculate_correlation_score(altcoin_correlation)
+            # Tính điểm tổng hợp
+            total_score = sum(score * weights[factor] for factor, score in scores.items())
             
-            # Get sentiment score (10% weight)
-            sentiment_score = 0.1 * self._calculate_sentiment_score(sentiment)
-                
-            # Calculate final score
-            final_score = (
-                trend_score +
-                volume_score +
-                volatility_score +
-                correlation_score +
-                sentiment_score
-            )
+            # Log kết quả phân tích
+            await self._log_signal_analysis(symbol, position_type, scores, total_score, {
+                'trend': timeframe_analysis,
+                'volume': df['volume'].iloc[-1],
+                'volatility': btc_volatility,
+                'correlation': altcoin_correlation,
+                'sentiment': sentiment,
+                'structure': market_structure,
+                'volume_profile': volume_profile,
+                'funding_rate': funding_rate,
+                'open_interest': open_interest,
+                'order_book': order_book
+            })
             
-            # Ensure score is between -1 and 1
-            final_score = max(min(final_score, 1.0), -1.0)
-            
-            # Log score components
-            logger.debug(f"{symbol} Signal score components: trend={trend_score:.2f}, "
-                      f"volume={volume_score:.2f}, volatility={volatility_score:.2f}, "
-                      f"correlation={correlation_score:.2f}, sentiment={sentiment_score:.2f}, "
-                      f"final={final_score:.2f}")
-            
-            return final_score
+            return total_score
             
         except Exception as e:
-            logger.error(f"Error calculating signal score: {str(e)}")
+            logger.error(f"Error calculating signal score for {symbol}: {str(e)}")
             return 0.0
 
     def check_volume_condition(self, df: pd.DataFrame) -> bool:
@@ -1412,83 +1841,36 @@ class EnhancedTradingStrategy:
             logger.error(f"Error calculating DCA size: {str(e)}")
             return None
 
-    async def _get_market_conditions(self, symbol: str) -> Dict:
-        """Get current market conditions for a symbol.
+    async def _get_market_conditions(self, symbol: str = None) -> Dict:
+        """Get current market conditions.
         
         Args:
-            symbol: Trading pair symbol
+            symbol: Optional trading pair symbol. If not provided, will use BTCUSDT as default.
             
         Returns:
-            Dict: Market conditions including:
-                - df: DataFrame with price data
-                - trend: Current trend
-                - volatility: Market volatility
-                - volume: Volume status
-                - atr: Average True Range
-                - volume_ratio: Volume ratio
-                - long_dca_attempts: Number of DCA attempts for LONG position
-                - short_dca_attempts: Number of DCA attempts for SHORT position
-                - long_active_dca_positions: List of active DCA positions for LONG
-                - short_active_dca_positions: List of active DCA positions for SHORT
+            Dict: Market conditions dictionary
         """
         try:
-            # Get historical data
-            df = await self.indicator_service.get_historical_data(symbol)
-            if df is None or df.empty:
-                logger.error(f"Failed to get historical data for {symbol}")
-                return None
-                
-            # Get current trend
-            trend = self.get_trend(df)
+            # Lấy dữ liệu BTC
+            btc_data = await self._get_btc_data()
             
-            # Calculate volatility
-            volatility = await self.analyze_btc_volatility()
+            # Lấy sentiment thị trường
+            market_sentiment = await self.analyze_market_sentiment(symbol or "BTCUSDT")
             
-            # Get volume status
-            volume_status = self.check_volume_condition(df)
-            
-            # Calculate ATR
-            atr = await self.indicator_service.calculate_atr(symbol)
-            
-            # Calculate volume ratio
-            volume_ratio = df['volume'].iloc[-1] / df['volume'].rolling(window=20).mean().iloc[-1]
-            
-            # Initialize DCA information for both sides
-            long_dca_attempts = 0
-            short_dca_attempts = 0
-            long_active_dca_positions = []
-            short_active_dca_positions = []
-            
-            # Get current position for both LONG and SHORT sides
-            long_position = await self.binance_service.get_position(symbol, position_side='LONG')
-            short_position = await self.binance_service.get_position(symbol, position_side='SHORT')
-            
-            # Check LONG position
-            if long_position and float(long_position.get('contracts', 0)) > 0:
-                long_dca_attempts = int(long_position.get('info', {}).get('dca_attempts', 0))
-                long_active_dca_positions = long_position.get('info', {}).get('active_dca_positions', [])
-                
-            # Check SHORT position
-            if short_position and float(short_position.get('contracts', 0)) > 0:
-                short_dca_attempts = int(short_position.get('info', {}).get('dca_attempts', 0))
-                short_active_dca_positions = short_position.get('info', {}).get('active_dca_positions', [])
-            
-            return {
-                'df': df,
-                'trend': trend,
-                'volatility': volatility,
-                'volume': volume_status,
-                'atr': atr,
-                'volume_ratio': volume_ratio,
-                'long_dca_attempts': long_dca_attempts,
-                'short_dca_attempts': short_dca_attempts,
-                'long_active_dca_positions': long_active_dca_positions,
-                'short_active_dca_positions': short_active_dca_positions
+            # Tính toán các metrics
+            conditions = {
+                'btc_trend': self.get_trend(btc_data) if btc_data is not None else 'neutral',
+                'market_sentiment': market_sentiment.get('sentiment', 'neutral'),
+                'volatility': await self._get_current_volatility(),
+                'liquidity': await self._calculate_market_liquidity(),
+                'risk_on': await self._is_risk_on_environment()
             }
             
+            return conditions
+            
         except Exception as e:
-            logger.error(f"Error getting market conditions for {symbol}: {str(e)}")
-            return None
+            logger.error(f"Error getting market conditions: {str(e)}")
+            return {}
 
     async def _update_trailing_stop(self, symbol: str, position_type: str) -> None:
         """Update trailing stop for a position with advanced features.
@@ -2340,32 +2722,21 @@ class EnhancedTradingStrategy:
         try:
             # Check if we should close the position
             if await self.should_close_position(position):
+                # Close the position
                 await self.binance_service.close_position(symbol, position['info']['positionSide'])
                 return
                 
-            # Get current price and market conditions
-            current_price = await self.binance_service.get_current_price(symbol)
-            if not current_price:
-                logger.error(f"Failed to get current price for {symbol}")
-                return
-                
-            market_conditions = await self._get_market_conditions(symbol)
-            if not market_conditions:
-                logger.error(f"Failed to get market conditions for {symbol}")
-                return
-                
-            # Check if we should update stops
-            if await self.should_update_stops(position, current_price):
-                new_stops = await self.calculate_new_stops(position, current_price)
+            # Check if we should update stop loss and take profit
+            if await self.should_update_stops(position, position['info']['markPrice']):
+                # Calculate new stops
+                new_stops = await self.calculate_new_stops(position, position['info']['markPrice'])
                 if new_stops:
-                    # Update stop loss
+                    # Update stop loss and take profit
                     await self._update_stop_loss(
                         symbol=symbol,
                         new_stop_loss=new_stops['stop_loss'],
                         position_type=position['info']['positionSide']
                     )
-                    
-                    # Update take profit
                     await self._update_take_profit(
                         symbol=symbol,
                         new_take_profit=new_stops['take_profit'],
@@ -2387,41 +2758,8 @@ class EnhancedTradingStrategy:
         except Exception as e:
             logger.error(f"Error managing existing position for {symbol}: {str(e)}")
                 
-    def _calculate_trend_score(self, timeframe_analysis: Dict) -> float:
-        """Calculate trend score based on multiple timeframe analysis.
-        
-        Args:
-            df: DataFrame with price data
-            timeframe_analysis: Analysis of multiple timeframes
-            
-        Returns:
-            float: Trend score between -1 and 1
-        """
-        try:
-            if not timeframe_analysis:
-                return 0.0
-                
-            trend = timeframe_analysis.get('trend', 'NEUTRAL')
-            if trend == 'UP':
-                return 1.0
-            elif trend == 'DOWN':
-                return -1.0
-            else:
-                return 0.0
-                
-        except Exception as e:
-            logger.error(f"Error calculating trend score: {str(e)}")
-            return 0.0
-            
-    def _calculate_volume_score(self, df: pd.DataFrame) -> float:
-        """Calculate volume score based on volume conditions.
-        
-        Args:
-            df: DataFrame with price and volume data
-            
-        Returns:
-            float: Volume score between -1.0 and 1.0
-        """
+    def _calculate_volume_score(self, df: pd.DataFrame, position_type: str) -> float:
+        """Calculate volume score based on volume conditions and position type."""
         try:
             if df is None or df.empty:
                 logger.warning("Empty DataFrame provided for volume score calculation")
@@ -2433,117 +2771,855 @@ class EnhancedTradingStrategy:
             # Calculate volume ratio
             volume_ratio = df["volume"].iloc[-1] / volume_ma.iloc[-1]
             
-            # Calculate score based on volume ratio
-            if volume_ratio >= 2.0:  # Very high volume
-                return 1.0
-            elif volume_ratio >= 1.5:  # High volume
-                return 0.8
-            elif volume_ratio >= 1.2:  # Above average volume
-                return 0.6
-            elif volume_ratio >= 1.0:  # Average volume
-                return 0.4
-            elif volume_ratio >= 0.8:  # Below average volume
-                return 0.2
-            elif volume_ratio >= 0.5:  # Low volume
-                return -0.2
-            else:  # Very low volume
-                return -0.4
+            if position_type == "LONG":
+                # For LONG: higher volume is better
+                if volume_ratio >= 2.0:  # Very high volume
+                    return 1.0
+                elif volume_ratio >= 1.5:  # High volume
+                    return 0.8
+                elif volume_ratio >= 1.2:  # Above average volume
+                    return 0.6
+                elif volume_ratio >= 1.0:  # Average volume
+                    return 0.4
+                elif volume_ratio >= 0.8:  # Below average volume
+                    return 0.2
+                elif volume_ratio >= 0.5:  # Low volume
+                    return -0.2
+                else:  # Very low volume
+                    return -0.4
+            else:  # SHORT
+                # For SHORT: lower volume is better
+                if volume_ratio <= 0.5:  # Very low volume
+                    return 1.0
+                elif volume_ratio <= 0.8:  # Low volume
+                    return 0.8
+                elif volume_ratio <= 1.0:  # Below average volume
+                    return 0.6
+                elif volume_ratio <= 1.2:  # Average volume
+                    return 0.4
+                elif volume_ratio <= 1.5:  # Above average volume
+                    return 0.2
+                elif volume_ratio <= 2.0:  # High volume
+                    return -0.2
+                else:  # Very high volume
+                    return -0.4
                 
         except Exception as e:
             logger.error(f"Error calculating volume score: {str(e)}")
             return 0.0
-            
-    def _calculate_volatility_score(self, btc_volatility: Dict) -> float:
-        """Calculate volatility score based on BTC volatility and trend.
-        
-        Args:
-            df: DataFrame with price data
-            btc_volatility: BTC volatility analysis
-            
-        Returns:
-            float: Volatility score between -1 and 1
-        """
+
+    def _calculate_volatility_score(self, btc_volatility: Dict, position_type: str) -> float:
+        """Calculate volatility score based on BTC volatility and position type."""
         try:
-            if not btc_volatility:
+            if not btc_volatility or 'current_volatility' not in btc_volatility:
                 return 0.0
                 
-            volatility = btc_volatility.get('volatility_level', 'LOW')
-            btc_trend = btc_volatility.get('trend', 'NEUTRAL')
+            current_volatility = btc_volatility['current_volatility']
+            avg_volatility = btc_volatility.get('avg_volatility', current_volatility)
             
-            # Base volatility score
-            if volatility == 'HIGH':
-                base_score = 1.0
-            elif volatility == 'MEDIUM':
-                base_score = 0.5
-            else:
-                base_score = 0.0
-                
-            # Adjust score based on BTC trend
-            if btc_trend == 'UP':
-                return base_score  # Keep positive score for LONG signals
-            elif btc_trend == 'DOWN':
-                return -base_score  # Negative score for SHORT signals
-            else:
-                return 0.0  # Neutral trend, no adjustment
-                
+            if position_type == "LONG":
+                # Cho LONG: volatility thấp hơn trung bình là tốt
+                if current_volatility < avg_volatility:
+                    return 1.0
+                else:
+                    # Tính điểm giảm dần khi volatility tăng
+                    volatility_ratio = current_volatility / avg_volatility
+                    return max(0, 1 - (volatility_ratio - 1))
+                    
+            else:  # SHORT
+                # Cho SHORT: volatility cao hơn trung bình là tốt
+                if current_volatility > avg_volatility:
+                    return 1.0
+                else:
+                    # Tính điểm giảm dần khi volatility giảm
+                    volatility_ratio = avg_volatility / current_volatility
+                    return max(0, 1 - (volatility_ratio - 1))
+                    
         except Exception as e:
             logger.error(f"Error calculating volatility score: {str(e)}")
             return 0.0
             
-    def _calculate_correlation_score(self, altcoin_correlation: Dict) -> float:
-        """Calculate correlation score based on altcoin correlation with BTC.
-        
-        Args:
-            altcoin_correlation: Altcoin correlation analysis
-            
-        Returns:
-            float: Correlation score between -1 and 1
-        """
+    def _calculate_correlation_score(self, altcoin_correlation: Dict, position_type: str) -> float:
+        """Calculate correlation score based on altcoin correlation and position type."""
         try:
-            if not altcoin_correlation:
+            if not altcoin_correlation or 'correlation' not in altcoin_correlation:
                 return 0.0
                 
-            correlation = altcoin_correlation.get('correlation', 0)
-            btc_trend = altcoin_correlation.get('btc_trend', 'NEUTRAL')
+            correlation = altcoin_correlation['correlation']
+            avg_correlation = altcoin_correlation.get('avg_correlation', correlation)
             
-            # Base correlation score
-            base_score = correlation
-            
-            # Adjust score based on BTC trend and correlation
-            if btc_trend == 'UP':
-                if correlation > 0:
-                    return base_score  # Positive correlation with uptrend
-                else:
-                    return -base_score  # Negative correlation with uptrend
-            elif btc_trend == 'DOWN':
-                if correlation > 0:
-                    return -base_score  # Positive correlation with downtrend
-                else:
-                    return base_score  # Negative correlation with downtrend
-            else:
-                return base_score  # Neutral trend, use raw correlation
+            # Handle edge cases
+            if correlation is None or avg_correlation is None:
+                return 0.0
                 
+            # Handle division by zero
+            if avg_correlation == 0:
+                return 0.0
+                
+            if position_type == "LONG":
+                # Cho LONG: correlation cao là tốt
+                if correlation > avg_correlation:
+                    return 1.0
+                else:
+                    # Tính điểm giảm dần khi correlation giảm
+                    correlation_ratio = correlation / avg_correlation
+                    return max(0, min(1, correlation_ratio))  # Ensure score is between 0 and 1
+                    
+            else:  # SHORT
+                # Cho SHORT: correlation thấp là tốt
+                if correlation < avg_correlation:
+                    return 1.0
+                else:
+                    # Tính điểm giảm dần khi correlation tăng
+                    correlation_ratio = avg_correlation / correlation
+                    return max(0, min(1, correlation_ratio))  # Ensure score is between 0 and 1
+                    
         except Exception as e:
             logger.error(f"Error calculating correlation score: {str(e)}")
             return 0.0
             
-    def _calculate_sentiment_score(self, sentiment: Dict) -> float:
-        """Calculate sentiment score based on market sentiment.
-        
-        Args:
-            sentiment: Market sentiment analysis
-            
-        Returns:
-            float: Sentiment score between -1 and 1
-        """
+    def _calculate_sentiment_score(self, sentiment: Dict, position_type: str) -> float:
+        """Calculate sentiment score based on market sentiment and position type."""
         try:
-            if not sentiment:
+            if not sentiment or 'sentiment' not in sentiment:
                 return 0.0
                 
-            sentiment_value = sentiment.get('sentiment', 0)
-            return sentiment_value  # Use raw sentiment value
+            current_sentiment = sentiment['sentiment']
+            avg_sentiment = sentiment.get('avg_sentiment', current_sentiment)
             
+            if position_type == "LONG":
+                # Cho LONG: sentiment cao là tốt
+                if current_sentiment > avg_sentiment:
+                    return 1.0
+                else:
+                    # Tính điểm giảm dần khi sentiment giảm
+                    sentiment_ratio = current_sentiment / avg_sentiment
+                    return max(0, sentiment_ratio)
+                    
+            else:  # SHORT
+                # Cho SHORT: sentiment thấp là tốt
+                if current_sentiment < avg_sentiment:
+                    return 1.0
+                else:
+                    # Tính điểm giảm dần khi sentiment tăng
+                    sentiment_ratio = avg_sentiment / current_sentiment
+                    return max(0, sentiment_ratio)
+                    
         except Exception as e:
             logger.error(f"Error calculating sentiment score: {str(e)}")
+            return 0.0
+
+    def _calculate_structure_score(self, market_structure: Dict, position_type: str) -> float:
+        """Calculate structure score based on market structure and position type."""
+        try:
+            if not market_structure:
+                return 0.0
+                
+            # Get the main timeframe (5m) structure
+            main_timeframe = market_structure.get('5m', {})
+            if not main_timeframe:
+                return 0.0
+                
+            structure = main_timeframe.get('structure', 'neutral')
+            current_price = main_timeframe.get('current_price', 0)
+            nearest_support = main_timeframe.get('nearest_support', 0)
+            nearest_resistance = main_timeframe.get('nearest_resistance', 0)
+            
+            if position_type == "LONG":
+                # For LONG: being near support is good
+                if structure == "support":
+                    # Calculate strength based on distance to support
+                    if nearest_support > 0:
+                        distance = (current_price - nearest_support) / current_price
+                        return max(0.5, 1.0 - distance)
+                    return 0.5
+                elif structure == "resistance":
+                    return 0.0
+                else:  # neutral
+                    return 0.3
+                    
+            else:  # SHORT
+                # For SHORT: being near resistance is good
+                if structure == "resistance":
+                    # Calculate strength based on distance to resistance
+                    if nearest_resistance > 0:
+                        distance = (nearest_resistance - current_price) / current_price
+                        return max(0.5, 1.0 - distance)
+                    return 0.5
+                elif structure == "support":
+                    return 0.0
+                else:  # neutral
+                    return 0.3
+                    
+        except Exception as e:
+            logger.error(f"Error calculating structure score: {str(e)}")
+            return 0.0
+
+    def _calculate_volume_profile_score(self, volume_profile: Dict, position_type: str) -> float:
+        """Calculate volume profile score based on volume distribution and position type."""
+        try:
+            if not volume_profile or 'high_volume_nodes' not in volume_profile:
+                return 0.0
+                
+            high_volume_nodes = volume_profile['high_volume_nodes']
+            current_price = volume_profile.get('current_price', 0)
+            total_volume = sum(node['volume'] for node in high_volume_nodes)
+            
+            if position_type == "LONG":
+                # Cho LONG: kiểm tra volume ở các mức giá thấp
+                low_price_nodes = [node for node in high_volume_nodes if node['price'] < current_price]
+                if not low_price_nodes:
+                    return 0.0
+                    
+                # Tính tỷ lệ volume ở các mức giá thấp
+                low_price_volume = sum(node['volume'] for node in low_price_nodes)
+                volume_ratio = low_price_volume / total_volume
+                
+                # Tính điểm dựa trên tỷ lệ volume
+                if volume_ratio > 0.5:  # Hơn 50% volume ở mức giá thấp
+                    return 1.0
+                else:
+                    return volume_ratio * 2  # Tỷ lệ thuận với volume ratio
+                    
+            else:  # SHORT
+                # Cho SHORT: kiểm tra volume ở các mức giá cao
+                high_price_nodes = [node for node in high_volume_nodes if node['price'] > current_price]
+                if not high_price_nodes:
+                    return 0.0
+                    
+                # Tính tỷ lệ volume ở các mức giá cao
+                high_price_volume = sum(node['volume'] for node in high_price_nodes)
+                volume_ratio = high_price_volume / total_volume
+                
+                # Tính điểm dựa trên tỷ lệ volume
+                if volume_ratio > 0.5:  # Hơn 50% volume ở mức giá cao
+                    return 1.0
+                else:
+                    return volume_ratio * 2  # Tỷ lệ thuận với volume ratio
+                    
+        except Exception as e:
+            logger.error(f"Error calculating volume profile score: {str(e)}")
+            return 0.0
+
+    def _calculate_funding_rate_score(self, funding_rate: float, position_type: str) -> float:
+        """Calculate funding rate score based on funding rate and position type."""
+        try:
+            if funding_rate == 0:
+                return 0.0
+                
+            if position_type == "LONG":
+                # Cho LONG: funding rate âm là tốt
+                if funding_rate < -0.0001:  # Funding rate âm đáng kể
+                    return 1.0
+                elif funding_rate < 0:  # Funding rate âm nhẹ
+                    return 0.5
+                else:  # Funding rate dương
+                    return -0.5
+            else:  # SHORT
+                # Cho SHORT: funding rate dương là tốt
+                if funding_rate > 0.0001:  # Funding rate dương đáng kể
+                    return 1.0
+                elif funding_rate > 0:  # Funding rate dương nhẹ
+                    return 0.5
+                else:  # Funding rate âm
+                    return -0.5
+                    
+        except Exception as e:
+            logger.error(f"Error calculating funding rate score: {str(e)}")
+            return 0.0
+
+    def _calculate_open_interest_score(self, open_interest: float, position_type: str) -> float:
+        """Calculate open interest score based on OI value and position type."""
+        try:
+            if open_interest == 0:
+                return 0.0
+                
+            # Normalize open interest to a score between -1 and 1
+            normalized_oi = min(max(open_interest / 1000000, 0.1), 1.0)  # Assuming 1M as max OI
+            
+            if position_type == "LONG":
+                # For LONG: Higher OI is better
+                return normalized_oi
+            else:  # SHORT
+                # For SHORT: Lower OI is better
+                return 1.0 - normalized_oi
+                    
+        except Exception as e:
+            logger.error(f"Error calculating open interest score: {str(e)}")
+            return 0.0
+
+    def _calculate_order_book_score(self, order_book: Dict, position_type: str) -> float:
+        """Calculate order book score based on order book depth and position type."""
+        try:
+            if not isinstance(order_book, dict) or not order_book:
+                return 0.0
+                
+            bid_depth = order_book.get('bid_depth', 0)
+            ask_depth = order_book.get('ask_depth', 0)
+            spread = order_book.get('spread', 0)
+            
+            if bid_depth == 0 or ask_depth == 0:
+                return 0.0
+                
+            depth_ratio = bid_depth / ask_depth
+            
+            if position_type == "LONG":
+                # Cho LONG: bid depth cao hơn ask depth là tốt
+                if depth_ratio > 1.5:  # Bid depth cao hơn nhiều
+                    return 1.0
+                elif depth_ratio > 1.2:  # Bid depth cao hơn
+                    return 0.5
+                else:  # Bid depth thấp hơn
+                    return -0.5
+            else:  # SHORT
+                # Cho SHORT: ask depth cao hơn bid depth là tốt
+                if depth_ratio < 0.67:  # Ask depth cao hơn nhiều
+                    return 1.0
+                elif depth_ratio < 0.83:  # Ask depth cao hơn
+                    return 0.5
+                else:  # Ask depth thấp hơn
+                    return -0.5
+                    
+        except Exception as e:
+            logger.error(f"Error calculating order book score: {str(e)}")
+            return 0.0
+
+    def _calculate_support_resistance(self, df: pd.DataFrame) -> Dict:
+        """Calculate support and resistance levels.
+        
+        Args:
+            df: Price data DataFrame
+            
+        Returns:
+            Dict: Support and resistance levels
+        """
+        try:
+            if df is None or df.empty:
+                logger.error("No data provided for support/resistance calculation")
+                return {
+                    'support_levels': [],
+                    'resistance_levels': [],
+                    'nearest_support': None,
+                    'nearest_resistance': None
+                }
+                
+            # Get high and low prices
+            highs = df['high']
+            lows = df['low']
+            
+            # Initialize lists for support and resistance levels
+            support_levels = []
+            resistance_levels = []
+            
+            # Find swing highs and lows
+            for i in range(1, len(df)-1):
+                # Check for swing low (support)
+                if lows.iloc[i] < lows.iloc[i-1] and lows.iloc[i] < lows.iloc[i+1]:
+                    support_levels.append(lows.iloc[i])
+                    
+                # Check for swing high (resistance)
+                if highs.iloc[i] > highs.iloc[i-1] and highs.iloc[i] > highs.iloc[i+1]:
+                    resistance_levels.append(highs.iloc[i])
+                    
+            # Get current price
+            current_price = df['close'].iloc[-1]
+            
+            # Find nearest support and resistance
+            nearest_support = None
+            nearest_resistance = None
+            
+            # Find nearest support (highest support level below current price)
+            valid_supports = [s for s in support_levels if s < current_price]
+            if valid_supports:
+                nearest_support = max(valid_supports)
+            elif support_levels:  # If no support below current price, use lowest support
+                nearest_support = min(support_levels)
+                
+            # Find nearest resistance (lowest resistance level above current price)
+            valid_resistances = [r for r in resistance_levels if r > current_price]
+            if valid_resistances:
+                nearest_resistance = min(valid_resistances)
+            elif resistance_levels:  # If no resistance above current price, use highest resistance
+                nearest_resistance = max(resistance_levels)
+                
+            # Log debug information
+            logger.debug(f"Found {len(support_levels)} support levels and {len(resistance_levels)} resistance levels")
+            logger.debug(f"Current price: {current_price}, Nearest support: {nearest_support}, Nearest resistance: {nearest_resistance}")
+                
+            return {
+                'support_levels': support_levels,
+                'resistance_levels': resistance_levels,
+                'nearest_support': nearest_support,
+                'nearest_resistance': nearest_resistance
+            }
+            
+        except Exception as e:
+            logger.error(f"Error calculating support/resistance levels: {str(e)}")
+            return {
+                'support_levels': [],
+                'resistance_levels': [],
+                'nearest_support': None,
+                'nearest_resistance': None
+            }
+
+    def _calculate_value_area(self, df: pd.DataFrame) -> Dict:
+        """Calculate volume profile value area.
+        
+        Args:
+            df: Price data DataFrame
+            
+        Returns:
+            Dict: Dictionary containing value area information
+        """
+        try:
+            # Calculate price levels
+            price_range = df['high'].max() - df['low'].min()
+            num_levels = 20
+            price_step = price_range / num_levels
+            
+            # Calculate volume at each price level
+            volume_profile = {}
+            for i in range(num_levels):
+                price_level = df['low'].min() + i * price_step
+                volume = df[(df['low'] <= price_level) & (df['high'] >= price_level)]['volume'].sum()
+                volume_profile[price_level] = volume
+            
+            # Sort by volume
+            sorted_levels = sorted(volume_profile.items(), key=lambda x: x[1], reverse=True)
+            
+            # Calculate value area (70% of total volume)
+            total_volume = sum(volume_profile.values())
+            target_volume = total_volume * 0.7
+            current_volume = 0
+            value_area_levels = []
+            
+            for level, volume in sorted_levels:
+                if current_volume < target_volume:
+                    value_area_levels.append(level)
+                    current_volume += volume
+                else:
+                    break
+            
+            # Get value area high and low
+            value_area_high = max(value_area_levels)
+            value_area_low = min(value_area_levels)
+            
+            # Get current price
+            current_price = df['close'].iloc[-1]
+            
+            # Calculate value area position
+            if value_area_high != value_area_low:
+                value_area_position = (current_price - value_area_low) / (value_area_high - value_area_low)
+            else:
+                value_area_position = 0.5
+                
+            return {
+                'value_area_high': value_area_high,
+                'value_area_low': value_area_low,
+                'value_area_position': value_area_position,
+                'current_price': current_price,
+                'volume_profile': volume_profile
+            }
+            
+        except Exception as e:
+            logger.error(f"Error calculating value area: {str(e)}")
+            return {
+                'value_area_high': None,
+                'value_area_low': None,
+                'value_area_position': 0.5,
+                'current_price': None,
+                'volume_profile': {}
+            }
+
+    async def _get_dynamic_threshold(self, threshold_type: str, position_type: str) -> float:
+        """Calculate dynamic threshold based on market conditions."""
+        try:
+            base_threshold = self.base_thresholds.get(threshold_type, 0.0)
+            
+            # Lấy volatility hiện tại
+            volatility = await self._get_current_volatility()
+            
+            # Điều chỉnh theo volatility
+            adjustment_factor = 1.0
+            if volatility > self.adjustment_factors['volatility_threshold']:
+                adjustment_factor = 1.2
+            elif volatility < 0.02:
+                adjustment_factor = 0.8
+                
+            # Điều chỉnh theo position type
+            if position_type == 'SHORT':
+                adjustment_factor *= 1.1  # Thắt chặt hơn cho SHORT
+                
+            return base_threshold * adjustment_factor
+            
+        except Exception as e:
+            logger.error(f"Error calculating dynamic threshold: {str(e)}")
+            return self.base_thresholds.get(threshold_type, 0.0)
+
+    async def _get_dynamic_weights(self, position_type: str) -> Dict[str, float]:
+        """Calculate dynamic weights based on market conditions."""
+        try:
+            weights = self.base_weights.copy()
+            
+            # Lấy market conditions
+            market_conditions = await self._get_market_conditions()
+            
+            # Điều chỉnh theo volatility
+            if market_conditions.get('volatility', 0) > self.adjustment_factors['volatility_threshold']:
+                weights['volatility'] += self.adjustment_factors['weight_adjustment']
+                weights['trend'] -= self.adjustment_factors['weight_adjustment']
+                
+            # Điều chỉnh theo position type
+            if position_type == 'SHORT':
+                weights['funding_rate'] += self.adjustment_factors['weight_adjustment']
+                weights['trend'] -= self.adjustment_factors['weight_adjustment']
+                
+            # Điều chỉnh theo market sentiment
+            if market_conditions.get('sentiment') == 'bearish':
+                weights['sentiment'] += self.adjustment_factors['weight_adjustment']
+                weights['trend'] -= self.adjustment_factors['weight_adjustment']
+                
+            # Chuẩn hóa weights
+            total = sum(weights.values())
+            return {k: v/total for k, v in weights.items()}
+            
+        except Exception as e:
+            logger.error(f"Error calculating dynamic weights: {str(e)}")
+            return self.base_weights.copy()
+
+    async def _get_current_volatility(self) -> float:
+        """Calculate current market volatility."""
+        try:
+            # Lấy dữ liệu BTC
+            btc_data = await self._get_btc_data()
+            if btc_data is None or btc_data.empty:
+                return 0.0
+                
+            # Tính volatility
+            returns = btc_data['close'].pct_change()
+            return returns.std()
+            
+        except Exception as e:
+            logger.error(f"Error calculating current volatility: {str(e)}")
+            return 0.0
+
+    async def _get_btc_data(self) -> Optional[pd.DataFrame]:
+        """Get BTC historical data."""
+        try:
+            return await self.indicator_service.get_historical_data('BTCUSDT', timeframe='1h', limit=100)
+        except Exception as e:
+            logger.error(f"Error getting BTC data: {str(e)}")
+            return None
+
+    async def _log_signal_analysis(self, symbol: str, position_type: str, scores: Dict, 
+                           total_score: float, conditions: Dict) -> None:
+        """Log detailed signal analysis."""
+        try:
+            # Convert numpy.bool_ to Python bool
+            def convert_numpy_types(obj):
+                if isinstance(obj, np.bool_):
+                    return bool(obj)
+                elif isinstance(obj, dict):
+                    return {k: convert_numpy_types(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [convert_numpy_types(item) for item in obj]
+                return obj
+
+            log_data = {
+                'symbol': symbol,
+                'position_type': position_type,
+                'timestamp': datetime.now().isoformat(),
+                'scores': convert_numpy_types(scores),
+                'total_score': total_score,
+                'conditions': convert_numpy_types(conditions)
+            }
+            
+            logger.debug(f"Signal analysis: {json.dumps(log_data, indent=2)}")
+            
+        except Exception as e:
+            logger.error(f"Error logging signal analysis: {str(e)}")
+
+    async def _monitor_signal_quality(self, symbol: str, position_type: str, 
+                              signal_data: Dict) -> None:
+        """Monitor signal quality and send alerts if needed."""
+        try:
+            # Get historical signals
+            historical_signals = await self._get_historical_signals(symbol, position_type)
+            
+            # Calculate metrics
+            win_rate = self._calculate_win_rate(historical_signals)
+            avg_profit = self._calculate_avg_profit(historical_signals)
+            avg_loss = self._calculate_avg_loss(historical_signals)
+            
+            # Analyze current signal data
+            current_score = signal_data.get('total_score', 0)
+            current_conditions = signal_data.get('conditions', {})
+            
+            # Check signal quality based on historical data and current signal
+            if (win_rate < 0.5 or avg_profit/avg_loss < 1.5) and current_score < 0.7:
+                await self._send_alert(f"Low quality signal detected for {symbol} {position_type}")
+                
+            # Update metrics with current signal data
+            self._update_signal_metrics(symbol, position_type, {
+                'win_rate': win_rate,
+                'avg_profit': avg_profit,
+                'avg_loss': avg_loss,
+                'total_signals': len(historical_signals),
+                'current_score': current_score,
+                'current_conditions': current_conditions
+            })
+            
+        except Exception as e:
+            logger.error(f"Error monitoring signal quality: {str(e)}")
+
+    async def _get_historical_signals(self, symbol: str, position_type: str) -> List[Dict]:
+        """Get historical signals for a symbol and position type."""
+        try:
+            symbol = symbol.split(':')[0].replace('/', '')
+            # Kiểm tra cache trước
+            cache_key = f"historical_signals_{symbol}_{position_type}"
+            cached_signals = await self.binance_service._get_cached_data(cache_key)
+            if cached_signals is not None:
+                return cached_signals
+
+            # Lấy dữ liệu từ database hoặc file
+            signals = []
+            try:
+                # Thử đọc từ file JSON
+                file_path = f"data/signals/{symbol}_{position_type}_signals.json"
+                if os.path.exists(file_path):
+                    with open(file_path, 'r') as f:
+                        signals = json.load(f)
+            except Exception as e:
+                logger.warning(f"Error reading signals from file: {str(e)}")
+
+            # Lọc tín hiệu theo thời gian (chỉ lấy tín hiệu trong 30 ngày gần nhất)
+            current_time = datetime.now()
+            signals = [
+                s for s in signals 
+                if (current_time - datetime.fromisoformat(s['timestamp'])).days <= 30
+            ]
+
+            # Lưu vào cache
+            self.binance_service._set_cached_data(cache_key, signals)
+            return signals
+
+        except Exception as e:
+            logger.error(f"Error getting historical signals: {str(e)}")
+            return []
+
+    def _calculate_win_rate(self, signals: List[Dict]) -> float:
+        """Calculate win rate from historical signals."""
+        try:
+            if not signals:
+                return 0.0
+                
+            winning_signals = [s for s in signals if s.get('profit', 0) > 0]
+            return len(winning_signals) / len(signals)
+            
+        except Exception as e:
+            logger.error(f"Error calculating win rate: {str(e)}")
+            return 0.0
+
+    def _calculate_avg_profit(self, signals: List[Dict]) -> float:
+        """Calculate average profit from historical signals."""
+        try:
+            if not signals:
+                return 0.0
+                
+            profits = [s.get('profit', 0) for s in signals if s.get('profit', 0) > 0]
+            return sum(profits) / len(profits) if profits else 0.0
+            
+        except Exception as e:
+            logger.error(f"Error calculating average profit: {str(e)}")
+            return 0.0
+
+    def _calculate_avg_loss(self, signals: List[Dict]) -> float:
+        """Calculate average loss from historical signals."""
+        try:
+            if not signals:
+                return 0.0
+                
+            losses = [s.get('profit', 0) for s in signals if s.get('profit', 0) < 0]
+            return sum(losses) / len(losses) if losses else 0.0
+            
+        except Exception as e:
+            logger.error(f"Error calculating average loss: {str(e)}")
+            return 0.0
+
+    def _update_signal_metrics(self, symbol: str, position_type: str, metrics: Dict) -> None:
+        """Update signal metrics for a symbol and position type."""
+        try:
+            # Tạo thư mục nếu chưa tồn tại
+            os.makedirs("data/metrics", exist_ok=True)
+            
+            symbol = symbol.split(':')[0].replace('/', '')
+            # Đọc metrics hiện tại
+            file_path = f"data/metrics/{symbol}_{position_type}_metrics.json"
+            current_metrics = {}
+            if os.path.exists(file_path):
+                with open(file_path, 'r') as f:
+                    current_metrics = json.load(f)
+            
+            # Cập nhật metrics
+            current_metrics.update({
+                'last_updated': datetime.now().isoformat(),
+                'total_trades': current_metrics.get('total_trades', 0) + 1,
+                'win_rate': metrics.get('win_rate', current_metrics.get('win_rate', 0)),
+                'avg_profit': metrics.get('avg_profit', current_metrics.get('avg_profit', 0)),
+                'avg_loss': metrics.get('avg_loss', current_metrics.get('avg_loss', 0)),
+                'total_signals': metrics.get('total_signals', current_metrics.get('total_signals', 0))
+            })
+            
+            # Lưu metrics mới
+            with open(file_path, 'w') as f:
+                json.dump(current_metrics, f, indent=4)
+                
+            # Cập nhật cache
+            cache_key = f"signal_metrics_{symbol}_{position_type}"
+            self.binance_service._set_cached_data(cache_key, current_metrics)
+            
+        except Exception as e:
+            logger.error(f"Error updating signal metrics: {str(e)}")
+
+    async def _send_alert(self, message: str) -> None:
+        """Send alert through notification service."""
+        try:
+            await self.notification_service.send_notification('error', message)
+        except Exception as e:
+            logger.error(f"Error sending alert: {str(e)}")
+
+    async def _calculate_market_liquidity(self) -> float:
+        """Calculate current market liquidity score."""
+        try:
+            # Lấy dữ liệu order book cho BTC
+            btc_order_book = await self.binance_service.get_order_book("BTCUSDT", limit=100)
+            if not btc_order_book:
+                return 0.0
+                
+            # Tính toán spread
+            best_bid = float(btc_order_book['bids'][0][0])
+            best_ask = float(btc_order_book['asks'][0][0])
+            spread = (best_ask - best_bid) / best_bid
+            
+            # Tính toán depth
+            bid_depth = sum(float(bid[1]) for bid in btc_order_book['bids'])
+            ask_depth = sum(float(ask[1]) for ask in btc_order_book['asks'])
+            avg_depth = (bid_depth + ask_depth) / 2
+            
+            # Tính toán volume 24h
+            ticker = await self.binance_service.get_ticker("BTCUSDT")
+            volume_24h = float(ticker.get('volume', 0))
+            
+            # Tính điểm thanh khoản (0-1)
+            spread_score = max(0, 1 - spread * 100)  # Spread càng nhỏ điểm càng cao
+            depth_score = min(1, avg_depth / 100)    # Depth càng lớn điểm càng cao
+            volume_score = min(1, volume_24h / 10000) # Volume càng lớn điểm càng cao
+            
+            # Tính điểm tổng hợp
+            liquidity_score = (spread_score * 0.4 + depth_score * 0.3 + volume_score * 0.3)
+            
+            # Lưu vào cache
+            self.binance_service._set_cached_data("market_liquidity", liquidity_score)
+            
+            return liquidity_score
+            
+        except Exception as e:
+            logger.error(f"Error calculating market liquidity: {str(e)}")
+            return 0.0
+
+    async def _is_risk_on_environment(self) -> bool:
+        """Check if current market environment is risk-on."""
+        try:
+            # Lấy dữ liệu BTC
+            btc_data = await self._get_btc_data()
+            if btc_data is None or btc_data.empty:
+                return False
+                
+            # Kiểm tra trend BTC
+            btc_trend = self.get_trend(btc_data)
+            if btc_trend != "UPTREND":
+                return False
+                
+            # Kiểm tra volume BTC
+            current_volume = btc_data['volume'].iloc[-1]
+            avg_volume = btc_data['volume'].rolling(20).mean().iloc[-1]
+            if current_volume < avg_volume:
+                return False
+                
+            # Kiểm tra funding rate
+            funding_rate = await self.binance_service.get_funding_rate("BTCUSDT")
+            if funding_rate is None or funding_rate < 0:
+                return False
+                
+            # Kiểm tra open interest
+            open_interest = await self.binance_service.get_open_interest("BTCUSDT")
+            if open_interest is None or open_interest < 1000:  # Ngưỡng tối thiểu
+                return False
+                
+            # Kiểm tra thanh khoản
+            liquidity = await self._calculate_market_liquidity()
+            if liquidity < 0.5:  # Ngưỡng thanh khoản tối thiểu
+                return False
+                
+            # Kiểm tra volatility
+            volatility = await self._get_current_volatility()
+            if volatility > 0.05:  # Volatility quá cao
+                return False
+                
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error checking risk-on environment: {str(e)}")
+            return False
+
+    def _calculate_timeframe_score(self, timeframe_data: Dict, position_type: str) -> float:
+        """Calculate timeframe score based on trend and strength."""
+        try:
+            if not timeframe_data:
+                return 0.0
+                
+            # Get trend and strength from timeframes
+            trends = {
+                '1h': timeframe_data.get('1h', {}).get('trend', ''),
+                '4h': timeframe_data.get('4h', {}).get('trend', ''),
+                '1d': timeframe_data.get('1d', {}).get('trend', '')
+            }
+            
+            strengths = {
+                '1h': timeframe_data.get('1h', {}).get('strength', 0),
+                '4h': timeframe_data.get('4h', {}).get('strength', 0),
+                '1d': timeframe_data.get('1d', {}).get('strength', 0)
+            }
+            
+            if position_type == "LONG":
+                # For LONG: count bullish timeframes and average their strengths
+                bullish_count = sum(1 for trend in trends.values() if trend == 'UPTREND')
+                bullish_strength = sum(strengths[tf] for tf, trend in trends.items() if trend == 'UPTREND')
+                
+                if bullish_count == 3:  # All timeframes bullish
+                    return 1.0
+                elif bullish_count == 2:  # Two timeframes bullish
+                    return 0.7 + (bullish_strength / 200)  # Add up to 0.3 based on strength
+                elif bullish_count == 1:  # One timeframe bullish
+                    return 0.3 + (bullish_strength / 300)  # Add up to 0.2 based on strength
+                else:  # No bullish timeframes
+                    return -0.5
+            else:  # SHORT
+                # For SHORT: count bearish timeframes and average their strengths
+                bearish_count = sum(1 for trend in trends.values() if trend == 'DOWNTREND')
+                bearish_strength = sum(strengths[tf] for tf, trend in trends.items() if trend == 'DOWNTREND')
+                
+                if bearish_count == 3:  # All timeframes bearish
+                    return 1.0
+                elif bearish_count == 2:  # Two timeframes bearish
+                    return 0.7 + (bearish_strength / 200)  # Add up to 0.3 based on strength
+                elif bearish_count == 1:  # One timeframe bearish
+                    return 0.3 + (bearish_strength / 300)  # Add up to 0.2 based on strength
+                else:  # No bearish timeframes
+                    return -0.5
+                    
+        except Exception as e:
+            logger.error(f"Error calculating timeframe score: {str(e)}")
             return 0.0
 
