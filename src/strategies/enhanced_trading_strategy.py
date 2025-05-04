@@ -311,10 +311,12 @@ class EnhancedTradingStrategy:
             # Determine position type based on signal score
             if signal_score >= self.config['trading']['signal_thresholds']['long_entry']:
                 position_type = "LONG"
+                logger.info(f"Signal score {signal_score:.2f} above threshold for {symbol}")
             elif signal_score <= self.config['trading']['signal_thresholds']['short_entry']:
                 position_type = "SHORT"
+                logger.info(f"Signal score {signal_score:.2f} below threshold for {symbol}")
             else:
-                # print(f"Signal score {signal_score:.2f} below threshold for {symbol}")
+                # logger.info(f"Signal score {signal_score:.2f} below threshold for {symbol}")
                 return None
                 
             # Check additional entry conditions
@@ -326,11 +328,11 @@ class EnhancedTradingStrategy:
                 order_book=order_book,
                 position_type=position_type
             ):
-                print(f"Entry conditions not met for {symbol}")
+                logger.info(f"Entry conditions not met for {symbol}")
                 return None
                 
             # Log signal details
-            # print(f"{symbol} Signal score: {signal_score}")
+            logger.info(f"{symbol} Signal score: {signal_score}")
             logger.info(f"Generated {position_type} signal for {symbol} with score {signal_score:.2f}")
             logger.info(f"Signal components for {symbol}:")
             logger.info(f"- Trend: {timeframe_analysis.get('trend', 'NEUTRAL')}")
@@ -477,37 +479,44 @@ class EnhancedTradingStrategy:
             return {}
 
     async def _check_entry_conditions(self, df: pd.DataFrame, 
-                              volume_profile: Dict, funding_rate: float,
-                              open_interest: float, order_book: Dict,
-                              position_type: str) -> bool:
+                          volume_profile: Dict, funding_rate: float,
+                          open_interest: float, order_book: Dict,
+                          position_type: str) -> bool:
         """Check if entry conditions are met based on market structure and other factors."""
         try:
-            # Check volume profile
-            if not self._check_volume_profile_conditions(volume_profile, position_type):
-                print(f"Volume profile conditions not met for {position_type}")
+            # Tính toán các ngưỡng động
+            avg_volume = df['volume'].rolling(20).mean().iloc[-1]
+            volatility = df['close'].pct_change().std()
+            
+            # Check volume profile với ngưỡng thấp hơn
+            if not self._check_volume_profile_conditions(volume_profile, position_type, min_volume_ratio=0.2):
+                logger.info(f"Volume profile conditions not met for {position_type}")
                 return False
                 
-            # Check order book
-            if not self._check_order_book_conditions(order_book, position_type):
-                print(f"Order book conditions not met for {position_type}")
+            # Check order book với điều kiện động
+            if not self._check_order_book_conditions(order_book, position_type, min_depth=avg_volume * 0.1):
+                logger.info(f"Order book conditions not met for {position_type}")
                 return False
                 
-            # Check candlestick patterns
-            if not self._check_candlestick_patterns(df, position_type):
-                print(f"Candlestick patterns conditions not met for {position_type}")
+            # Check candlestick patterns với trọng số
+            pattern_score = self._check_candlestick_patterns(df, position_type)
+            if pattern_score < 0.6:  # Yêu cầu ít nhất 60% điểm
+                logger.info(f"Candlestick patterns conditions not met for {position_type}")
                 return False
                 
-            # Check funding rate
-            if position_type == 'LONG' and funding_rate > 0.0001:
-                print(f"Funding rate conditions not met for {position_type}")
+            # Check funding rate với ngưỡng động
+            funding_threshold = 0.0002 * (1 + volatility)  # Tăng ngưỡng khi volatility cao
+            if position_type == 'LONG' and funding_rate > funding_threshold:
+                logger.info(f"Funding rate conditions not met for {position_type} {funding_rate}")
                 return False
-            elif position_type == 'SHORT' and funding_rate < -0.0001:
-                print(f"Funding rate conditions not met for {position_type}")
+            elif position_type == 'SHORT' and funding_rate < -funding_threshold:
+                logger.info(f"Funding rate conditions not met for {position_type} {funding_rate}")
                 return False
                 
-            # Check open interest
-            if open_interest < 100000:  # Minimum OI threshold
-                print(f"Open interest conditions not met for {position_type}")
+            # Check open interest với ngưỡng động
+            min_oi = max(50000, avg_volume * 0.1)  # Lấy lớn hơn giữa 50,000 và 10% volume trung bình
+            if open_interest < min_oi:
+                logger.info(f"Open interest conditions not met for {position_type} {open_interest}")
                 return False
                 
             return True
@@ -547,30 +556,121 @@ class EnhancedTradingStrategy:
             return []
 
     async def _calculate_correlation(self, symbol1: str, symbol2: str) -> float:
-        """Calculate correlation between two symbols."""
+        """Calculate correlation between two symbols with timeout handling and caching."""
         try:
-            # Lấy dữ liệu lịch sử
-            df1 = await self.indicator_service.get_historical_data(symbol1, timeframe='1h', limit=100)
-            df2 = await self.indicator_service.get_historical_data(symbol2, timeframe='1h', limit=100)
+            # Check cache first
+            cache_key = f"correlation_{symbol1}_{symbol2}"
+            if cache_key in self._cache:
+                cached_data, timestamp = self._cache[cache_key]
+                if time.time() - timestamp < self._cache_ttl:
+                    return cached_data
+                    
+            # Set timeout and retry parameters
+            timeout = 5  # Reduced timeout to 5 seconds
+            max_retries = 3
+            retry_delay = 2  # Increased delay between retries
             
-            if df1 is None or df2 is None or df1.empty or df2.empty:
-                return 0.0
-                
-            # Tính correlation
-            returns1 = df1['close'].pct_change()
-            returns2 = df2['close'].pct_change()
-            
-            return returns1.corr(returns2)
+            for attempt in range(max_retries):
+                try:
+                    # Get historical data for both symbols with timeout handling
+                    try:
+                        df1 = await asyncio.wait_for(
+                            self.indicator_service.get_historical_data(symbol1, timeframe="5m", limit=50),
+                            timeout=timeout
+                        )
+                        df2 = await asyncio.wait_for(
+                            self.indicator_service.get_historical_data(symbol2, timeframe="5m", limit=50),
+                            timeout=timeout
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning(f"Timeout while fetching historical data for correlation between {symbol1} and {symbol2}")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(retry_delay)
+                            continue
+                        return 0.0
+                    except Exception as e:
+                        logger.error(f"Error fetching historical data for correlation between {symbol1} and {symbol2}: {str(e)}")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(retry_delay)
+                            continue
+                        return 0.0
+                    
+                    if df1 is None or df2 is None or df1.empty or df2.empty:
+                        logger.warning(f"Missing historical data for correlation calculation between {symbol1} and {symbol2}")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(retry_delay)
+                            continue
+                        return 0.0
+                        
+                    # Ensure both DataFrames have the same length
+                    min_length = min(len(df1), len(df2))
+                    if min_length < 10:  # Minimum required data points
+                        logger.warning(f"Insufficient data points for correlation calculation between {symbol1} and {symbol2}")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(retry_delay)
+                            continue
+                        return 0.0
+                        
+                    df1 = df1.tail(min_length)
+                    df2 = df2.tail(min_length)
+                    
+                    # Calculate correlation with timeout handling
+                    try:
+                        correlation = df1['close'].corr(df2['close'])
+                        
+                        if pd.isna(correlation):
+                            logger.warning(f"Invalid correlation value between {symbol1} and {symbol2}")
+                            if attempt < max_retries - 1:
+                                await asyncio.sleep(retry_delay)
+                                continue
+                            return 0.0
+                            
+                        # Cache the result
+                        self._cache[cache_key] = (correlation, time.time())
+                        return correlation
+                        
+                    except Exception as e:
+                        logger.error(f"Error calculating correlation between {symbol1} and {symbol2}: {str(e)}")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(retry_delay)
+                            continue
+                        return 0.0
+                        
+                except asyncio.TimeoutError:
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Timeout while calculating correlation between {symbol1} and {symbol2}, retrying...")
+                        await asyncio.sleep(retry_delay)
+                        continue
+                    else:
+                        logger.warning(f"Timeout while calculating correlation between {symbol1} and {symbol2} after {max_retries} attempts")
+                        return 0.0
+                except Exception as e:
+                    logger.error(f"Error calculating correlation between {symbol1} and {symbol2}: {str(e)}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(retry_delay)
+                        continue
+                    return 0.0
+                    
+            return 0.0
             
         except Exception as e:
-            logger.error(f"Error calculating correlation: {str(e)}")
+            logger.error(f"Unexpected error calculating correlation between {symbol1} and {symbol2}: {str(e)}")
             return 0.0
 
-    def _check_volume_profile_conditions(self, volume_profile: Dict, position_type: str) -> bool:
-        """Check volume profile conditions for a specific position type."""
+    def _check_volume_profile_conditions(self, volume_profile: Dict, position_type: str, min_volume_ratio: float = 0.3) -> bool:
+        """Check volume profile conditions for a specific position type.
+        
+        Args:
+            volume_profile: Dictionary containing volume profile data
+            position_type: Position type (LONG/SHORT)
+            min_volume_ratio: Minimum volume ratio required (default: 0.3)
+            
+        Returns:
+            bool: True if conditions are met, False otherwise
+        """
         try:
             if not volume_profile or 'volume_profile' not in volume_profile:
-                print(f"Volume profile data is missing or invalid")
+                logger.info(f"Volume profile data is missing or invalid")
                 return False
                 
             # Get current price and value area
@@ -579,19 +679,19 @@ class EnhancedTradingStrategy:
             value_area_low = volume_profile.get('value_area_low')
             
             if current_price is None or value_area_high is None or value_area_low is None:
-                print(f"Missing required price data in volume profile")
+                logger.info(f"Missing required price data in volume profile")
                 return False
                 
             # Get volume profile data
             profile_data = volume_profile['volume_profile']
             if not profile_data:
-                print(f"No volume profile data available")
+                logger.info(f"No volume profile data available")
                 return False
                 
             # Calculate total volume
             total_volume = sum(profile_data.values())
             if total_volume == 0:
-                print(f"Total volume is zero")
+                logger.info(f"Total volume is zero")
                 return False
                 
             # Check position type specific conditions
@@ -599,26 +699,26 @@ class EnhancedTradingStrategy:
                 # For LONG: check volume in lower price levels
                 lower_volume = sum(vol for price, vol in profile_data.items() 
                                  if price < current_price)
-                if lower_volume / total_volume < 0.3:  # At least 30% volume in lower levels
-                    print(f"Not enough volume in lower price levels for LONG position")
+                if lower_volume / total_volume < min_volume_ratio:  # At least min_volume_ratio volume in lower levels
+                    logger.info(f"Not enough volume in lower price levels for LONG position")
                     return False
                     
                 # Check if current price is near value area low
                 if current_price > value_area_low * 1.02:  # Within 2% of value area low
-                    print(f"Current price not near value area low for LONG position: {current_price} {value_area_low}")
+                    logger.info(f"Current price not near value area low for LONG position: {current_price} {value_area_low}")
                     return False
                     
             else:  # SHORT position
                 # For SHORT: check volume in higher price levels
                 higher_volume = sum(vol for price, vol in profile_data.items() 
                                   if price > current_price)
-                if higher_volume / total_volume < 0.3:  # At least 30% volume in higher levels
-                    print(f"Not enough volume in higher price levels for SHORT position")
+                if higher_volume / total_volume < min_volume_ratio:  # At least min_volume_ratio volume in higher levels
+                    logger.info(f"Not enough volume in higher price levels for SHORT position")
                     return False
                     
                 # Check if current price is near value area high
                 if current_price < value_area_high * 0.98:  # Within 2% of value area high
-                    print(f"Current price not near value area high for SHORT position: {current_price} {value_area_high}")
+                    logger.info(f"Current price not near value area high for SHORT position: {current_price} {value_area_high}")
                     return False
                     
             return True
@@ -627,41 +727,65 @@ class EnhancedTradingStrategy:
             logger.error(f"Error checking volume profile conditions: {str(e)}")
             return False
 
-    def _check_order_book_conditions(self, order_book: Dict, position_type: str) -> bool:
-        """Check order book conditions for a specific position type."""
+    def _check_order_book_conditions(self, order_book: Dict, position_type: str, min_depth: float = 100000.0) -> bool:
+        """Check order book conditions for a specific position type.
+        
+        Args:
+            order_book: Dictionary containing order book data
+            position_type: Type of position (LONG/SHORT)
+            min_depth: Minimum required depth for the order book
+            
+        Returns:
+            bool: True if conditions are met, False otherwise
+        """
         try:
             if not order_book or 'bids' not in order_book or 'asks' not in order_book:
+                logger.warning("Invalid order book data")
                 return False
                 
-            # Lấy giá hiện tại
+            # Get current price
             current_price = (float(order_book['bids'][0][0]) + float(order_book['asks'][0][0])) / 2
             
             if position_type == "LONG":
-                # Cho LONG: kiểm tra depth ở bên bid
+                # For LONG: check depth on bid side
                 bid_depth = sum(float(bid[1]) for bid in order_book['bids'])
                 ask_depth = sum(float(ask[1]) for ask in order_book['asks'])
                 
-                # Tỷ lệ depth bid/ask phải lớn hơn 1.2
+                # Check if bid depth meets minimum requirement
+                if bid_depth < min_depth:
+                    logger.info(f"Bid depth {bid_depth} below minimum requirement {min_depth} for LONG position")
+                    return False
+                    
+                # Check bid/ask depth ratio
                 if bid_depth / ask_depth < 1.2:
+                    logger.info(f"Bid/ask depth ratio {bid_depth/ask_depth:.2f} below 1.2 for LONG position")
                     return False
                     
-                # Kiểm tra spread
+                # Check spread
                 spread = (float(order_book['asks'][0][0]) - float(order_book['bids'][0][0])) / current_price
-                if spread > 0.001:  # Spread quá lớn
+                if spread > 0.001:  # Spread too large
+                    logger.info(f"Spread {spread:.4f} too large for LONG position")
                     return False
                     
-            else:  # SHORT
-                # Cho SHORT: kiểm tra depth ở bên ask
+            else:  # SHORT position
+                # For SHORT: check depth on ask side
                 bid_depth = sum(float(bid[1]) for bid in order_book['bids'])
                 ask_depth = sum(float(ask[1]) for ask in order_book['asks'])
                 
-                # Tỷ lệ depth ask/bid phải lớn hơn 1.2
-                if ask_depth / bid_depth < 1.2:
+                # Check if ask depth meets minimum requirement
+                if ask_depth < min_depth:
+                    logger.info(f"Ask depth {ask_depth} below minimum requirement {min_depth} for SHORT position")
                     return False
                     
-                # Kiểm tra spread
+                # Check ask/bid depth ratio
+                if ask_depth / bid_depth < 1.2:
+                    logger.info(f"Ask/bid depth ratio {ask_depth/bid_depth:.2f} below 1.2 for SHORT position")
+                    return False
+                    
+                # Check spread
                 spread = (float(order_book['asks'][0][0]) - float(order_book['bids'][0][0])) / current_price
-                if spread > 0.001:  # Spread quá lớn
+                if spread > 0.001:  # Spread too large
+                    logger.info(f"Spread {spread:.4f} too large for SHORT position")
                     return False
                     
             return True
@@ -670,14 +794,23 @@ class EnhancedTradingStrategy:
             logger.error(f"Error checking order book conditions: {str(e)}")
             return False
 
-    def _check_candlestick_patterns(self, df: pd.DataFrame, position_type: str) -> bool:
-        """Check candlestick patterns for a specific position type."""
+    def _check_candlestick_patterns(self, df: pd.DataFrame, position_type: str) -> float:
+        """Check candlestick patterns for a specific position type and return a score.
+        
+        Args:
+            df: Price data DataFrame
+            position_type: Position type (LONG/SHORT)
+            
+        Returns:
+            float: Score between 0 and 1 indicating pattern strength
+        """
         try:
             if df.empty or len(df) < 3:
-                return False
+                return 0.0
                 
             # Lấy 3 nến gần nhất
             last_3_candles = df.iloc[-3:]
+            score = 0.0
             
             if position_type == "LONG":
                 # Kiểm tra các mẫu nến tăng giá
@@ -690,13 +823,13 @@ class EnhancedTradingStrategy:
                 is_hammer = (lower_wick > 2 * body_size and upper_wick < body_size)
                 is_inverted_hammer = (upper_wick > 2 * body_size and lower_wick < body_size)
                 
-                if not (is_hammer or is_inverted_hammer):
-                    return False
+                if is_hammer or is_inverted_hammer:
+                    score += 0.5
                     
                 # 2. Kiểm tra xu hướng giảm trước đó
                 prev_2_candles = last_3_candles.iloc[:-1]
-                if not all(prev_2_candles['close'] < prev_2_candles['open']):
-                    return False
+                if all(prev_2_candles['close'] < prev_2_candles['open']):
+                    score += 0.5
                     
             else:  # SHORT
                 # Kiểm tra các mẫu nến giảm giá
@@ -709,19 +842,19 @@ class EnhancedTradingStrategy:
                 is_shooting_star = (upper_wick > 2 * body_size and lower_wick < body_size)
                 is_hanging_man = (lower_wick > 2 * body_size and upper_wick < body_size)
                 
-                if not (is_shooting_star or is_hanging_man):
-                    return False
+                if is_shooting_star or is_hanging_man:
+                    score += 0.5
                     
                 # 2. Kiểm tra xu hướng tăng trước đó
                 prev_2_candles = last_3_candles.iloc[:-1]
-                if not all(prev_2_candles['close'] > prev_2_candles['open']):
-                    return False
+                if all(prev_2_candles['close'] > prev_2_candles['open']):
+                    score += 0.5
                     
-            return True
+            return score
             
         except Exception as e:
             logger.error(f"Error checking candlestick patterns: {str(e)}")
-            return False
+            return 0.0
 
     async def analyze_market_sentiment(self, symbol: str) -> Dict:
         """Analyze market sentiment using multiple indicators.
