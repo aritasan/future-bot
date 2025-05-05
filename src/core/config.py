@@ -131,30 +131,15 @@ def load_config() -> Dict[str, Any]:
             'trading': {
                 'min_volume': 1000000,
                 'min_volatility': 0.02,
-                'max_btc_correlation': 0.8,
                 'max_drawdown': MAX_DRAWDOWN,
-                'atr_period': ATR_PERIOD,
-                'max_orders_per_symbol': MAX_ORDERS_PER_SYMBOL,
                 'risk_per_trade': RISK_PER_TRADE,
                 'min_volume_ratio': MIN_VOLUME_RATIO,
                 'max_volatility_ratio': MAX_VOLATILITY_RATIO,
                 'min_adx': MIN_ADX,
                 'max_bb_width': MAX_BB_WIDTH,
                 'timeframe_weights': TIMEFRAME_WEIGHTS,
-                'drawdown_warning_levels': DRAWDOWN_WARNING_LEVELS,
-                'timeframes': TIMEFRAMES,
-                'default_timeframe': DEFAULT_TIMEFRAME,
-                'default_leverage': DEFAULT_LEVERAGE,
-                'max_leverage': MAX_LEVERAGE,
-                'min_order_size': MIN_ORDER_SIZE,
                 'max_correlation': MAX_CORRELATION,
-                'price_precision': PRICE_PRECISION,
-                'amount_precision': PRICE_PRECISION,
-                'max_order_size': 1000,
                 'leverage': DEFAULT_LEVERAGE,
-                'buy_threshold': 0.35,
-                'sell_threshold': -0.35,
-                'position_mode': "hedge",
                 "signal_thresholds": {
                     "long_entry": 0.25,  # Increased from 0.25 for stricter entry conditions
                     "short_entry": -0.25,  # Decreased from -0.25 for stricter entry conditions
@@ -171,14 +156,14 @@ def load_config() -> Dict[str, Any]:
                 'max_risk_per_position': 0.05,  # 5% of account balance
                 'min_stop_distance': 0.01,  # 0.5% minimum stop distance
                 'min_tp_distance': 0.03,  # 1% minimum take profit distance
-                'take_profit_multiplier': 2.0,  # R:R ratio
+                'take_profit_multiplier': 7.0,  # R:R ratio
                 
                 # Stop loss calculation parameters
                 'atr_multiplier': 1.5,  # ATR multiplier for stop loss calculation
                 'volatility_multiplier': 1.5,  # Volatility adjustment factor
                 'trend_multiplier': 1.2,  # Trend strength adjustment factor
                 'base_stop_distance': 0.02,  # Base stop distance (2%)
-                'stop_loss_atr_multiplier': 1.5,  # ATR multiplier for stop loss calculation
+                'stop_loss_atr_multiplier': 3.5,  # ATR multiplier for stop loss calculation
                 
                 # DCA parameters
                 'dca': {

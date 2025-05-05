@@ -366,7 +366,7 @@ class EnhancedTradingStrategy:
             
         except Exception as e:
             import traceback
-            traceback.print_exc()
+            logger.error(f"Traceback:\n{traceback.format_exc()}")
             logger.error(f"Error generating signals for {symbol}: {str(e)}")
             return None
 
@@ -499,10 +499,10 @@ class EnhancedTradingStrategy:
                 return False
                 
             # Check candlestick patterns với trọng số
-            pattern_score = self._check_candlestick_patterns(df, position_type)
-            if pattern_score < 0.6:  # Yêu cầu ít nhất 60% điểm
-                logger.info(f"Candlestick patterns conditions not met for {position_type}")
-                return False
+            # pattern_score = self._check_candlestick_patterns(df, position_type)
+            # if pattern_score < 0.6:  # Yêu cầu ít nhất 60% điểm
+            #     logger.info(f"Candlestick patterns conditions not met for {position_type}")
+            #     return False
                 
             # Check funding rate với ngưỡng động
             funding_threshold = 0.0002 * (1 + volatility)  # Tăng ngưỡng khi volatility cao
@@ -673,6 +673,7 @@ class EnhancedTradingStrategy:
                 logger.info(f"Volume profile data is missing or invalid")
                 return False
                 
+            diff_price_percent = 0.1
             # Get current price and value area
             current_price = volume_profile.get('current_price')
             value_area_high = volume_profile.get('value_area_high')
@@ -704,7 +705,7 @@ class EnhancedTradingStrategy:
                     return False
                     
                 # Check if current price is near value area low
-                if current_price > value_area_low * 1.02:  # Within 2% of value area low
+                if current_price > value_area_low * (1 + diff_price_percent):
                     logger.info(f"Current price not near value area low for LONG position: {current_price} {value_area_low}")
                     return False
                     
@@ -717,7 +718,7 @@ class EnhancedTradingStrategy:
                     return False
                     
                 # Check if current price is near value area high
-                if current_price < value_area_high * 0.98:  # Within 2% of value area high
+                if current_price < value_area_high * (1 - diff_price_percent):
                     logger.info(f"Current price not near value area high for SHORT position: {current_price} {value_area_high}")
                     return False
                     
@@ -1073,42 +1074,39 @@ class EnhancedTradingStrategy:
             if df is None or df.empty:
                 return False
                 
-            # Check if price moved significantly
-            if is_long_side(position["side"]):
-                price_change = (current_price - position["entryPrice"]) / position["entryPrice"]
-                if price_change > 0.02:  # 2% move
-                    # Update last update time
-                    self.binance_service._set_cached_data(cache_key, current_time)
-                    return True
-            else:
-                price_change = (position["entryPrice"] - current_price) / position["entryPrice"]
-                if price_change > 0.02:  # 2% move
-                    # Update last update time
-                    self.binance_service._set_cached_data(cache_key, current_time)
-                    return True
+            # Ensure all numeric values are properly converted to float
+            try:
+                logger.info(f"position: {position}")
+                logger.info(f"current_price: {current_price}")
+                entry_price = float(position.get("entryPrice", 0))
+                current_price = float(current_price)
+                
+                if entry_price <= 0:
+                    logger.error(f"Invalid entry price for {position['symbol']}: {entry_price}")
+                    return False
                     
-            # # Check if trend is strengthening with confirmation
-            # current_trend = self.get_trend(df)
-            # if is_long_side(position["side"]):
-            #     if current_trend == "UP":
-            #         # Check if price is above EMA and volume is increasing
-            #         if (current_price > df['EMA_FAST'].iloc[-1] and 
-            #             df['volume'].iloc[-1] > df['volume'].iloc[-2] * 1.2):
-            #             # Update last update time
-            #             self.binance_service._set_cached_data(cache_key, current_time)
-            #             return True
-            # else:
-            #     if current_trend == "DOWN":
-            #         # Check if price is below EMA and volume is increasing
-            #         if (current_price < df['EMA_FAST'].iloc[-1] and 
-            #             df['volume'].iloc[-1] > df['volume'].iloc[-2] * 1.2):
-            #             # Update last update time
-            #             self.binance_service._set_cached_data(cache_key, current_time)
-            #             return True
+                # Check if price moved significantly
+                if is_long_side(position["side"]):
+                    price_change = (current_price - entry_price) / entry_price
+                    if price_change > 0.02:  # 2% move
+                        # Update last update time
+                        self.binance_service._set_cached_data(cache_key, current_time)
+                        return True
+                else:
+                    price_change = (entry_price - current_price) / entry_price
+                    if price_change > 0.02:  # 2% move
+                        # Update last update time
+                        self.binance_service._set_cached_data(cache_key, current_time)
+                        return True
+            except (ValueError, TypeError) as e:
+                logger.error(f"Error converting numeric values for {position['symbol']}: {str(e)}")
+                return False
                     
             return False
             
         except Exception as e:
+            import traceback
+            logger.error(f"Traceback:\n{traceback.format_exc()}")
             logger.error(f"Error checking stop update: {str(e)}")
             return False
             
@@ -1951,26 +1949,93 @@ class EnhancedTradingStrategy:
                 return None
                 
             # Get DCA configuration
-            # dca_config = self.config['risk_management']['dca']
-            
-            # Calculate base DCA size based on price movement
-            # For LONG: price_drop is positive (price decreased)
-            # For SHORT: price_drop is negative (price increased)
-            price_movement = abs(price_drop)  # Use absolute value for calculation
-            base_dca_size = current_size * (price_movement / 100.0)
-            
-            # Final validation
-            if base_dca_size <= 0:
-                logger.error(f"Calculated invalid DCA size: {base_dca_size}")
+            dca_config = self.config['risk_management']['dca']
+            if not dca_config:
+                logger.error("No DCA configuration found")
                 return None
                 
-            logger.debug(f"DCA size calculation: current_size={current_size}, "
-                        f"price_drop={price_drop}, position_type={position_type}, "
-                        f"base_dca={base_dca_size}, final_dca={base_dca_size}")
-                        
-            return base_dca_size
+            # Get market conditions
+            market_conditions = await self._get_market_conditions(position_type)
+            if not market_conditions:
+                logger.error("Failed to get market conditions")
+                return None
+                
+            # Calculate base multiplier based on price drop
+            price_movement = abs(price_drop)
+            base_multiplier = 1.0
+            
+            # Adjust multiplier based on price drop thresholds
+            price_drop_thresholds = dca_config['price_drop_thresholds']
+            for i, threshold in enumerate(price_drop_thresholds):
+                if price_movement >= threshold:
+                    base_multiplier = 1.0 + (i * 0.5)  # Increase multiplier for larger drops
+                    break
+                    
+            # Adjust for market conditions
+            volatility = market_conditions.get('volatility', 'LOW')
+            if volatility == 'HIGH':
+                base_multiplier *= 0.8  # Reduce size in high volatility
+            elif volatility == 'LOW':
+                base_multiplier *= 1.2  # Increase size in low volatility
+                
+            # Adjust for trend strength
+            trend_strength = market_conditions.get('trend_strength', 0)
+            if trend_strength > 0.7:  # Strong trend
+                base_multiplier *= 1.2
+            elif trend_strength < 0.3:  # Weak trend
+                base_multiplier *= 0.8
+                
+            # Adjust for volume
+            volume_ratio = market_conditions.get('volume_ratio', 1.0)
+            if volume_ratio > 1.5:  # High volume
+                base_multiplier *= 1.2
+            elif volume_ratio < 0.8:  # Low volume
+                base_multiplier *= 0.8
+                
+            # Calculate time-based adjustment
+            last_dca_time = self._last_dca_time.get(position_type, 0)
+            time_since_last_dca = time.time() - last_dca_time
+            
+            time_windows = dca_config['time_based_adjustment']['time_windows']
+            size_multipliers = dca_config['time_based_adjustment']['size_multipliers']
+            
+            time_multiplier = 1.0
+            for window, multiplier in zip(time_windows, size_multipliers):
+                if time_since_last_dca >= window:
+                    time_multiplier = multiplier
+                    break
+                    
+            # Apply risk reduction for each DCA attempt
+            dca_attempts = market_conditions.get(f'{position_type.lower()}_dca_attempts', 0)
+            risk_reduction = dca_config['risk_reduction']
+            risk_multiplier = 1.0 - (dca_attempts * risk_reduction)
+            
+            # Calculate final DCA size
+            dca_size = current_size * base_multiplier * time_multiplier * risk_multiplier
+            
+            # Apply risk control limits
+            max_position_size = dca_config['risk_control']['max_position_size']
+            account_balance = await self.binance_service.get_account_balance()
+            if account_balance:
+                usdt_balance = float(account_balance.get('USDT', {}).get('total', 0))
+                max_allowed_size = usdt_balance * max_position_size
+                dca_size = min(dca_size, max_allowed_size)
+                
+            # Final validation
+            if dca_size <= 0:
+                logger.error(f"Calculated invalid DCA size: {dca_size}")
+                return None
+                
+            logger.info(f"DCA size calculation: current_size={current_size}, "
+                       f"price_drop={price_drop}, position_type={position_type}, "
+                       f"base_multiplier={base_multiplier}, time_multiplier={time_multiplier}, "
+                       f"risk_multiplier={risk_multiplier}, final_dca={dca_size}")
+                       
+            return dca_size
             
         except Exception as e:
+            import traceback
+            logger.error(f"Traceback:\n{traceback.format_exc()}")
             logger.error(f"Error calculating DCA size: {str(e)}")
             return None
 
@@ -2898,17 +2963,19 @@ class EnhancedTradingStrategy:
                 logger.warning("Empty DataFrame provided for volume score calculation")
                 return 0.0
                 
-            # Calculate volume moving average
+            # Calculate volume metrics
             volume_ma = df["volume"].rolling(window=20).mean()
-            
-            # Calculate volume ratio
+            volume_std = df["volume"].rolling(window=20).std()
             volume_ratio = df["volume"].iloc[-1] / volume_ma.iloc[-1]
             
+            # Calculate volume trend (3-period)
+            volume_trend = (df["volume"].iloc[-1] / df["volume"].iloc[-3]) - 1
+            
             if position_type == "LONG":
-                # For LONG: higher volume is better
-                if volume_ratio >= 2.0:  # Very high volume
+                # For LONG: higher volume is better, but need to consider trend
+                if volume_ratio >= 2.0 and volume_trend > 0:  # Very high volume with uptrend
                     return 1.0
-                elif volume_ratio >= 1.5:  # High volume
+                elif volume_ratio >= 1.5 and volume_trend > 0:  # High volume with uptrend
                     return 0.8
                 elif volume_ratio >= 1.2:  # Above average volume
                     return 0.6
@@ -2921,21 +2988,19 @@ class EnhancedTradingStrategy:
                 else:  # Very low volume
                     return -0.4
             else:  # SHORT
-                # For SHORT: lower volume is better
-                if volume_ratio <= 0.5:  # Very low volume
-                    return 1.0
-                elif volume_ratio <= 0.8:  # Low volume
-                    return 0.8
-                elif volume_ratio <= 1.0:  # Below average volume
-                    return 0.6
-                elif volume_ratio <= 1.2:  # Average volume
-                    return 0.4
-                elif volume_ratio <= 1.5:  # Above average volume
-                    return 0.2
-                elif volume_ratio <= 2.0:  # High volume
-                    return -0.2
-                else:  # Very high volume
+                # For SHORT: moderate volume is better, avoid extreme low/high
+                if 0.8 <= volume_ratio <= 1.2:  # Moderate volume
+                    return -1.0  # Negative score for SHORT
+                elif 0.6 <= volume_ratio <= 1.4:  # Slightly below/above moderate
+                    return -0.8
+                elif 0.4 <= volume_ratio <= 1.6:  # Below/above moderate
+                    return -0.6
+                elif 0.3 <= volume_ratio <= 2.0:  # Low/high volume
                     return -0.4
+                elif 0.2 <= volume_ratio <= 2.5:  # Very low/high volume
+                    return -0.2
+                else:  # Extreme volume
+                    return 0.4  # Positive score for extreme volume (unfavorable for SHORT)
                 
         except Exception as e:
             logger.error(f"Error calculating volume score: {str(e)}")
@@ -2951,22 +3016,22 @@ class EnhancedTradingStrategy:
             avg_volatility = btc_volatility.get('avg_volatility', current_volatility)
             
             if position_type == "LONG":
-                # Cho LONG: volatility thấp hơn trung bình là tốt
+                # For LONG: lower volatility is better
                 if current_volatility < avg_volatility:
                     return 1.0
                 else:
-                    # Tính điểm giảm dần khi volatility tăng
+                    # Calculate decreasing score as volatility increases
                     volatility_ratio = current_volatility / avg_volatility
                     return max(0, 1 - (volatility_ratio - 1))
                     
             else:  # SHORT
-                # Cho SHORT: volatility cao hơn trung bình là tốt
+                # For SHORT: higher volatility is better
                 if current_volatility > avg_volatility:
-                    return 1.0
+                    return -1.0  # Negative score for SHORT
                 else:
-                    # Tính điểm giảm dần khi volatility giảm
+                    # Calculate increasing negative score as volatility decreases
                     volatility_ratio = avg_volatility / current_volatility
-                    return max(0, 1 - (volatility_ratio - 1))
+                    return -max(0, 1 - (volatility_ratio - 1))  # Negative score
                     
         except Exception as e:
             logger.error(f"Error calculating volatility score: {str(e)}")
@@ -2990,22 +3055,22 @@ class EnhancedTradingStrategy:
                 return 0.0
                 
             if position_type == "LONG":
-                # Cho LONG: correlation cao là tốt
+                # For LONG: higher correlation is better
                 if correlation > avg_correlation:
                     return 1.0
                 else:
-                    # Tính điểm giảm dần khi correlation giảm
+                    # Calculate decreasing score as correlation decreases
                     correlation_ratio = correlation / avg_correlation
                     return max(0, min(1, correlation_ratio))  # Ensure score is between 0 and 1
                     
             else:  # SHORT
-                # Cho SHORT: correlation thấp là tốt
+                # For SHORT: lower correlation is better
                 if correlation < avg_correlation:
-                    return 1.0
+                    return -1.0  # Negative score for SHORT
                 else:
-                    # Tính điểm giảm dần khi correlation tăng
+                    # Calculate increasing negative score as correlation increases
                     correlation_ratio = avg_correlation / correlation
-                    return max(0, min(1, correlation_ratio))  # Ensure score is between 0 and 1
+                    return -max(0, min(1, correlation_ratio))  # Negative score between -1 and 0
                     
         except Exception as e:
             logger.error(f"Error calculating correlation score: {str(e)}")
@@ -3021,22 +3086,22 @@ class EnhancedTradingStrategy:
             avg_sentiment = sentiment.get('avg_sentiment', current_sentiment)
             
             if position_type == "LONG":
-                # Cho LONG: sentiment cao là tốt
+                # For LONG: higher sentiment is better
                 if current_sentiment > avg_sentiment:
                     return 1.0
                 else:
-                    # Tính điểm giảm dần khi sentiment giảm
+                    # Calculate decreasing score as sentiment drops
                     sentiment_ratio = current_sentiment / avg_sentiment
                     return max(0, sentiment_ratio)
                     
             else:  # SHORT
-                # Cho SHORT: sentiment thấp là tốt
+                # For SHORT: lower sentiment is better
                 if current_sentiment < avg_sentiment:
-                    return 1.0
+                    return -1.0  # Negative score for favorable SHORT conditions
                 else:
-                    # Tính điểm giảm dần khi sentiment tăng
-                    sentiment_ratio = avg_sentiment / current_sentiment
-                    return max(0, sentiment_ratio)
+                    # Calculate increasing negative score as sentiment rises
+                    sentiment_ratio = current_sentiment / avg_sentiment
+                    return -min(1.0, sentiment_ratio)  # Negative score, more negative as sentiment rises
                     
         except Exception as e:
             logger.error(f"Error calculating sentiment score: {str(e)}")
@@ -3064,7 +3129,7 @@ class EnhancedTradingStrategy:
                     # Calculate strength based on distance to support
                     if nearest_support > 0:
                         distance = (current_price - nearest_support) / current_price
-                        return max(0.5, 1.0 - distance)
+                        return max(0.5, 1.0 - distance)  # Positive score for LONG
                     return 0.5
                 elif structure == "resistance":
                     return 0.0
@@ -3077,12 +3142,12 @@ class EnhancedTradingStrategy:
                     # Calculate strength based on distance to resistance
                     if nearest_resistance > 0:
                         distance = (nearest_resistance - current_price) / current_price
-                        return max(0.5, 1.0 - distance)
-                    return 0.5
+                        return -max(0.5, 1.0 - distance)  # Negative score for SHORT
+                    return -0.5
                 elif structure == "support":
                     return 0.0
                 else:  # neutral
-                    return 0.3
+                    return -0.3  # Negative score for neutral structure in SHORT
                     
         except Exception as e:
             logger.error(f"Error calculating structure score: {str(e)}")
@@ -3099,36 +3164,36 @@ class EnhancedTradingStrategy:
             total_volume = sum(node['volume'] for node in high_volume_nodes)
             
             if position_type == "LONG":
-                # Cho LONG: kiểm tra volume ở các mức giá thấp
+                # For LONG: check volume at lower price levels
                 low_price_nodes = [node for node in high_volume_nodes if node['price'] < current_price]
                 if not low_price_nodes:
                     return 0.0
                     
-                # Tính tỷ lệ volume ở các mức giá thấp
+                # Calculate volume ratio at lower prices
                 low_price_volume = sum(node['volume'] for node in low_price_nodes)
                 volume_ratio = low_price_volume / total_volume
                 
-                # Tính điểm dựa trên tỷ lệ volume
-                if volume_ratio > 0.5:  # Hơn 50% volume ở mức giá thấp
+                # Calculate score based on volume ratio
+                if volume_ratio > 0.5:  # More than 50% volume at lower prices
                     return 1.0
                 else:
-                    return volume_ratio * 2  # Tỷ lệ thuận với volume ratio
+                    return volume_ratio * 2  # Proportional to volume ratio
                     
             else:  # SHORT
-                # Cho SHORT: kiểm tra volume ở các mức giá cao
+                # For SHORT: check volume at higher price levels
                 high_price_nodes = [node for node in high_volume_nodes if node['price'] > current_price]
                 if not high_price_nodes:
                     return 0.0
                     
-                # Tính tỷ lệ volume ở các mức giá cao
+                # Calculate volume ratio at higher prices
                 high_price_volume = sum(node['volume'] for node in high_price_nodes)
                 volume_ratio = high_price_volume / total_volume
                 
-                # Tính điểm dựa trên tỷ lệ volume
-                if volume_ratio > 0.5:  # Hơn 50% volume ở mức giá cao
-                    return 1.0
+                # Calculate negative score based on volume ratio
+                if volume_ratio > 0.5:  # More than 50% volume at higher prices
+                    return -1.0  # Negative score for SHORT
                 else:
-                    return volume_ratio * 2  # Tỷ lệ thuận với volume ratio
+                    return -volume_ratio * 2  # Negative score proportional to volume ratio
                     
         except Exception as e:
             logger.error(f"Error calculating volume profile score: {str(e)}")
@@ -3141,21 +3206,21 @@ class EnhancedTradingStrategy:
                 return 0.0
                 
             if position_type == "LONG":
-                # Cho LONG: funding rate âm là tốt
-                if funding_rate < -0.0001:  # Funding rate âm đáng kể
+                # For LONG: negative funding rate is good
+                if funding_rate < -0.0001:  # Significant negative funding rate
                     return 1.0
-                elif funding_rate < 0:  # Funding rate âm nhẹ
+                elif funding_rate < 0:  # Slight negative funding rate
                     return 0.5
-                else:  # Funding rate dương
+                else:  # Positive funding rate
                     return -0.5
             else:  # SHORT
-                # Cho SHORT: funding rate dương là tốt
-                if funding_rate > 0.0001:  # Funding rate dương đáng kể
-                    return 1.0
-                elif funding_rate > 0:  # Funding rate dương nhẹ
-                    return 0.5
-                else:  # Funding rate âm
-                    return -0.5
+                # For SHORT: positive funding rate is good
+                if funding_rate > 0.0001:  # Significant positive funding rate
+                    return -1.0  # Negative score for SHORT
+                elif funding_rate > 0:  # Slight positive funding rate
+                    return -0.5  # Negative score for SHORT
+                else:  # Negative funding rate
+                    return 0.5  # Positive score for unfavorable SHORT conditions
                     
         except Exception as e:
             logger.error(f"Error calculating funding rate score: {str(e)}")
@@ -3172,12 +3237,14 @@ class EnhancedTradingStrategy:
             
             if position_type == "LONG":
                 # For LONG: Higher OI is better
-                return normalized_oi
+                return normalized_oi  # Positive score (0.1 to 1.0)
             else:  # SHORT
                 # For SHORT: Lower OI is better
-                return 1.0 - normalized_oi
+                return -(1.0 - normalized_oi)  # Negative score (-0.9 to 0.0)
                     
         except Exception as e:
+            import traceback
+            logger.error(f"Traceback:\n{traceback.format_exc()}")
             logger.error(f"Error calculating open interest score: {str(e)}")
             return 0.0
 
@@ -3197,21 +3264,21 @@ class EnhancedTradingStrategy:
             depth_ratio = bid_depth / ask_depth
             
             if position_type == "LONG":
-                # Cho LONG: bid depth cao hơn ask depth là tốt
-                if depth_ratio > 1.5:  # Bid depth cao hơn nhiều
+                # For LONG: higher bid depth is better
+                if depth_ratio > 1.5:  # Significantly higher bid depth
                     return 1.0
-                elif depth_ratio > 1.2:  # Bid depth cao hơn
+                elif depth_ratio > 1.2:  # Moderately higher bid depth
                     return 0.5
-                else:  # Bid depth thấp hơn
+                else:  # Lower bid depth
                     return -0.5
             else:  # SHORT
-                # Cho SHORT: ask depth cao hơn bid depth là tốt
-                if depth_ratio < 0.67:  # Ask depth cao hơn nhiều
-                    return 1.0
-                elif depth_ratio < 0.83:  # Ask depth cao hơn
-                    return 0.5
-                else:  # Ask depth thấp hơn
-                    return -0.5
+                # For SHORT: higher ask depth is better (negative score)
+                if depth_ratio < 0.67:  # Significantly higher ask depth
+                    return -1.0  # Negative score for SHORT
+                elif depth_ratio < 0.83:  # Moderately higher ask depth
+                    return -0.5  # Negative score for SHORT
+                else:  # Lower ask depth
+                    return 0.5  # Positive score for unfavorable SHORT conditions
                     
         except Exception as e:
             logger.error(f"Error calculating order book score: {str(e)}")
@@ -3739,18 +3806,18 @@ class EnhancedTradingStrategy:
                 else:  # No bullish timeframes
                     return -0.5
             else:  # SHORT
-                # For SHORT: count bearish timeframes and average their strengths
+                # For SHORT: count bearish timeframes and average their strengths (negative scores)
                 bearish_count = sum(1 for trend in trends.values() if trend == 'DOWNTREND')
                 bearish_strength = sum(strengths[tf] for tf, trend in trends.items() if trend == 'DOWNTREND')
                 
                 if bearish_count == 3:  # All timeframes bearish
-                    return 1.0
+                    return -1.0  # Negative score for SHORT
                 elif bearish_count == 2:  # Two timeframes bearish
-                    return 0.7 + (bearish_strength / 200)  # Add up to 0.3 based on strength
+                    return -(0.7 + (bearish_strength / 200))  # Negative score with strength bonus
                 elif bearish_count == 1:  # One timeframe bearish
-                    return 0.3 + (bearish_strength / 300)  # Add up to 0.2 based on strength
+                    return -(0.3 + (bearish_strength / 300))  # Negative score with strength bonus
                 else:  # No bearish timeframes
-                    return -0.5
+                    return 0.5  # Positive score for unfavorable SHORT conditions
                     
         except Exception as e:
             logger.error(f"Error calculating timeframe score: {str(e)}")
