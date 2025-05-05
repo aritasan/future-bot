@@ -4,7 +4,7 @@ Service for managing technical indicators and data caching.
 import logging
 from typing import Dict, Optional
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import timedelta
 import ccxt.async_support as ccxt
 import asyncio
 import platform
@@ -41,12 +41,25 @@ class IndicatorService:
             "4h": 3600,  # 1 hour for 4h data
         }
         self._last_update = {}
-        self._time_offset = 0  # Time difference between local and server time
-        self._last_sync_time = 0  # Last time synchronization timestamp
-        self._sync_interval = 300  # Sync every 5 minutes
-        self._max_retries = 3  # Maximum number of retries
-        self._retry_delay = 1  # Initial retry delay in seconds
-        self._max_retry_delay = 32  # Maximum retry delay in seconds
+        self._time_offset = 0
+        self._last_sync_time = 0
+        self._sync_interval = 300
+        self._max_retries = 3
+        self._retry_delay = 1
+        self._max_retry_delay = 32
+        self._request_count = 0
+        self._last_request_time = 0
+        self._rate_limit = 2000  # Reduced from 2400 to be safe
+        self._rate_limit_window = 60  # 60 seconds
+        self._rate_limit_queue = asyncio.Queue()
+        self._rate_limit_task = None
+        self._ws_connections = {}
+        self._ws_subscriptions = {}
+        self._ws_data = {}
+        self._last_error_time = 0
+        self._error_count = 0
+        self._max_errors = 5
+        self._error_window = 300  # 5 minutes
         
     async def initialize(self) -> bool:
         """Initialize the indicator service.
@@ -134,113 +147,219 @@ class IndicatorService:
             # Force sync on next request
             self._last_sync_time = 0
 
+    async def _setup_websocket(self, symbol: str, channel: str) -> None:
+        """Setup websocket connection for a symbol and channel."""
+        try:
+            if symbol not in self._ws_connections:
+                self._ws_connections[symbol] = {}
+                
+            if channel not in self._ws_connections[symbol]:
+                # Check if websocket method is supported
+                try:
+                    if channel == 'ticker':
+                        # Fallback to REST API for ticker
+                        ticker = await self._make_request(self.exchange.fetch_ticker, symbol)
+                        if ticker:
+                            self._ws_data[symbol] = ticker
+                            self._cache[f"{symbol}_ticker"] = {
+                                'data': ticker,
+                                'timestamp': time.time()
+                            }
+                        return
+                        
+                    elif channel == 'orderbook':
+                        ws = await self.exchange.watch_order_book(symbol)
+                    elif channel == 'trades':
+                        ws = await self.exchange.watch_trades(symbol)
+                    else:
+                        raise ValueError(f"Unsupported websocket channel: {channel}")
+                        
+                    self._ws_connections[symbol][channel] = ws
+                    self._ws_data[symbol] = {}
+                    
+                    # Start background task to process websocket data
+                    asyncio.create_task(self._process_ws_data(symbol, channel))
+                    
+                except Exception as e:
+                    if "not supported" in str(e).lower():
+                        # Fallback to REST API for unsupported methods
+                        await self._fallback_to_rest_api(symbol, channel)
+                    else:
+                        raise e
+                        
+        except Exception as e:
+            logger.error(f"Error setting up websocket for {symbol} {channel}: {str(e)}")
+            await self._fallback_to_rest_api(symbol, channel)
+            
+    async def _fallback_to_rest_api(self, symbol: str, channel: str) -> None:
+        """Fallback to REST API when websocket fails or is not supported."""
+        try:
+            if channel == 'ticker':
+                data = await self._make_request(self.exchange.fetch_ticker, symbol)
+            elif channel == 'orderbook':
+                data = await self._make_request(self.exchange.fetch_order_book, symbol)
+            elif channel == 'trades':
+                data = await self._make_request(self.exchange.fetch_trades, symbol)
+            else:
+                return
+                
+            if data:
+                self._ws_data[symbol] = data
+                self._cache[f"{symbol}_{channel}"] = {
+                    'data': data,
+                    'timestamp': time.time()
+                }
+                
+        except Exception as e:
+            logger.error(f"Error in REST API fallback for {symbol} {channel}: {str(e)}")
+            
+    async def _process_ws_data(self, symbol: str, channel: str) -> None:
+        """Process websocket data for a symbol and channel."""
+        try:
+            ws = self._ws_connections[symbol][channel]
+            while True:
+                data = await ws.recv()
+                self._ws_data[symbol] = data
+                
+        except Exception as e:
+            logger.error(f"Error processing websocket data for {symbol} {channel}: {str(e)}")
+            await self._cleanup_websocket(symbol, channel)
+            
+    async def _cleanup_websocket(self, symbol: str, channel: str) -> None:
+        """Cleanup websocket connection."""
+        try:
+            if symbol in self._ws_connections and channel in self._ws_connections[symbol]:
+                await self._ws_connections[symbol][channel].close()
+                del self._ws_connections[symbol][channel]
+                if not self._ws_connections[symbol]:
+                    del self._ws_connections[symbol]
+                if symbol in self._ws_data:
+                    del self._ws_data[symbol]
+                    
+        except Exception as e:
+            logger.error(f"Error cleaning up websocket for {symbol} {channel}: {str(e)}")
+            
+    async def _rate_limit_handler(self) -> None:
+        """Handle rate limiting by queueing requests."""
+        while True:
+            try:
+                current_time = time.time()
+                
+                # Check error rate
+                if self._error_count >= self._max_errors:
+                    if current_time - self._last_error_time < self._error_window:
+                        # Too many errors, wait longer
+                        await asyncio.sleep(self._error_window)
+                        self._error_count = 0
+                        self._last_error_time = current_time
+                    else:
+                        self._error_count = 0
+                
+                # Check rate limit
+                if self._request_count >= self._rate_limit:
+                    # Wait until rate limit window resets
+                    wait_time = self._rate_limit_window - (current_time - self._last_request_time)
+                    if wait_time > 0:
+                        await asyncio.sleep(wait_time)
+                    self._request_count = 0
+                    self._last_request_time = current_time
+                    
+                # Process queued requests
+                while not self._rate_limit_queue.empty():
+                    request = await self._rate_limit_queue.get()
+                    try:
+                        await request
+                    except Exception as e:
+                        logger.error(f"Error processing queued request: {str(e)}")
+                        self._error_count += 1
+                        self._last_error_time = current_time
+                    finally:
+                        self._rate_limit_queue.task_done()
+                        
+                await asyncio.sleep(0.1)
+                
+            except Exception as e:
+                logger.error(f"Error in rate limit handler: {str(e)}")
+                await asyncio.sleep(1)
+                
     async def _make_request(self, func, *args, **kwargs):
-        """Make a request with retry mechanism and time synchronization."""
+        """Make a request with rate limiting and retry mechanism."""
         retries = 0
         last_error = None
 
         while retries < self._max_retries:
             try:
-                # Sync time before making request
-                await self._sync_time()
-                
-                # Add timestamp to request if needed
-                if 'params' in kwargs:
-                    if 'timestamp' not in kwargs['params']:
-                        kwargs['params']['timestamp'] = int(time.time() * 1000) + self._time_offset
-                    if 'recvWindow' not in kwargs['params']:
-                        kwargs['params']['recvWindow'] = 60000  # 60 seconds
-                
+                # Check rate limit
+                current_time = time.time()
+                if current_time - self._last_request_time >= self._rate_limit_window:
+                    self._request_count = 0
+                    self._last_request_time = current_time
+                    
+                if self._request_count >= self._rate_limit:
+                    # Queue request if rate limit exceeded
+                    await self._rate_limit_queue.put(func(*args, **kwargs))
+                    return await self._rate_limit_queue.get()
+                    
+                # Make request
+                self._request_count += 1
                 result = await func(*args, **kwargs)
                 return result
+                
             except Exception as e:
                 last_error = e
                 retries += 1
                 
                 if '-1021' in str(e):  # Timestamp error
                     logger.warning(f"Timestamp error detected: {str(e)}. Forcing time sync...")
-                    self._last_sync_time = 0  # Force sync on next attempt
+                    self._last_sync_time = 0
                     await self._sync_time()
                     continue
-                
+                    
                 if retries < self._max_retries:
                     delay = min(self._retry_delay * (2 ** (retries - 1)), self._max_retry_delay)
                     logger.warning(f"Request failed, retrying in {delay}s (attempt {retries}/{self._max_retries})")
                     await asyncio.sleep(delay)
                 else:
                     logger.error(f"Request failed after {retries} attempts: {str(last_error)}")
+                    self._error_count += 1
+                    self._last_error_time = time.time()
                     raise last_error
 
     async def get_historical_data(self, symbol: str, timeframe: str = "5m", limit: int = 100) -> Optional[pd.DataFrame]:
-        """Get historical price data with caching and retry mechanism.
-        
-        Args:
-            symbol: Trading pair symbol
-            timeframe: Timeframe for data
-            limit: Number of candles to fetch
-            
-        Returns:
-            Optional[pd.DataFrame]: Historical price data
-        """
+        """Get historical data with improved caching and rate limiting."""
         try:
-            if not self._is_initialized:
-                logger.error("Indicator service not initialized")
-                return None
-                
-            if self._is_closed:
-                logger.error("Indicator service is closed")
-                return None
-                
+            # Check cache first
             cache_key = f"{symbol}_{timeframe}_{limit}"
-            current_time = datetime.now()
+            if cache_key in self._cache:
+                cache_data = self._cache[cache_key]
+                if time.time() - cache_data['timestamp'] < self._cache_ttl.get(timeframe, 60):
+                    return cache_data['data']
+                    
+            # Get data from exchange
+            data = await self._make_request(
+                self.exchange.fetch_ohlcv,
+                symbol,
+                timeframe=timeframe,
+                limit=limit
+            )
             
-            # Check cache
-            if cache_key in self.data_cache:
-                cached_data, timestamp = self.data_cache[cache_key]
-                if current_time - timestamp < self.cache_expiry:
-                    return cached_data
-                    
-            # Fetch new data with retry mechanism
-            for attempt in range(self.max_retries):
-                try:
-                    # Use the same event loop for all operations
-                    ohlcv = await self._make_request(
-                        self.exchange.fetch_ohlcv,
-                        symbol,
-                        timeframe=timeframe,
-                        limit=limit
-                    )
-                    
-                    # Convert to DataFrame
-                    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-                    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-                    df.set_index('timestamp', inplace=True)
-                    
-                    # Validate data
-                    if df.empty or len(df) < 2:
-                        logger.warning(f"Not enough data for {symbol} {timeframe}")
-                        return None
-                        
-                    # Check for missing values
-                    if df.isnull().any().any():
-                        logger.warning(f"Missing values in data for {symbol} {timeframe}")
-                        df = df.ffill().bfill()
-                        
-                    # Update cache
-                    self.data_cache[cache_key] = (df, current_time)
-                    
-                    return df
-                    
-                except Exception as e:
-                    if attempt < self.max_retries - 1:
-                        logger.warning(f"Attempt {attempt + 1} failed for {symbol}: {str(e)}")
-                        await asyncio.sleep(self.retry_delay)
-                    else:
-                        logger.error(f"Error fetching historical data for {symbol}: {str(e)}")
-                        return None
-                        
+            if data:
+                df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                df.set_index('timestamp', inplace=True)
+                
+                # Update cache
+                self._cache[cache_key] = {
+                    'data': df,
+                    'timestamp': time.time()
+                }
+                
+                return df
+                
+            return None
+            
         except Exception as e:
-            logger.error(f"Error in get_historical_data for {symbol}: {str(e)}")
+            logger.error(f"Error getting historical data for {symbol}: {str(e)}")
             return None
             
     async def calculate_indicators(self, symbol: str, timeframe: str = "5m", limit: int = 100) -> Optional[pd.DataFrame]:

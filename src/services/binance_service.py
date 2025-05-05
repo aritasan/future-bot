@@ -3,9 +3,9 @@ Service for interacting with Binance exchange.
 """
 
 import logging
-from typing import Dict, Optional, List, Any
+from typing import Dict, Optional, List, Any, Callable
 import ccxt.async_support as ccxt
-from datetime import timedelta
+from datetime import datetime
 import time
 import asyncio
 from src.utils.helpers import is_same_symbol, is_same_side, is_long_side
@@ -22,35 +22,35 @@ class BinanceService:
             config: Configuration dictionary
         """
         self.config = config
+        self.exchange = None
         self._is_initialized = False
         self._is_closed = False
-        self.exchange = None
-        self.order_cache = {}
-        self.balance_cache = {}
-        self.position_cache = {}
-        self.cache_expiry = timedelta(minutes=5)
-        self.last_update = {}
-        self._market_cache = {}
-        self._position_cache = {}
-        self._balance_cache = {}
+        self._cache = {}
         self._cache_ttl = {
-            'market': 60,  # 1 minute
-            'ticker': 30,  # 30 seconds
-            'order': 30,   # 30 seconds
-            'position': 30, # 30 seconds
-            'balance': 60,  # 1 minute
-            'klines': 60,   # 1 minute
-            'markets': 3600 # 1 hour
+            "orders": 5,  # 5 minutes
+            "balances": 5,
+            "positions": 5,
+            "tickers": 1,  # 1 minute
+            "orderbook": 1,
+            "trades": 1,
         }
+        self._last_update = {}
         self._time_offset = 0
         self._last_sync_time = 0
-        self._sync_interval = 300  # 5 minutes
+        self._sync_interval = 300
         self._max_retries = 3
         self._retry_delay = 1
         self._max_retry_delay = 32
-        self._cache = {}  # Unified cache storage
+        self._request_count = 0
+        self._last_request_time = 0
+        self._rate_limit = 2400
+        self._rate_limit_window = 60
+        self._rate_limit_queue = asyncio.Queue()
+        self._rate_limit_task = None
         self._ws_connections = {}
         self._ws_subscriptions = {}
+        self._ws_data = {}
+        self._ws_callbacks = {}
         
     async def initialize(self) -> bool:
         """Initialize the Binance service.
@@ -177,8 +177,6 @@ class BinanceService:
             return main_order
             
         except Exception as e:
-            import traceback
-            traceback.print_exc()
             logger.error(f"Error placing order: {str(e)}")
             return None
             
@@ -541,30 +539,29 @@ class BinanceService:
         except Exception as e:
             logger.error(f"Error cleaning up orders: {str(e)}")
             return None
-    async def get_ticker(self, symbol: str) -> Optional[Dict]:
-        """Get ticker information for a symbol."""
+    async def get_ticker(self, symbol: str) -> Dict:
+        """Get ticker data with REST API fallback."""
         try:
             # Check cache first
-            cache_key = f"ticker_{symbol}"
-            cached_data = await self._get_cached_data(cache_key)
-            if cached_data:
-                return cached_data
-
-            # Try to use WebSocket if available
-            if symbol in self._ws_connections and 'ticker' in self._ws_connections[symbol]:
-                ticker = await self._ws_connections[symbol]['ticker']
-                self._set_cached_data(cache_key, ticker)
-                return ticker
-
-            # Fallback to REST API
+            cache_key = f"{symbol}_ticker"
+            if cache_key in self._cache:
+                cache_data = self._cache[cache_key]
+                if time.time() - cache_data['timestamp'] < self._cache_ttl['tickers']:
+                    return cache_data['data']
+                    
+            # Use REST API directly since websocket is not supported
             ticker = await self._make_request(self.exchange.fetch_ticker, symbol)
             if ticker:
-                self._set_cached_data(cache_key, ticker)
-            return ticker
+                self._cache[cache_key] = {
+                    'data': ticker,
+                    'timestamp': time.time()
+                }
+            return ticker or {}
+            
         except Exception as e:
             logger.error(f"Error getting ticker for {symbol}: {str(e)}")
-            return None
-
+            return {}
+            
     async def get_current_price(self, symbol: str) -> Optional[float]:
         """Get current price for a symbol."""
         try:
@@ -651,21 +648,53 @@ class BinanceService:
             logger.error(f"Error closing Binance service: {str(e)}")
             
     async def get_market_data(self, symbol: str) -> Optional[Dict]:
-        """Get market data with caching."""
-        try:
-            cache_key = f"market_{symbol}"
-            cached_data = await self._get_cached_data(cache_key)
-            if cached_data:
-                return cached_data
+        """Get comprehensive market data for a trading pair.
+        
+        Args:
+            symbol: Trading pair symbol
             
-            # Fetch fresh data
-            data = await self._fetch_market_data(symbol)
-            if data:
-                self._set_cached_data(cache_key, data)
-            return data
+        Returns:
+            Optional[Dict]: Market data or None if error
+        """
+        try:
+            if not self._is_initialized:
+                logger.error("Binance service not initialized")
+                return None
+            
+            # Get multiple market data points concurrently
+            tasks = [
+                self.get_ticker(symbol),
+                self.get_funding_rate(symbol),
+                self.get_open_interest(symbol),
+                self.get_order_book(symbol)
+            ]
+            
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Check for errors
+            if any(isinstance(r, Exception) for r in results):
+                logger.error(f"Error getting market data for {symbol}")
+                return None
+            
+            ticker, funding_rate, open_interest, order_book = results
+            
+            if not all([ticker, funding_rate is not None, open_interest is not None, order_book]):
+                logger.error(f"Missing market data for {symbol}")
+                return None
+            
+            # Format market data
+            market_data = {
+                'ticker': ticker,
+                'funding_rate': funding_rate,
+                'open_interest': open_interest,
+                'order_book': order_book,
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            return market_data
             
         except Exception as e:
-            logger.error(f"Error getting market data: {str(e)}")
+            logger.error(f"Error getting market data for {symbol}: {str(e)}")
             return None
             
     async def get_position_statistics(self) -> Dict:
@@ -985,34 +1014,198 @@ class BinanceService:
         ttl = self._cache_ttl.get('market', 60) if 'market' in key else 60
         self._cache[key] = (data, time.time(), ttl)
 
-    async def _setup_websocket(self, symbol: str, channel: str) -> None:
-        """Setup WebSocket connection for a symbol and channel."""
+    async def _setup_websocket(self, symbol: str, channel: str, callback: Optional[Callable] = None) -> None:
+        """Setup websocket connection for a symbol and channel.
+        
+        Args:
+            symbol: Trading pair symbol
+            channel: Websocket channel (e.g. 'ticker', 'orderbook', 'trades')
+            callback: Optional callback function to handle websocket data
+        """
         try:
             if symbol not in self._ws_connections:
                 self._ws_connections[symbol] = {}
-            
+                
             if channel not in self._ws_connections[symbol]:
-                ws = await self.exchange.watch_ticker(symbol)
+                # Use supported websocket methods
+                if channel == 'ticker':
+                    # Fallback to REST API for ticker
+                    ticker = await self._make_request(self.exchange.fetch_ticker, symbol)
+                    if ticker:
+                        self._ws_data[symbol] = ticker
+                        self._cache[f"{symbol}_ticker"] = {
+                            'data': ticker,
+                            'timestamp': time.time()
+                        }
+                    return
+                    
+                elif channel == 'orderbook':
+                    ws = await self.exchange.watch_order_book(symbol)
+                elif channel == 'trades':
+                    ws = await self.exchange.watch_trades(symbol)
+                else:
+                    raise ValueError(f"Unsupported websocket channel: {channel}")
+                    
                 self._ws_connections[symbol][channel] = ws
-                logger.info(f"WebSocket connection established for {symbol} {channel}")
+                self._ws_data[symbol] = {}
+                self._ws_callbacks[symbol] = callback
+                
+                # Start background task to process websocket data
+                asyncio.create_task(self._process_ws_data(symbol, channel))
+                
         except Exception as e:
-            logger.error(f"Error setting up WebSocket for {symbol} {channel}: {str(e)}")
-
+            logger.error(f"Error setting up websocket for {symbol} {channel}: {str(e)}")
+            # Fallback to REST API
+            await self._fallback_to_rest_api(symbol, channel)
+            
+    async def _fallback_to_rest_api(self, symbol: str, channel: str) -> None:
+        """Fallback to REST API when websocket fails."""
+        try:
+            if channel == 'ticker':
+                data = await self._make_request(self.exchange.fetch_ticker, symbol)
+            elif channel == 'orderbook':
+                data = await self._make_request(self.exchange.fetch_order_book, symbol)
+            elif channel == 'trades':
+                data = await self._make_request(self.exchange.fetch_trades, symbol)
+            else:
+                return
+                
+            if data:
+                self._ws_data[symbol] = data
+                self._cache[f"{symbol}_{channel}"] = {
+                    'data': data,
+                    'timestamp': time.time()
+                }
+                
+        except Exception as e:
+            logger.error(f"Error in REST API fallback for {symbol} {channel}: {str(e)}")
+            
+    async def _process_ws_data(self, symbol: str, channel: str) -> None:
+        """Process websocket data for a symbol and channel."""
+        try:
+            ws = self._ws_connections[symbol][channel]
+            while True:
+                data = await ws.recv()
+                self._ws_data[symbol] = data
+                
+                # Update cache
+                self._cache[f"{symbol}_{channel}"] = {
+                    'data': data,
+                    'timestamp': time.time()
+                }
+                
+                # Call callback if provided
+                if symbol in self._ws_callbacks and self._ws_callbacks[symbol]:
+                    await self._ws_callbacks[symbol](data)
+                    
+        except Exception as e:
+            logger.error(f"Error processing websocket data for {symbol} {channel}: {str(e)}")
+            await self._cleanup_websocket(symbol, channel)
+            
     async def _cleanup_websocket(self, symbol: str, channel: str) -> None:
-        """Cleanup WebSocket connection."""
+        """Cleanup websocket connection."""
         try:
             if symbol in self._ws_connections and channel in self._ws_connections[symbol]:
                 await self._ws_connections[symbol][channel].close()
                 del self._ws_connections[symbol][channel]
-                logger.info(f"WebSocket connection closed for {symbol} {channel}")
+                if not self._ws_connections[symbol]:
+                    del self._ws_connections[symbol]
+                if symbol in self._ws_data:
+                    del self._ws_data[symbol]
+                if symbol in self._ws_callbacks:
+                    del self._ws_callbacks[symbol]
+                    
         except Exception as e:
-            logger.error(f"Error cleaning up WebSocket for {symbol} {channel}: {str(e)}")
+            logger.error(f"Error cleaning up websocket for {symbol} {channel}: {str(e)}")
+            
+    async def get_orderbook(self, symbol: str) -> Dict:
+        """Get orderbook data with websocket support."""
+        try:
+            # Check cache first
+            cache_key = f"{symbol}_orderbook"
+            if cache_key in self._cache:
+                cache_data = self._cache[cache_key]
+                if time.time() - cache_data['timestamp'] < self._cache_ttl['orderbook']:
+                    return cache_data['data']
+                    
+            # Setup websocket if not already connected
+            if symbol not in self._ws_connections or 'orderbook' not in self._ws_connections[symbol]:
+                await self._setup_websocket(symbol, 'orderbook')
+                
+            # Return websocket data if available
+            if symbol in self._ws_data:
+                return self._ws_data[symbol]
+                
+            # Fallback to REST API
+            return await self._make_request(self.exchange.fetch_order_book, symbol)
+            
+        except Exception as e:
+            logger.error(f"Error getting orderbook for {symbol}: {str(e)}")
+            return {}
+            
+    async def get_trades(self, symbol: str) -> List[Dict]:
+        """Get recent trades with websocket support."""
+        try:
+            # Check cache first
+            cache_key = f"{symbol}_trades"
+            if cache_key in self._cache:
+                cache_data = self._cache[cache_key]
+                if time.time() - cache_data['timestamp'] < self._cache_ttl['trades']:
+                    return cache_data['data']
+                    
+            # Setup websocket if not already connected
+            if symbol not in self._ws_connections or 'trades' not in self._ws_connections[symbol]:
+                await self._setup_websocket(symbol, 'trades')
+                
+            # Return websocket data if available
+            if symbol in self._ws_data:
+                return self._ws_data[symbol]
+                
+            # Fallback to REST API
+            return await self._make_request(self.exchange.fetch_trades, symbol)
+            
+        except Exception as e:
+            logger.error(f"Error getting trades for {symbol}: {str(e)}")
+            return []
 
-    async def get_markets(self) -> Optional[Dict]:
-        """Get all available markets from Binance.
+    async def get_funding_rate(self, symbol: str) -> Optional[float]:
+        """Get the current funding rate for a futures trading pair.
         
+        Args:
+            symbol: Trading pair symbol
+            
         Returns:
-            Optional[Dict]: Dictionary of market information if successful, None otherwise
+            Optional[float]: Current funding rate or None if error
+        """
+        try:
+            if not self._is_initialized:
+                logger.error("Binance service not initialized")
+                return None
+            
+            # Get funding rate from Binance
+            funding_rate = await self._make_request(
+                self.exchange.fetch_funding_rate,
+                symbol
+            )
+            
+            if not funding_rate:
+                logger.error(f"Failed to get funding rate for {symbol}")
+                return None
+            
+            return float(funding_rate['fundingRate'])
+            
+        except Exception as e:
+            logger.error(f"Error getting funding rate for {symbol}: {str(e)}")
+            return None
+
+    async def get_open_interest(self, symbol: str) -> Optional[float]:
+        """Get current open interest for a futures trading pair.
+        
+        Args:
+            symbol: Trading pair symbol
+            
+        Returns:
+            Optional[float]: Open interest value or None if error
         """
         try:
             if not self._is_initialized:
@@ -1023,20 +1216,78 @@ class BinanceService:
                 logger.error("Binance service is closed")
                 return None
                 
-            # Check cache first
-            cache_key = "markets"
-            cached_data = await self._get_cached_data(cache_key)
-            if cached_data:
-                return cached_data
+            # Get open interest data
+            open_interest_data = await self._make_request(
+                self.exchange.fetch_open_interest,
+                symbol
+            )
+            
+            if not open_interest_data:
+                logger.error(f"Failed to get open interest data for {symbol}")
+                return None
                 
-            # Fetch markets from exchange
-            markets = await self._make_request(self.exchange.load_markets)
-            if markets:
-                self._set_cached_data(cache_key, markets)
-            return markets
+            # For Binance, the response structure is:
+            # {
+            #     'symbol': 'BTC/USDT',
+            #     'openInterest': 12345.67,
+            #     'timestamp': 1234567890
+            # }
+            if isinstance(open_interest_data, dict):
+                # Try different possible field names
+                open_interest = open_interest_data.get('openInterest') or \
+                              open_interest_data.get('open_interest') or \
+                              open_interest_data.get('oi') or \
+                              open_interest_data.get('openInterestAmount')
+                
+                if open_interest is not None:
+                    return float(open_interest)
+                    
+            # If we get here, we couldn't find the open interest value
+            logger.error(f"Could not find open interest value in response for {symbol}. Response: {open_interest_data}")
+            return None
             
         except Exception as e:
-            logger.error(f"Error getting markets: {str(e)}")
+            logger.error(f"Error getting open interest for {symbol}: {str(e)}")
+            return None
+
+    async def get_order_book(self, symbol: str, limit: int = 20) -> Optional[Dict]:
+        """Get the current order book for a trading pair.
+        
+        Args:
+            symbol: Trading pair symbol
+            limit: Number of orders to fetch for each side
+            
+        Returns:
+            Optional[Dict]: Order book data or None if error
+        """
+        try:
+            if not self._is_initialized:
+                logger.error("Binance service not initialized")
+                return None
+            
+            # Get order book from Binance
+            order_book = await self._make_request(
+                self.exchange.fetch_order_book,
+                symbol,
+                limit=limit
+            )
+            
+            if not order_book:
+                logger.error(f"Failed to get order book for {symbol}")
+                return None
+            
+            # Format order book data
+            formatted_book = {
+                'bids': order_book['bids'][:limit],
+                'asks': order_book['asks'][:limit],
+                'timestamp': order_book['timestamp'],
+                'datetime': order_book['datetime']
+            }
+            
+            return formatted_book
+            
+        except Exception as e:
+            logger.error(f"Error getting order book for {symbol}: {str(e)}")
             return None
 
     async def get_open_orders(self, symbol: str = None) -> Optional[List[Dict]]:
@@ -1059,10 +1310,11 @@ class BinanceService:
                 
             # Check cache first
             cache_key = f"open_orders_{symbol if symbol else 'all'}"
-            cached_data = await self._get_cached_data(cache_key)
-            if cached_data:
-                return cached_data
-                
+            if cache_key in self._cache:
+                cache_data = self._cache[cache_key]
+                if time.time() - cache_data['timestamp'] < self._cache_ttl['orders']:
+                    return cache_data['data']
+                    
             # Use REST API with retry mechanism
             if symbol:
                 orders = await self._make_request(self.exchange.fetch_open_orders, symbol)
@@ -1070,33 +1322,51 @@ class BinanceService:
                 orders = await self._make_request(self.exchange.fetch_open_orders)
                 
             if orders:
-                self._set_cached_data(cache_key, orders)
+                self._cache[cache_key] = {
+                    'data': orders,
+                    'timestamp': time.time()
+                }
             return orders
             
         except Exception as e:
             logger.error(f"Error getting open orders: {str(e)}")
             return None
 
-    async def get_existing_order(self, symbol: str, order_type: str, side: str) -> Optional[List[Dict]]:
-        """Get existing order for a symbol.
+    async def get_existing_order(self, symbol: str, order_type: str, side: str) -> Optional[Dict]:
+        """Get existing order for a symbol with specific type and side.
         
         Args:
             symbol: Trading pair symbol
+            order_type: Order type (e.g. 'stop', 'limit', 'market')
+            side: Order side (e.g. 'buy', 'sell')
+            
+        Returns:
+            Optional[Dict]: Order details if found, None otherwise
         """
         try:
+            if not self._is_initialized:
+                logger.error("Binance service not initialized")
+                return None
+                
+            if self._is_closed:
+                logger.error("Binance service is closed")
+                return None
+                
             # Get open orders
             orders = await self.get_open_orders(symbol)
             if not orders:
                 return None
-
-            # Get existing order
+                
+            # Find matching order
             for order in orders:
-                if order['type'].upper() == order_type.upper() and order['side'].upper() == side.upper():
+                if (order['type'].lower() == order_type.lower() and 
+                    order['side'].lower() == side.lower()):
                     return order
+                    
             return None
             
         except Exception as e:
-            logger.error(f"Error getting existing order: {str(e)}")
+            logger.error(f"Error getting existing order for {symbol}: {str(e)}")
             return None
     
     async def close_position(self, symbol: str, position_side: str = None) -> bool:
