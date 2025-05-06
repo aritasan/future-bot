@@ -2949,6 +2949,10 @@ class EnhancedTradingStrategy:
                 self._dca_history[symbol] = dca_result.get('dca_history', [])
                 
             # Update trailing stop if needed
+            # Check if the position is profitable
+            unrealized_pnl = float(position.get('unrealizedPnl', 0))
+            if unrealized_pnl <= 0:
+                return
             if await self._update_trailing_stop(symbol, position['info']['positionSide']):
                 # Trailing stop was updated, no need for further action
                 return
