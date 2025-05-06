@@ -2594,7 +2594,9 @@ class EnhancedTradingStrategy:
                             if new_stops:
                                 position_side = position.get('side', 'LONG')
                                 if 'stop_loss' in new_stops:
-                                    await self._update_stop_loss(symbol, new_stops['stop_loss'], position_side)
+                                    unrealized_pnl = float(position.get('unrealizedPnl', 0))
+                                    if unrealized_pnl > 0:
+                                        await self._update_stop_loss(symbol, new_stops['stop_loss'], position_side)
                                 if 'take_profit' in new_stops:
                                     await self._update_take_profit(symbol, new_stops['take_profit'], position_side)
                                     
@@ -2930,11 +2932,13 @@ class EnhancedTradingStrategy:
                 new_stops = await self.calculate_new_stops(position, position['info']['markPrice'])
                 if new_stops:
                     # Update stop loss and take profit
-                    await self._update_stop_loss(
-                        symbol=symbol,
-                        new_stop_loss=new_stops['stop_loss'],
-                        position_type=position['info']['positionSide']
-                    )
+                    unrealized_pnl = float(position.get('unrealizedPnl', 0))
+                    if unrealized_pnl > 0:
+                        await self._update_stop_loss(
+                            symbol=symbol,
+                            new_stop_loss=new_stops['stop_loss'],
+                            position_type=position['info']['positionSide']
+                        )
                     await self._update_take_profit(
                         symbol=symbol,
                         new_take_profit=new_stops['take_profit'],
