@@ -705,9 +705,9 @@ class EnhancedTradingStrategy:
                     return False
                     
                 # Check if current price is near value area low
-                if current_price > value_area_low * (1 + diff_price_percent):
-                    logger.info(f"Current price not near value area low for LONG position: {current_price} {value_area_low}")
-                    return False
+                # if current_price > value_area_low * (1 + diff_price_percent):
+                #     logger.info(f"Current price not near value area low for LONG position: {current_price} {value_area_low}")
+                #     return False
                     
             else:  # SHORT position
                 # For SHORT: check volume in higher price levels
