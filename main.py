@@ -312,7 +312,7 @@ async def main():
         
         # Start processing trading pairs
         try:
-            with open("filtered_pairs.txt", "r") as f:
+            with open("future_symbols.txt", "r") as f:
                 trading_pairs = [line.strip() for line in f.readlines()]
         except Exception as e:
             logger.error(f"Error reading trading pairs: {str(e)}")
