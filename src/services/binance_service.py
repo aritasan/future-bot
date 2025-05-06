@@ -1421,3 +1421,45 @@ class BinanceService:
         except Exception as e:
             logger.error(f"Error closing position for {symbol} {position_side}: {str(e)}")
             return False
+
+    async def get_all_future_symbols(self) -> Optional[List[str]]:
+        """Get all available future trading pairs from Binance.
+        
+        Returns:
+            Optional[List[str]]: List of all future trading pairs or None if error
+        """
+        try:
+            if not self._is_initialized:
+                logger.error("Binance service not initialized")
+                return None
+                
+            if self._is_closed:
+                logger.error("Binance service is closed")
+                return None
+
+            # Load markets if not already loaded
+            if not self.exchange.markets:
+                await self.exchange.load_markets()
+
+            # Filter for future markets only
+            future_symbols = []
+            for symbol, market in self.exchange.markets.items():
+                # Check if it's a future market and active
+                if (market.get('future', False) or 
+                    market.get('swap', False) or 
+                    market.get('linear', False) or 
+                    market.get('inverse', False)) and market.get('active', False):
+                    # Remove any exchange-specific prefix if present
+                    clean_symbol = symbol.split(':')[0]
+                    if clean_symbol not in future_symbols:
+                        future_symbols.append(clean_symbol)
+
+            # Sort symbols alphabetically
+            future_symbols.sort()
+
+            logger.info(f"Found {len(future_symbols)} future trading pairs")
+            return future_symbols
+
+        except Exception as e:
+            logger.error(f"Error getting future symbols: {str(e)}")
+            return None
