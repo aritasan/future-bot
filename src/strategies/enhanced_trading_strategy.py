@@ -992,11 +992,17 @@ class EnhancedTradingStrategy:
             bool: True if position should be closed, False otherwise
         """
         try:
-            # symbol = position['symbol']
-            entry_price = float(position['entryPrice'])
-            current_price = float(position['markPrice'])
-            position_amt = float(position['info']['positionAmt'])
+            symbol = position.get('symbol')
+            entry_price = float(position.get('entryPrice', 0))
+            current_price = float(position.get('markPrice', 0))
+            position_amt = float(position.get('info', {}).get('positionAmt', 0))
+            unrealized_pnl = float(position.get('unrealizedPnl', 0))
+            margin = float(position.get('initialMargin', 0))
             
+            if not all([symbol, entry_price, current_price, position_amt]):
+                logger.error(f"Missing required position data for {symbol}")
+                return False
+                
             # Calculate price change
             price_change = (current_price - entry_price) / entry_price
             if position_amt < 0:  # For short positions, invert the price change
@@ -1007,7 +1013,7 @@ class EnhancedTradingStrategy:
             if stop_loss > 0:
                 if (position_amt > 0 and current_price <= stop_loss) or \
                    (position_amt < 0 and current_price >= stop_loss):
-                    # logger.info(f"Stop loss triggered for {symbol} at {current_price}")
+                    logger.info(f"Stop loss triggered for {symbol} at {current_price}")
                     return True
                     
             # Check take profit
@@ -1015,34 +1021,38 @@ class EnhancedTradingStrategy:
             if take_profit > 0:
                 if (position_amt > 0 and current_price >= take_profit) or \
                    (position_amt < 0 and current_price <= take_profit):
-                    # logger.info(f"Take profit triggered for {symbol} at {current_price}")
+                    logger.info(f"Take profit triggered for {symbol} at {current_price}")
                     return True
                     
-            # Check trend reversal
-            # try:
-            #     # Get current trend
-            #     trend = await self._get_market_trend(symbol)
+            # Check if unrealized PnL is below -100% margin (emergency stop)
+            if unrealized_pnl < -margin:
+                logger.info(f"Emergency stop triggered for {symbol} - PnL below -100% margin")
+                return True
+                
+            # Check market conditions
+            # TODO: Add market conditions check
+            # market_conditions = await self._get_market_conditions(symbol)
+            # if market_conditions:
+            #     # Check if market volatility is too high
+            #     if market_conditions.get('volatility') == 'HIGH' and abs(price_change) > 0.1:  # 10% move
+            #         logger.info(f"Closing position for {symbol} due to high volatility")
+            #         return True
+                    
+            #     # Check if market trend has reversed
+            #     trend = market_conditions.get('trend')
             #     if trend:
-            #         # If trend has reversed from our position
-            #         if (position_amt > 0 and trend == 'bearish') or \
-            #            (position_amt < 0 and trend == 'bullish'):
-            #             logger.info(f"Trend reversal detected for {symbol}: {trend}")
+            #         if (position_amt > 0 and trend == 'DOWN') or \
+            #            (position_amt < 0 and trend == 'UP'):
+            #             logger.info(f"Closing position for {symbol} due to trend reversal")
             #             return True
-            # except Exception as e:
-            #     logger.error(f"Error checking trend for {symbol}: {str(e)}")
-                
-            # Check market sentiment
-            # try:
-            #     sentiment = await self._get_market_sentiment(symbol)
-            #     if sentiment:
-            #         # If sentiment is strongly against our position
-            #         if (position_amt > 0 and sentiment < -0.7) or \
-            #            (position_amt < 0 and sentiment > 0.7):
-            #             logger.info(f"Strong market sentiment against position for {symbol}: {sentiment}")
-            #             return True
-            # except Exception as e:
-            #     logger.error(f"Error checking sentiment for {symbol}: {str(e)}")
-                
+                        
+            #     # Check if market sentiment is strongly against position
+            #     sentiment = market_conditions.get('sentiment', 'neutral')
+            #     if (position_amt > 0 and sentiment == 'bearish' and unrealized_pnl > 0) or \
+            #        (position_amt < 0 and sentiment == 'bullish' and unrealized_pnl > 0):
+            #         logger.info(f"Closing position for {symbol} due to strong market sentiment")
+            #         return True
+                    
             return False
             
         except Exception as e:
@@ -1804,6 +1814,7 @@ class EnhancedTradingStrategy:
                         new_take_profit = await self._calculate_take_profit(symbol, position_type, current_price, new_stop_loss)
                         
                         # Update orders
+                        logger.info(f"_handle_dca: Updating stop loss for {symbol} to {new_stop_loss}")
                         await self._update_stop_loss(symbol, new_stop_loss, position_type)
                         await self._update_take_profit(symbol, new_take_profit, position_type)
                         
@@ -2058,7 +2069,7 @@ class EnhancedTradingStrategy:
             # Tính toán các metrics
             conditions = {
                 'btc_trend': self.get_trend(btc_data) if btc_data is not None else 'neutral',
-                'market_sentiment': market_sentiment.get('sentiment', 'neutral'),
+                'sentiment': market_sentiment.get('overall_sentiment', 'neutral'),
                 'volatility': await self._get_current_volatility(),
                 'liquidity': await self._calculate_market_liquidity(),
                 'risk_on': await self._is_risk_on_environment()
@@ -2152,11 +2163,13 @@ class EnhancedTradingStrategy:
                 # For LONG positions, only move stop loss up
                 if new_stop_loss > current_stop_loss and new_stop_loss < current_price:
                     await self._update_stop_loss(symbol, new_stop_loss, position_type)
+                    logger.info(f"_update_trailing_stop: Updated trailing stop for {symbol} LONG to {new_stop_loss}")
                     # logger.info(f"Updated trailing stop for {symbol} LONG to {new_stop_loss}")
             else:
                 # For SHORT positions, only move stop loss down
                 if new_stop_loss < current_stop_loss and new_stop_loss > current_price:
                     await self._update_stop_loss(symbol, new_stop_loss, position_type)
+                    logger.info(f"_update_trailing_stop: Updated trailing stop for {symbol} SHORT to {new_stop_loss}")
                     # logger.info(f"Updated trailing stop for {symbol} SHORT to {new_stop_loss}")
                 
             # Update last update time
@@ -2277,6 +2290,7 @@ class EnhancedTradingStrategy:
                 
             existing_orders = await self.binance_service.get_open_orders(symbol)
             open_position_side = "SELL" if is_long_side(position_type) else "BUY"
+            logger.info(f"_update_stop_loss: Existing orders for {symbol}: {existing_orders}")
             if existing_orders:
                 existing_sl = await self.binance_service.get_existing_order(symbol, 'STOP_MARKET', open_position_side)
                 if not existing_sl:
@@ -2597,6 +2611,7 @@ class EnhancedTradingStrategy:
                                     unrealized_pnl = float(position.get('unrealizedPnl', 0))
                                     if unrealized_pnl > 0:
                                         await self._update_stop_loss(symbol, new_stops['stop_loss'], position_side)
+                                        logger.info(f"_monitor_positions: Updated stop loss for {symbol} to {new_stops['stop_loss']}")
                                 if 'take_profit' in new_stops:
                                     await self._update_take_profit(symbol, new_stops['take_profit'], position_side)
                                     
@@ -2637,15 +2652,18 @@ class EnhancedTradingStrategy:
                 if position and float(position.get('contracts', 0)) > 0:
                     symbol = position.get('symbol')
                     if symbol:
-                        # Check if the position is profitable
+                        # Get position details
                         unrealized_pnl = float(position.get('unrealizedPnl', 0))
-                        if unrealized_pnl <= 0:
-                            continue  # Skip this position but continue with others
+                        margin = float(position.get('initialMargin', 0))
+                        
+                        # Only update trailing stop if PnL >= 100% margin
+                        if unrealized_pnl < margin:
+                            continue
                             
                         # Determine position side based on position amount
                         position_amt = float(position.get('info').get('positionAmt', 0))
                         position_side = 'LONG' if position_amt > 0 else 'SHORT'
-                        
+                        logger.info(f"_monitor_trailing_stops: Updating trailing stop for {symbol} with side {position_side}")
                         await self._update_trailing_stop(symbol, position_side)
                     
         except Exception as e:
@@ -2922,8 +2940,17 @@ class EnhancedTradingStrategy:
         try:
             # Check if we should close the position
             if await self.should_close_position(position):
+                logger.info(f"_manage_existing_position: Closing position for {symbol} with side {position['info']['positionSide']}")
                 # Close the position
                 await self.binance_service.close_position(symbol, position['info']['positionSide'])
+                return
+                
+            # Get position details
+            unrealized_pnl = float(position.get('unrealizedPnl', 0))
+            margin = float(position.get('initialMargin', 0))
+            
+            # Only proceed with management if PnL >= 100% margin
+            if unrealized_pnl < margin:
                 return
                 
             # Check if we should update stop loss and take profit
@@ -2932,13 +2959,12 @@ class EnhancedTradingStrategy:
                 new_stops = await self.calculate_new_stops(position, position['info']['markPrice'])
                 if new_stops:
                     # Update stop loss and take profit
-                    unrealized_pnl = float(position.get('unrealizedPnl', 0))
-                    if unrealized_pnl > 0:
-                        await self._update_stop_loss(
-                            symbol=symbol,
-                            new_stop_loss=new_stops['stop_loss'],
-                            position_type=position['info']['positionSide']
-                        )
+                    logger.info(f"_manage_existing_position: Updating stop loss for {symbol} to {new_stops['stop_loss']}")
+                    await self._update_stop_loss(
+                        symbol=symbol,
+                        new_stop_loss=new_stops['stop_loss'],
+                        position_type=position['info']['positionSide']
+                    )
                     await self._update_take_profit(
                         symbol=symbol,
                         new_take_profit=new_stops['take_profit'],
@@ -2953,10 +2979,6 @@ class EnhancedTradingStrategy:
                 self._dca_history[symbol] = dca_result.get('dca_history', [])
                 
             # Update trailing stop if needed
-            # Check if the position is profitable
-            unrealized_pnl = float(position.get('unrealizedPnl', 0))
-            if unrealized_pnl <= 0:
-                return
             if await self._update_trailing_stop(symbol, position['info']['positionSide']):
                 # Trailing stop was updated, no need for further action
                 return
@@ -3085,32 +3107,85 @@ class EnhancedTradingStrategy:
             return 0.0
             
     def _calculate_sentiment_score(self, sentiment: Dict, position_type: str) -> float:
-        """Calculate sentiment score based on market sentiment and position type."""
+        """Calculate sentiment score based on market sentiment and position type.
+        
+        Args:
+            sentiment: Dictionary containing sentiment indicators
+            position_type: Position type (LONG/SHORT)
+            
+        Returns:
+            float: Sentiment score between -1 and 1
+        """
         try:
-            if not sentiment or 'sentiment' not in sentiment:
+            if not sentiment:
                 return 0.0
                 
-            current_sentiment = sentiment['sentiment']
-            avg_sentiment = sentiment.get('avg_sentiment', current_sentiment)
+            # Get individual sentiment indicators
+            rsi_sentiment = sentiment.get('rsi_sentiment', 'neutral')
+            mfi_sentiment = sentiment.get('mfi_sentiment', 'neutral')
+            obv_sentiment = sentiment.get('obv_sentiment', 'neutral')
+            trend_strength = sentiment.get('trend_strength', 'weak')
+            overall_sentiment = sentiment.get('overall_sentiment', 'neutral')
             
+            # Calculate score based on position type
             if position_type == "LONG":
-                # For LONG: higher sentiment is better
-                if current_sentiment > avg_sentiment:
-                    return 1.0
-                else:
-                    # Calculate decreasing score as sentiment drops
-                    sentiment_ratio = current_sentiment / avg_sentiment
-                    return max(0, sentiment_ratio)
+                # For LONG: bullish sentiment is positive
+                score = 0.0
+                
+                # Weight the indicators
+                if rsi_sentiment == 'bullish':
+                    score += 0.3
+                elif rsi_sentiment == 'bearish':
+                    score -= 0.3
                     
+                if mfi_sentiment == 'bullish':
+                    score += 0.2
+                elif mfi_sentiment == 'bearish':
+                    score -= 0.2
+                    
+                if obv_sentiment == 'bullish':
+                    score += 0.2
+                elif obv_sentiment == 'bearish':
+                    score -= 0.2
+                    
+                # Adjust score based on trend strength
+                if trend_strength == 'strong':
+                    if overall_sentiment == 'bullish':
+                        score *= 1.5
+                    elif overall_sentiment == 'bearish':
+                        score *= 0.5
+                        
+                return max(-1.0, min(1.0, score))
+                
             else:  # SHORT
-                # For SHORT: lower sentiment is better
-                if current_sentiment < avg_sentiment:
-                    return -1.0  # Negative score for favorable SHORT conditions
-                else:
-                    # Calculate increasing negative score as sentiment rises
-                    sentiment_ratio = current_sentiment / avg_sentiment
-                    return -min(1.0, sentiment_ratio)  # Negative score, more negative as sentiment rises
+                # For SHORT: bearish sentiment is positive (negative score)
+                score = 0.0
+                
+                # Weight the indicators
+                if rsi_sentiment == 'bearish':
+                    score += 0.3
+                elif rsi_sentiment == 'bullish':
+                    score -= 0.3
                     
+                if mfi_sentiment == 'bearish':
+                    score += 0.2
+                elif mfi_sentiment == 'bullish':
+                    score -= 0.2
+                    
+                if obv_sentiment == 'bearish':
+                    score += 0.2
+                elif obv_sentiment == 'bullish':
+                    score -= 0.2
+                    
+                # Adjust score based on trend strength
+                if trend_strength == 'strong':
+                    if overall_sentiment == 'bearish':
+                        score *= 1.5
+                    elif overall_sentiment == 'bullish':
+                        score *= 0.5
+                        
+                return -max(-1.0, min(1.0, score))  # Negative score for SHORT
+                
         except Exception as e:
             logger.error(f"Error calculating sentiment score: {str(e)}")
             return 0.0
