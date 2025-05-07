@@ -506,10 +506,10 @@ class EnhancedTradingStrategy:
                 
             # Check funding rate với ngưỡng động
             funding_threshold = 0.0002 * (1 + volatility)  # Tăng ngưỡng khi volatility cao
-            if position_type == 'LONG' and funding_rate > funding_threshold:
+            if is_long_side(position_type) and funding_rate > funding_threshold:
                 logger.info(f"Funding rate conditions not met for {position_type} {funding_rate}")
                 return False
-            elif position_type == 'SHORT' and funding_rate < -funding_threshold:
+            elif is_short_side(position_type) and funding_rate < -funding_threshold:
                 logger.info(f"Funding rate conditions not met for {position_type} {funding_rate}")
                 return False
                 
@@ -1362,7 +1362,7 @@ class EnhancedTradingStrategy:
                 # Adjust for trend
                 trend = market_conditions.get('btc_trend', 'UP')
                 if (is_long_side(position_type) and trend.upper() == 'UP') or \
-                   (not is_long_side(position_type) and trend.upper() == 'DOWN'):
+                   (is_short_side(position_type) and trend.upper() == 'DOWN'):
                     atr_multiplier *= 0.9  # Tighter stop in trend direction
                 else:
                     atr_multiplier *= 1.1  # Wider stop against trend
@@ -1982,7 +1982,7 @@ class EnhancedTradingStrategy:
             # Adjust for trend strength
             trend = market_conditions.get('btc_trend', 'UP')
             if (is_long_side(position_type) and trend.upper() == 'UP') or \
-               (not is_long_side(position_type) and trend.upper() == 'DOWN'):
+               (is_short_side(position_type) and trend.upper() == 'DOWN'):
                 base_multiplier *= 1.2
             else:
                 base_multiplier *= 0.8
@@ -3022,32 +3022,65 @@ class EnhancedTradingStrategy:
             return 0.0
 
     def _calculate_volatility_score(self, btc_volatility: Dict, position_type: str) -> float:
-        """Calculate volatility score based on BTC volatility and position type."""
+        """Calculate volatility score based on BTC volatility and position type.
+        
+        Args:
+            btc_volatility: Dictionary containing volatility data with fields:
+                - volatility_score: Overall volatility score
+                - volatility_score_1m: 1-minute timeframe volatility score
+                - volatility_score_5m: 5-minute timeframe volatility score
+                - volatility_level: Current volatility level
+                - is_volatile: Boolean indicating if market is volatile
+                - is_accelerating: Boolean indicating if volatility is accelerating
+                - atr_1m: ATR value for 1-minute timeframe
+                - atr_5m: ATR value for 5-minute timeframe
+                - roc_1m: Rate of Change for 1-minute timeframe
+                - roc_5m: Rate of Change for 5-minute timeframe
+                - ema: EMA value
+                - current_price: Current BTC price
+                - trend: Current market trend
+            position_type: Position type (LONG/SHORT)
+            
+        Returns:
+            float: Volatility score between -1 and 1
+        """
         try:
-            if not btc_volatility or 'current_volatility' not in btc_volatility:
+            if not btc_volatility:
                 return 0.0
                 
-            current_volatility = btc_volatility['current_volatility']
-            avg_volatility = btc_volatility.get('avg_volatility', current_volatility)
+            # Get base volatility score
+            volatility_score = btc_volatility.get('volatility_score', 0.0)
+            is_volatile = btc_volatility.get('is_volatile', False)
+            is_accelerating = btc_volatility.get('is_accelerating', False)
             
-            if position_type == "LONG":
+            if is_long_side(position_type):
                 # For LONG: lower volatility is better
-                if current_volatility < avg_volatility:
-                    return 1.0
+                if not is_volatile:
+                    base_score = 1.0
                 else:
                     # Calculate decreasing score as volatility increases
-                    volatility_ratio = current_volatility / avg_volatility
-                    return max(0, 1 - (volatility_ratio - 1))
+                    base_score = max(0, 1 - volatility_score)
                     
-            else:  # SHORT
+                # Adjust score based on volatility acceleration
+                if is_accelerating:
+                    base_score *= 0.5  # Reduce score if volatility is accelerating
+                    
+                return base_score
+                
+            elif is_short_side(position_type):  # SHORT
                 # For SHORT: higher volatility is better
-                if current_volatility > avg_volatility:
-                    return -1.0  # Negative score for SHORT
+                if is_volatile:
+                    base_score = -1.0  # Negative score for SHORT
                 else:
                     # Calculate increasing negative score as volatility decreases
-                    volatility_ratio = avg_volatility / current_volatility
-                    return -max(0, 1 - (volatility_ratio - 1))  # Negative score
+                    base_score = -max(0, volatility_score)
                     
+                # Adjust score based on volatility acceleration
+                if is_accelerating:
+                    base_score *= 1.5  # Increase negative score if volatility is accelerating
+                    
+                return base_score
+                
         except Exception as e:
             logger.error(f"Error calculating volatility score: {str(e)}")
             return 0.0
@@ -3113,7 +3146,7 @@ class EnhancedTradingStrategy:
             overall_sentiment = sentiment.get('overall_sentiment', 'neutral')
             
             # Calculate score based on position type
-            if position_type == "LONG":
+            if is_long_side(position_type):
                 # For LONG: bullish sentiment is positive
                 score = 0.0
                 
@@ -3142,7 +3175,7 @@ class EnhancedTradingStrategy:
                         
                 return max(-1.0, min(1.0, score))
                 
-            else:  # SHORT
+            elif is_short_side(position_type):  # SHORT
                 # For SHORT: bearish sentiment is positive (negative score)
                 score = 0.0
                 
@@ -3515,7 +3548,7 @@ class EnhancedTradingStrategy:
                 adjustment_factor = 0.8
                 
             # Điều chỉnh theo position type
-            if position_type == 'SHORT':
+            if is_short_side(position_type):
                 adjustment_factor *= 1.1  # Thắt chặt hơn cho SHORT
                 
             return base_threshold * adjustment_factor
@@ -3538,7 +3571,7 @@ class EnhancedTradingStrategy:
                 weights['trend'] -= self.adjustment_factors['weight_adjustment']
                 
             # Điều chỉnh theo position type
-            if position_type == 'SHORT':
+            if is_short_side(position_type):
                 weights['funding_rate'] += self.adjustment_factors['weight_adjustment']
                 weights['trend'] -= self.adjustment_factors['weight_adjustment']
                 
@@ -3860,10 +3893,10 @@ class EnhancedTradingStrategy:
                 '1d': timeframe_data.get('1d', {}).get('strength', 0)
             }
             
-            if position_type == "LONG":
+            if is_long_side(position_type):
                 # For LONG: count bullish timeframes and average their strengths
-                bullish_count = sum(1 for trend in trends.values() if trend == 'UPTREND')
-                bullish_strength = sum(strengths[tf] for tf, trend in trends.items() if trend == 'UPTREND')
+                bullish_count = sum(1 for trend in trends.values() if trend.upper() == 'UP')
+                bullish_strength = sum(strengths[tf] for tf, trend in trends.items() if trend.upper() == 'UP')
                 
                 if bullish_count == 3:  # All timeframes bullish
                     return 1.0
@@ -3873,10 +3906,10 @@ class EnhancedTradingStrategy:
                     return 0.3 + (bullish_strength / 300)  # Add up to 0.2 based on strength
                 else:  # No bullish timeframes
                     return -0.5
-            else:  # SHORT
+            elif is_short_side(position_type):  # SHORT
                 # For SHORT: count bearish timeframes and average their strengths (negative scores)
-                bearish_count = sum(1 for trend in trends.values() if trend == 'DOWNTREND')
-                bearish_strength = sum(strengths[tf] for tf, trend in trends.items() if trend == 'DOWNTREND')
+                bearish_count = sum(1 for trend in trends.values() if trend.upper() == 'DOWN')
+                bearish_strength = sum(strengths[tf] for tf, trend in trends.items() if trend.upper() == 'DOWN')
                 
                 if bearish_count == 3:  # All timeframes bearish
                     return -1.0  # Negative score for SHORT
