@@ -917,8 +917,8 @@ class EnhancedTradingStrategy:
             market_conditions = await self._get_market_conditions(symbol)
             
             # Adjust stop loss based on volatility
-            volatility = market_conditions.get('volatility', 'LOW')
-            if volatility == 'HIGH':
+            volatility = market_conditions.get('volatility', 0.0)  # Default to 0.0 if not present
+            if volatility > 0.02:  # Consider high volatility if > 2%
                 # Increase stop loss distance in high volatility
                 if is_long_side(position_type):
                     stop_loss = float(current_price) - (float(atr) * stop_loss_multiplier * 1.5)
@@ -1031,27 +1031,27 @@ class EnhancedTradingStrategy:
                 
             # Check market conditions
             # TODO: Add market conditions check
-            # market_conditions = await self._get_market_conditions(symbol)
-            # if market_conditions:
-            #     # Check if market volatility is too high
-            #     if market_conditions.get('volatility') == 'HIGH' and abs(price_change) > 0.1:  # 10% move
-            #         logger.info(f"Closing position for {symbol} due to high volatility")
-            #         return True
+            market_conditions = await self._get_market_conditions(symbol)
+            if market_conditions:
+                # Check if market volatility is too high
+                if market_conditions.get('volatility') > 0.05 and abs(price_change) > 0.1:  # 10% move
+                    logger.info(f"Closing position for {symbol} due to high volatility")
+                    return True
                     
-            #     # Check if market trend has reversed
-            #     trend = market_conditions.get('trend')
-            #     if trend:
-            #         if (position_amt > 0 and trend == 'DOWN') or \
-            #            (position_amt < 0 and trend == 'UP'):
-            #             logger.info(f"Closing position for {symbol} due to trend reversal")
-            #             return True
+                # Check if market trend has reversed
+                trend = market_conditions.get('btc_trend')
+                if trend:
+                    if (position_amt > 0 and trend.upper() == 'DOWN' and unrealized_pnl > 0) or \
+                       (position_amt < 0 and trend.upper() == 'UP' and unrealized_pnl > 0):
+                        logger.info(f"Closing position for {symbol} due to trend reversal")
+                        return True
                         
-            #     # Check if market sentiment is strongly against position
-            #     sentiment = market_conditions.get('sentiment', 'neutral')
-            #     if (position_amt > 0 and sentiment == 'bearish' and unrealized_pnl > 0) or \
-            #        (position_amt < 0 and sentiment == 'bullish' and unrealized_pnl > 0):
-            #         logger.info(f"Closing position for {symbol} due to strong market sentiment")
-            #         return True
+                # Check if market sentiment is strongly against position
+                sentiment = market_conditions.get('sentiment', 'neutral')
+                if (position_amt > 0 and sentiment == 'bearish' and unrealized_pnl > 0) or \
+                   (position_amt < 0 and sentiment == 'bullish' and unrealized_pnl > 0):
+                    logger.info(f"Closing position for {symbol} due to strong market sentiment")
+                    return True
                     
             return False
             
@@ -1148,30 +1148,25 @@ class EnhancedTradingStrategy:
             market_conditions = await self._get_market_conditions(position['info']['symbol'])
             if not market_conditions:
                 return {}
-                
-            # Calculate ATR-based stop distance
-            atr = market_conditions.get('atr', 0)
-            if not atr:
-                return {}
-                
+            
             # Calculate stop distance based on volatility
-            volatility = market_conditions.get('volatility', 'LOW')
+            volatility = market_conditions.get('volatility', 0.0)  # Default to 0.0 if not present
             base_stop_distance = self.config['risk_management']['base_stop_distance']
             
             # Adjust volatility multiplier based on volatility level
-            if volatility == 'HIGH':
+            if volatility > 0.02:  # High volatility > 2%
                 volatility_multiplier = 1.5
-            elif volatility == 'MEDIUM':
+            elif volatility > 0.01:  # Medium volatility > 1%
                 volatility_multiplier = 1.0
-            else:  # LOW
+            else:  # Low volatility <= 1%
                 volatility_multiplier = 0.5
                 
             stop_distance = base_stop_distance * volatility_multiplier
             
             # Adjust stop distance based on trend
-            trend = market_conditions.get('trend', 'UP')
+            trend = market_conditions.get('btc_trend', 'UP')
             # If trend is in our favor, we can use a tighter stop
-            if (position_amt > 0 and trend == 'UP') or (position_amt < 0 and trend == 'DOWN'):
+            if (position_amt > 0 and trend.upper() == 'UP') or (position_amt < 0 and trend.upper() == 'DOWN'):
                 trend_multiplier = 0.8  # Tighter stop in trend direction
             else:
                 trend_multiplier = 1.2  # Wider stop against trend
@@ -1358,18 +1353,19 @@ class EnhancedTradingStrategy:
             # Adjust ATR multiplier based on market conditions
             if market_conditions:
                 # Adjust for volatility
-                volatility = market_conditions.get('volatility', 0)
-                if volatility > 0.05:  # High volatility
+                volatility = market_conditions.get('volatility', 0.0)
+                if volatility > 0.05:  # High volatility > 5%
                     atr_multiplier *= 1.5
-                elif volatility < 0.02:  # Low volatility
+                elif volatility < 0.02:  # Low volatility < 2%
                     atr_multiplier *= 0.8
 
-                # Adjust for trend strength
-                trend_strength = market_conditions.get('trend_strength', 0)
-                if trend_strength > 0.7:  # Strong trend
-                    atr_multiplier *= 1.2
-                elif trend_strength < 0.3:  # Weak trend
-                    atr_multiplier *= 0.9
+                # Adjust for trend
+                trend = market_conditions.get('btc_trend', 'UP')
+                if (is_long_side(position_type) and trend.upper() == 'UP') or \
+                   (not is_long_side(position_type) and trend.upper() == 'DOWN'):
+                    atr_multiplier *= 0.9  # Tighter stop in trend direction
+                else:
+                    atr_multiplier *= 1.1  # Wider stop against trend
 
             # Calculate final trailing stop distance
             trailing_distance = atr * atr_multiplier
@@ -1892,44 +1888,38 @@ class EnhancedTradingStrategy:
             # Convert all values to float for comparison
             price_drop = float(price_drop)
             min_price_drop = float(dca_config['price_drop_thresholds'][0])
-            volume_threshold = float(dca_config['volume_threshold'])
             
             # Check price drop threshold
             if price_drop < min_price_drop:
                 return False
                 
-            # Check volume condition
-            volume_ratio = float(market_conditions.get('volume_ratio', 1.0))
-            if volume_ratio < volume_threshold:
-                return False
-                
             # Check volatility condition
-            volatility = market_conditions.get('volatility', 'LOW')
-            if volatility == 'HIGH':
+            volatility = market_conditions.get('volatility', 0.0)
+            if volatility > 0.02:  # High volatility > 2%
+                logger.info(f"DCA not favorable due to high volatility: {volatility:.2%}")
                 return False
                 
             # Check trend condition based on position type
-            trend = market_conditions.get('trend', 'NEUTRAL')
-            if is_long_side(position_type) and trend == 'DOWN':
+            trend = market_conditions.get('btc_trend', 'NEUTRAL')
+            if is_long_side(position_type) and trend.upper() == 'DOWN':
+                logger.info(f"DCA not favorable for LONG position in DOWN trend")
                 return False
-            if is_short_side(position_type) and trend == 'UP':
-                return False
-                
-            # Check ATR condition
-            atr = float(market_conditions.get('atr', 0))
-            if atr <= 0:
+            if is_short_side(position_type) and trend.upper() == 'UP':
+                logger.info(f"DCA not favorable for SHORT position in UP trend")
                 return False
                 
-            # Check DCA attempts for specific position type
-            dca_attempts = market_conditions.get(f'{position_type.lower()}_dca_attempts', 0)
-            max_dca_attempts = int(dca_config.get('max_attempts', 3))
-            if dca_attempts >= max_dca_attempts:
+            # Check market sentiment
+            sentiment = market_conditions.get('sentiment', 'neutral')
+            if is_long_side(position_type) and sentiment == 'bearish':
+                logger.info(f"DCA not favorable for LONG position in bearish sentiment")
+                return False
+            if is_short_side(position_type) and sentiment == 'bullish':
+                logger.info(f"DCA not favorable for SHORT position in bullish sentiment")
                 return False
                 
-            # Check active DCA positions for specific position type
-            active_positions = len(market_conditions.get(f'{position_type.lower()}_active_dca_positions', []))
-            max_active_positions = int(dca_config.get('max_active_positions', 2))
-            if active_positions >= max_active_positions:
+            # Check risk environment
+            if not market_conditions.get('risk_on', True):
+                logger.info("DCA not favorable in risk-off environment")
                 return False
                 
             return True
@@ -1983,25 +1973,20 @@ class EnhancedTradingStrategy:
                     break
                     
             # Adjust for market conditions
-            volatility = market_conditions.get('volatility', 'LOW')
-            if volatility == 'HIGH':
+            volatility = market_conditions.get('volatility', 0.0)
+            if volatility > 0.05:
                 base_multiplier *= 0.8  # Reduce size in high volatility
-            elif volatility == 'LOW':
+            elif volatility < 0.01:
                 base_multiplier *= 1.2  # Increase size in low volatility
                 
             # Adjust for trend strength
-            trend_strength = market_conditions.get('trend_strength', 0)
-            if trend_strength > 0.7:  # Strong trend
+            trend = market_conditions.get('btc_trend', 'UP')
+            if (is_long_side(position_type) and trend.upper() == 'UP') or \
+               (not is_long_side(position_type) and trend.upper() == 'DOWN'):
                 base_multiplier *= 1.2
-            elif trend_strength < 0.3:  # Weak trend
+            else:
                 base_multiplier *= 0.8
                 
-            # Adjust for volume
-            volume_ratio = market_conditions.get('volume_ratio', 1.0)
-            if volume_ratio > 1.5:  # High volume
-                base_multiplier *= 1.2
-            elif volume_ratio < 0.8:  # Low volume
-                base_multiplier *= 0.8
                 
             # Calculate time-based adjustment
             last_dca_time = self._last_dca_time.get(position_type, 0)
@@ -2244,7 +2229,7 @@ class EnhancedTradingStrategy:
         except Exception as e:
             logger.error(f"Error taking partial profit for {symbol}: {str(e)}")
             
-    def _should_emergency_stop(self, market_conditions: Dict) -> bool:
+    def _should_emergency_stop(self, analysis_market_conditions: Dict) -> bool:
         """Check if emergency stop should be triggered.
         
         Args:
@@ -2253,8 +2238,8 @@ class EnhancedTradingStrategy:
         Returns:
             bool: True if emergency stop should be triggered
         """
-        volatility = market_conditions.get('volatility', 0)
-        volume_ratio = market_conditions.get('volume_ratio', 1.0)
+        volatility = analysis_market_conditions.get('volatility', 0.0)
+        volume_ratio = analysis_market_conditions.get('volume_ratio', 1.0)
         
         return (volatility > self.config['risk_management']['emergency_stop']['volatility_threshold'] or
                 volume_ratio > self.config['risk_management']['emergency_stop']['volume_threshold'])
@@ -3558,7 +3543,7 @@ class EnhancedTradingStrategy:
                 weights['trend'] -= self.adjustment_factors['weight_adjustment']
                 
             # Điều chỉnh theo market sentiment
-            if market_conditions.get('sentiment') == 'bearish':
+            if market_conditions.get('sentiment', 'neutral') == 'bearish':
                 weights['sentiment'] += self.adjustment_factors['weight_adjustment']
                 weights['trend'] -= self.adjustment_factors['weight_adjustment']
                 
