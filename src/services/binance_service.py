@@ -1416,36 +1416,39 @@ class BinanceService:
                 logger.warning(f"No position found for {symbol} {position_side}")
                 return False
                 
-            # Get position amount
-            position_amt = float(position.get('info').get('positionAmt', 0))
+            # Get position amount and side
+            position_amt = float(position.get('info', {}).get('positionAmt', 0))
             if position_amt == 0:
                 logger.warning(f"No position amount for {symbol} {position_side}")
                 return False
                 
             # Determine side based on position amount
             side = 'SELL' if position_amt > 0 else 'BUY'
-            amount = abs(position_amt)
+            position_side_value = position.get('info', {}).get('positionSide', position_side)
             
-            # Create market order to close position
-            order_params = {
-                'symbol': symbol,
-                'side': side,
-                'type': 'market',
-                'amount': amount,
-                'params': {
-                    'reduceOnly': True,
-                    'positionSide': position_side
-                }
-            }
-            
-            # Place order
-            result = await self.place_order(order_params)
-            if result:
-                logger.info(f"Position closed for {symbol} {position_side}: {result}")
-                # Clear position cache
-                return True
-            else:
-                logger.error(f"Failed to close position for {symbol} {position_side}")
+            # Use direct API call to close position
+            try:
+                result = await self._make_request(
+                    self.exchange.create_order,
+                    symbol=symbol,
+                    type='MARKET',
+                    side=side,
+                    amount=abs(position_amt),
+                    params={
+                        'positionSide': position_side_value
+                    }
+                )
+                
+                if result:
+                    logger.info(f"Position closed for {symbol} {position_side_value}: {result}")
+                    # Clear position cache
+                    self.clear_cache('position')
+                    return True
+                else:
+                    logger.error(f"Failed to close position for {symbol} {position_side_value}")
+                    return False
+            except Exception as e:
+                logger.error(f"Error in API call to close position: {str(e)}")
                 return False
                 
         except Exception as e:
