@@ -993,6 +993,7 @@ class EnhancedTradingStrategy:
         """
         try:
             symbol = position.get('symbol')
+            position_side = position.get('info', {}).get('positionSide')
             entry_price = float(position.get('entryPrice', 0))
             current_price = float(position.get('markPrice', 0))
             position_amt = float(position.get('info', {}).get('positionAmt', 0))
@@ -1009,24 +1010,42 @@ class EnhancedTradingStrategy:
                 price_change = -price_change
                 
             # Check stop loss
-            stop_loss = float(position.get('stopLoss', 0))
-            if stop_loss > 0:
+            stop_loss = await self.binance_service.get_stop_price(symbol, position_side, 'STOP_MARKET')
+            if stop_loss:
                 if (position_amt > 0 and current_price <= stop_loss) or \
                    (position_amt < 0 and current_price >= stop_loss):
                     logger.info(f"Stop loss triggered for {symbol} at {current_price}")
+                    await self.telegram_service.send_message(
+                        f"Stop loss triggered for {symbol} at {current_price}\n"
+                        f"Current price: {current_price}\n"
+                        f"Price change: {price_change:.2%}\n" 
+                        f"Unrealized PnL: {unrealized_pnl}"
+                    )
                     return True
                     
             # Check take profit
-            take_profit = float(position.get('takeProfit', 0))
-            if take_profit > 0:
+            take_profit = await self.binance_service.get_stop_price(symbol, position_side, 'TAKE_PROFIT_MARKET')
+            if take_profit:
                 if (position_amt > 0 and current_price >= take_profit) or \
                    (position_amt < 0 and current_price <= take_profit):
                     logger.info(f"Take profit triggered for {symbol} at {current_price}")
+                    await self.telegram_service.send_message(
+                        f"Take profit triggered for {symbol} at {current_price}\n"
+                        f"Current price: {current_price}\n"
+                        f"Price change: {price_change:.2%}\n" 
+                        f"Unrealized PnL: {unrealized_pnl}"
+                    )
                     return True
                     
             # Check if unrealized PnL is below -100% margin (emergency stop)
             if unrealized_pnl < -margin:
                 logger.info(f"Emergency stop triggered for {symbol} - PnL below -100% margin")
+                await self.telegram_service.send_message(
+                    f"Emergency stop triggered for {symbol} - PnL below -100% margin\n"
+                    f"Current price: {current_price}\n"
+                    f"Price change: {price_change:.2%}\n" 
+                    f"Unrealized PnL: {unrealized_pnl}"
+                )
                 return True
                 
             # Check market conditions
@@ -1036,6 +1055,13 @@ class EnhancedTradingStrategy:
                 # Check if market volatility is too high
                 if market_conditions.get('volatility') > 0.05 and abs(price_change) > 0.1:  # 10% move
                     logger.info(f"Closing position for {symbol} due to high volatility")
+                    await self.telegram_service.send_message(
+                        f"Closing position for {symbol} due to high volatility\n"
+                        f"Current price: {current_price}\n"
+                        f"Price change: {price_change:.2%}\n" 
+                        f"Volatility: {market_conditions.get('volatility'):.2%}\n"
+                        f"Unrealized PnL: {unrealized_pnl}"
+                    )
                     return True
                     
                 # Check if market trend has reversed
@@ -1044,6 +1070,12 @@ class EnhancedTradingStrategy:
                     if (position_amt > 0 and trend.upper() == 'DOWN' and unrealized_pnl > 0) or \
                        (position_amt < 0 and trend.upper() == 'UP' and unrealized_pnl > 0):
                         logger.info(f"Closing position for {symbol} due to trend reversal")
+                        await self.telegram_service.send_message(
+                            f"Closing position for {symbol} due to trend reversal\n"
+                            f"Current price: {current_price}\n"
+                            f"Price change: {price_change:.2%}\n" 
+                            f"Unrealized PnL: {unrealized_pnl}"
+                        )
                         return True
                         
                 # Check if market sentiment is strongly against position
@@ -1051,6 +1083,12 @@ class EnhancedTradingStrategy:
                 if (position_amt > 0 and sentiment == 'bearish' and unrealized_pnl > 0) or \
                    (position_amt < 0 and sentiment == 'bullish' and unrealized_pnl > 0):
                     logger.info(f"Closing position for {symbol} due to strong market sentiment")
+                    await self.telegram_service.send_message(
+                        f"Closing position for {symbol} due to strong market sentiment\n"
+                        f"Current price: {current_price}\n"
+                        f"Price change: {price_change:.2%}\n" 
+                        f"Unrealized PnL: {unrealized_pnl}"
+                    )
                     return True
                     
             return False
@@ -2109,18 +2147,8 @@ class EnhancedTradingStrategy:
             )
             
             # Get current stop loss
-            # Check for existing SL/TP orders
-            open_position_side = "SELL" if is_long_side(position_type) else "BUY"
-            
-            existing_orders = await self.binance_service.get_open_orders(symbol)
-            if existing_orders:
-                existing_sl = await self.binance_service.get_existing_order(symbol, 'STOP_MARKET', open_position_side)
-                if not existing_sl:
-                    current_stop_loss = 0
-                else:
-                    current_stop_loss = float(existing_sl.get('stopPrice', 0))
-            else:
-                current_stop_loss = 0
+            current_stop_loss = await self.binance_service.get_stop_price(symbol, position_type, 'STOP_MARKET')
+            logger.info(f"_update_trailing_stop: Current stop loss for {symbol}: {current_stop_loss}")
 
             # Check if we should move to break-even
             if self._should_move_to_break_even(
@@ -2146,13 +2174,13 @@ class EnhancedTradingStrategy:
             # Only update if new stop is more favorable and we have unrealized profit
             if is_long_side(position_type):
                 # For LONG positions, only move stop loss up
-                if new_stop_loss > current_stop_loss and new_stop_loss < current_price:
+                if (not current_stop_loss or new_stop_loss > current_stop_loss) and new_stop_loss < current_price:
                     await self._update_stop_loss(symbol, new_stop_loss, position_type)
                     logger.info(f"_update_trailing_stop: Updated trailing stop for {symbol} LONG to {new_stop_loss}")
                     # logger.info(f"Updated trailing stop for {symbol} LONG to {new_stop_loss}")
             else:
                 # For SHORT positions, only move stop loss down
-                if new_stop_loss < current_stop_loss and new_stop_loss > current_price:
+                if (not current_stop_loss or new_stop_loss < current_stop_loss) and new_stop_loss > current_price:
                     await self._update_stop_loss(symbol, new_stop_loss, position_type)
                     logger.info(f"_update_trailing_stop: Updated trailing stop for {symbol} SHORT to {new_stop_loss}")
                     # logger.info(f"Updated trailing stop for {symbol} SHORT to {new_stop_loss}")
@@ -2273,20 +2301,11 @@ class EnhancedTradingStrategy:
                 logger.warning(f"No active {position_side} position found for {symbol}")
                 return
                 
-            existing_orders = await self.binance_service.get_open_orders(symbol)
-            open_position_side = "SELL" if is_long_side(position_type) else "BUY"
-            logger.info(f"_update_stop_loss: Existing orders for {symbol}: {existing_orders}")
-            if existing_orders:
-                existing_sl = await self.binance_service.get_existing_order(symbol, 'STOP_MARKET', open_position_side)
-                if not existing_sl:
-                    current_stop_loss = 0
-                else:
-                    current_stop_loss = float(existing_sl.get('stopPrice', 0))
-            else:
-                current_stop_loss = 0
-                
-            if not (is_long_side(position_type) and new_stop_loss > current_stop_loss * 1.01) and \
-                not (is_short_side(position_type) and new_stop_loss < current_stop_loss * 0.99):
+            current_stop_loss = await self.binance_service.get_stop_price(symbol, position_type, 'STOP_MARKET')
+            logger.info(f"_update_stop_loss: Current stop loss for {symbol}: {current_stop_loss}")
+
+            if not (is_long_side(position_type) and (not current_stop_loss or new_stop_loss > current_stop_loss * 1.02)) and \
+                not (is_short_side(position_type) and (not current_stop_loss or new_stop_loss < current_stop_loss * 0.98)):
                 return
             
             # Update stop loss using binance_service
@@ -2331,19 +2350,11 @@ class EnhancedTradingStrategy:
                 logger.warning(f"No active {position_side} position found for {symbol}")
                 return
                 
-            existing_orders = await self.binance_service.get_open_orders(symbol)
-            open_position_side = "SELL" if is_long_side(position_type) else "BUY"
-            if existing_orders:
-                existing_tp = await self.binance_service.get_existing_order(symbol, 'TAKE_PROFIT_MARKET', open_position_side)
-                if not existing_tp:
-                    current_take_profit = 0
-                else:
-                    current_take_profit = float(existing_tp.get('stopPrice', 0))
-            else:
-                current_take_profit = 0
-                
-            if not (is_long_side(position_type) and new_take_profit > current_take_profit * 1.01) and \
-                not (is_short_side(position_type) and new_take_profit < current_take_profit * 0.99):
+            current_take_profit = await self.binance_service.get_stop_price(symbol, position_type, 'TAKE_PROFIT_MARKET')
+            logger.info(f"_update_take_profit: Current take profit for {symbol}: {current_take_profit}")
+
+            if not (is_long_side(position_type) and (not current_take_profit or new_take_profit > current_take_profit * 1.02)) and \
+                not (is_short_side(position_type) and (not current_take_profit or new_take_profit < current_take_profit * 0.98)):
                 return
 
             # Update take profit using binance_service
@@ -2583,7 +2594,8 @@ class EnhancedTradingStrategy:
                     if symbol:
                         # Check if we should close the position
                         if await self.should_close_position(position):
-                            await self.binance_service.close_position(symbol)
+                            logger.info(f"_monitor_positions: Closing position for {symbol} with side {position['info']['positionSide']}")
+                            await self.binance_service.close_position(symbol, position['info']['positionSide'])
                             continue
                             
                         # Check if we should update stops

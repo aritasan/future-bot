@@ -1332,6 +1332,37 @@ class BinanceService:
             logger.error(f"Error getting open orders: {str(e)}")
             return None
 
+    async def get_stop_price(self, symbol: str, position_side: str, order_type: str) -> Optional[float]:
+        """Get stop price of open position for specific symbol and side.
+        
+        Args:
+            symbol: Trading pair symbol
+            position_side: Position side (LONG/SHORT)
+            
+        Returns:
+            Optional[float]: Stop price if found, None otherwise
+        """
+        try:
+            if not self._is_initialized:
+                logger.error("Binance service not initialized")
+                return None
+                
+            if self._is_closed:
+                logger.error("Binance service is closed") 
+                return None
+
+            existing_orders = await self.get_open_orders(symbol)
+            open_position_side = 'SELL' if is_long_side(position_side) else 'BUY'
+            if existing_orders:
+                existing_sl = await self.get_existing_order(symbol, order_type, open_position_side)
+                if existing_sl:
+                    return float(existing_sl.get('stopPrice', 0))
+                    
+            return None
+
+        except Exception as e:
+            logger.error(f"Error getting stop price for {symbol} {position_side}: {str(e)}")
+            return None
     async def get_existing_order(self, symbol: str, order_type: str, side: str) -> Optional[Dict]:
         """Get existing order for a symbol with specific type and side.
         
@@ -1413,6 +1444,13 @@ class BinanceService:
                 logger.info(f"Position closed for {symbol} {position_side}: {result}")
                 # Clear position cache
                 self._cache.pop('positions', None)
+                # Send telegram notification about position closure
+                await self.telegram_service.send_message(
+                    f"Position closed for {symbol} {position_side}\n"
+                    f"Amount: {amount}\n"
+                    f"Side: {side}\n"
+                    f"Order: {result}"
+                )
                 return True
             else:
                 logger.error(f"Failed to close position for {symbol} {position_side}")
