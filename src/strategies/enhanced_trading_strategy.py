@@ -797,27 +797,31 @@ class EnhancedTradingStrategy:
             return False
 
     def _check_candlestick_patterns(self, df: pd.DataFrame, position_type: str) -> float:
-        """Check candlestick patterns for a specific position type and return a score.
+        """Check candlestick patterns for entry signals.
         
         Args:
-            df: Price data DataFrame
+            df: DataFrame with OHLCV data
             position_type: Position type (LONG/SHORT)
             
         Returns:
             float: Score between 0 and 1 indicating pattern strength
         """
         try:
-            if df.empty or len(df) < 3:
+            if df is None or df.empty:
                 return 0.0
                 
-            # Lấy 3 nến gần nhất
-            last_3_candles = df.iloc[-3:]
             score = 0.0
             
-            if position_type == "LONG":
-                # Kiểm tra các mẫu nến tăng giá
-                # 1. Hammer hoặc Inverted Hammer
-                last_candle = last_3_candles.iloc[-1]
+            # Get last 3 candles for pattern analysis
+            last_3_candles = df.tail(3)
+            if len(last_3_candles) < 3:
+                return 0.0
+                
+            last_candle = last_3_candles.iloc[-1]
+            
+            if is_long_side(position_type):
+                # Check bullish patterns
+                # 1. Hammer or Inverted Hammer
                 body_size = abs(last_candle['close'] - last_candle['open'])
                 lower_wick = min(last_candle['open'], last_candle['close']) - last_candle['low']
                 upper_wick = last_candle['high'] - max(last_candle['open'], last_candle['close'])
@@ -828,15 +832,14 @@ class EnhancedTradingStrategy:
                 if is_hammer or is_inverted_hammer:
                     score += 0.5
                     
-                # 2. Kiểm tra xu hướng giảm trước đó
+                # 2. Check previous downtrend
                 prev_2_candles = last_3_candles.iloc[:-1]
                 if all(prev_2_candles['close'] < prev_2_candles['open']):
                     score += 0.5
                     
-            else:  # SHORT
-                # Kiểm tra các mẫu nến giảm giá
-                # 1. Shooting Star hoặc Hanging Man
-                last_candle = last_3_candles.iloc[-1]
+            else:  # SHORT position
+                # Check bearish patterns
+                # 1. Shooting Star or Hanging Man
                 body_size = abs(last_candle['close'] - last_candle['open'])
                 lower_wick = min(last_candle['open'], last_candle['close']) - last_candle['low']
                 upper_wick = last_candle['high'] - max(last_candle['open'], last_candle['close'])
@@ -847,7 +850,7 @@ class EnhancedTradingStrategy:
                 if is_shooting_star or is_hanging_man:
                     score += 0.5
                     
-                # 2. Kiểm tra xu hướng tăng trước đó
+                # 2. Check previous uptrend
                 prev_2_candles = last_3_candles.iloc[:-1]
                 if all(prev_2_candles['close'] > prev_2_candles['open']):
                     score += 0.5
