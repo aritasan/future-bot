@@ -499,10 +499,11 @@ class EnhancedTradingStrategy:
                 return False
                 
             # Check candlestick patterns với trọng số
-            # pattern_score = self._check_candlestick_patterns(df, position_type)
-            # if pattern_score < 0.6:  # Yêu cầu ít nhất 60% điểm
-            #     logger.info(f"Candlestick patterns conditions not met for {position_type}")
-            #     return False
+            if is_short_side(position_type): # Check candlestick if SELL
+                pattern_score = self._check_candlestick_patterns(df, position_type)
+                if pattern_score < 0.6:  # Yêu cầu ít nhất 60% điểm
+                    logger.info(f"Candlestick patterns conditions not met for {position_type}")
+                    return False
                 
             # Check funding rate với ngưỡng động
             funding_threshold = 0.0002 * (1 + volatility)  # Tăng ngưỡng khi volatility cao
@@ -910,6 +911,15 @@ class EnhancedTradingStrategy:
             # logger.info(f"Calculating stop loss for {symbol} {position_type} {position_type.upper()}")
             if is_long_side(position_type):
                 stop_loss = float(current_price) - (float(atr) * stop_loss_multiplier)
+                # For long positions, ensure stop loss is always positive
+                k = stop_loss_multiplier
+                while stop_loss <= 0 and k > 0:  # Add k > 0 check to avoid infinite loop
+                    k = k * 0.8  # Reduce multiplier by 20% each time for smoother adjustment
+                    stop_loss = float(current_price) - (float(atr) * k)
+                    
+                # Set minimum stop loss if still <= 0
+                if stop_loss <= 0:
+                    stop_loss = float(current_price) * 0.01  # Set to 1% of current price as minimum
             else:
                 stop_loss = float(current_price) + (float(atr) * stop_loss_multiplier)
             
@@ -922,9 +932,18 @@ class EnhancedTradingStrategy:
                 # Increase stop loss distance in high volatility
                 if is_long_side(position_type):
                     stop_loss = float(current_price) - (float(atr) * stop_loss_multiplier * 1.5)
+                    k = stop_loss_multiplier
+                    while stop_loss <= 0 and k > 0:  # Add k > 0 check to avoid infinite loop
+                        k = k * 0.8  # Reduce multiplier by 20% each time for smoother adjustment
+                        stop_loss = float(current_price) - (float(atr) * k)
+                    
+                    # Set minimum stop loss if still <= 0
+                    if stop_loss <= 0:
+                        stop_loss = float(current_price) * 0.01  # Set to 1% of current price as minimum
                 else:
                     stop_loss = float(current_price) + (float(atr) * stop_loss_multiplier * 1.5)
             
+
             # Ensure minimum distance from current price
             min_distance = float(self.config['risk_management']['min_stop_distance'])
             if is_long_side(position_type):
@@ -934,7 +953,7 @@ class EnhancedTradingStrategy:
                 # For SHORT positions, ensure stop loss is above current price
                 stop_loss = max(stop_loss, float(current_price) * (1 + min_distance))
             
-            # logger.info(f"Calculated stop loss for {symbol} {position_type.lower()}: {stop_loss} (current price: {current_price})")
+            logger.info(f"Calculated stop loss for {symbol} {position_type.lower()}: {stop_loss} (current price: {current_price})")
             return stop_loss
             
         except Exception as e:
@@ -956,6 +975,15 @@ class EnhancedTradingStrategy:
                 take_profit = current_price + (price_diff * risk_reward_ratio)
             else:
                 take_profit = current_price - (price_diff * risk_reward_ratio)
+                # Ensure take profit is always positive
+                k = risk_reward_ratio
+                while take_profit <= 0 and k > 0:  # Add k > 0 check to avoid infinite loop
+                    k = k * 0.8  # Reduce multiplier by 20% each time for smoother adjustment
+                    take_profit = current_price - (price_diff * k)
+                
+                # Set minimum take profit if still <= 0
+                if take_profit <= 0:
+                    take_profit = current_price * 0.5  # Set to 50% of current price as minimum
             
             # Ensure minimum distance from current price
             min_distance = float(self.config['risk_management']['min_tp_distance'])
@@ -966,7 +994,7 @@ class EnhancedTradingStrategy:
                 # For SHORT positions, ensure take profit is below current price
                 take_profit = min(take_profit, current_price * (1 - min_distance))
             
-            # logger.info(f"Calculated take profit for {symbol} {position_type.lower()}: {take_profit} (current price: {current_price})")
+            logger.info(f"Calculated take profit for {symbol} {position_type.lower()}: {take_profit} (current price: {current_price})")
             return take_profit
             
         except Exception as e:
@@ -1182,6 +1210,13 @@ class EnhancedTradingStrategy:
             if not entry_price:
                 return {}
                 
+            # Ensure current_price is a float
+            try:
+                current_price = float(current_price)
+            except (TypeError, ValueError):
+                logger.error(f"Invalid current_price type: {type(current_price)}")
+                return {}
+                
             # Get market conditions
             market_conditions = await self._get_market_conditions(position['info']['symbol'])
             if not market_conditions:
@@ -1211,14 +1246,41 @@ class EnhancedTradingStrategy:
                 
             stop_distance *= trend_multiplier
             
-            # Calculate new stop loss
+            # Calculate new stop loss and take profit
+            take_profit_multiplier = self.config['risk_management'].get('take_profit_multiplier', 2.0)
+            
             if position_amt > 0:  # Long position
-                new_stop_loss = current_price - (stop_distance * current_price)
-                new_take_profit = current_price + (stop_distance * current_price * self.config['risk_management']['take_profit_multiplier'])
+                new_stop_loss = current_price * (1 - stop_distance)
+                new_take_profit = current_price * (1 + (stop_distance * take_profit_multiplier))
             else:  # Short position
-                new_stop_loss = current_price + (stop_distance * current_price)
-                new_take_profit = current_price - (stop_distance * current_price * self.config['risk_management']['take_profit_multiplier'])
+                new_stop_loss = current_price * (1 + stop_distance)
+                new_take_profit = current_price * (1 - (stop_distance * take_profit_multiplier))
+            
+            # Validate the calculated prices
+            if new_stop_loss <= 0 or new_take_profit <= 0:
+                logger.error(f"Invalid calculated prices - Stop Loss: {new_stop_loss}, Take Profit: {new_take_profit}")
+                return {}
                 
+            # For short positions, ensure stop loss is above current price and take profit is below
+            if position_amt < 0:
+                if new_stop_loss <= current_price:
+                    new_stop_loss = current_price * 1.02  # Set stop loss 2% above current price
+                if new_take_profit >= current_price:
+                    new_take_profit = current_price * 0.98  # Set take profit 2% below current price
+            # For long positions, ensure stop loss is below current price and take profit is above
+            else:
+                if new_stop_loss >= current_price:
+                    new_stop_loss = current_price * 0.98  # Set stop loss 2% below current price
+                if new_take_profit <= current_price:
+                    new_take_profit = current_price * 1.02  # Set take profit 2% above current price
+            
+            # Round prices to appropriate decimal places
+            price_precision = self._get_price_precision(position['info']['symbol'])
+            new_stop_loss = round(new_stop_loss, price_precision)
+            new_take_profit = round(new_take_profit, price_precision)
+            
+            logger.info(f"Calculated stops for {position['info']['symbol']} - Current Price: {current_price}, Stop Loss: {new_stop_loss}, Take Profit: {new_take_profit}")
+            
             return {
                 'stop_loss': new_stop_loss,
                 'take_profit': new_take_profit
@@ -1229,6 +1291,29 @@ class EnhancedTradingStrategy:
             logger.error(f"Traceback:\n{traceback.format_exc()}")
             logger.error(f"Error calculating new stops: {str(e)}")
             return {}
+            
+    def _get_price_precision(self, symbol: str) -> int:
+        """Get price precision for a symbol.
+        
+        Args:
+            symbol: Trading pair symbol
+            
+        Returns:
+            int: Number of decimal places for price
+        """
+        try:
+            # Get market info
+            market = self.binance_service.exchange.markets.get(symbol)
+            if not market:
+                return 8  # Default precision
+                
+            # Get price precision from market info
+            precision = market.get('precision', {}).get('price', 8)
+            return precision
+            
+        except Exception as e:
+            logger.error(f"Error getting price precision for {symbol}: {str(e)}")
+            return 8  # Default precision
 
     def get_trend(self, df: pd.DataFrame) -> str:
         """Get current trend direction.
