@@ -1037,11 +1037,11 @@ class EnhancedTradingStrategy:
                     )
                     return True
                     
-            # Check if unrealized PnL is below -100% margin (emergency stop)
-            if unrealized_pnl < -margin:
-                logger.info(f"Emergency stop triggered for {symbol} - PnL below -100% margin")
+            # Check if unrealized PnL is below -400% margin (emergency stop)
+            if unrealized_pnl < -4*margin:
+                logger.info(f"Emergency stop triggered for {symbol} {position_side.upper()} - PnL below -400% margin")
                 await self.telegram_service.send_message(
-                    f"Emergency stop triggered for {symbol} - PnL below -100% margin\n"
+                    f"Emergency stop triggered for {symbol} {position_side.upper()} - PnL below -400% margin\n"
                     f"Current price: {current_price}\n"
                     f"Price change: {price_change:.2%}\n" 
                     f"Unrealized PnL: {unrealized_pnl}"
@@ -1054,9 +1054,9 @@ class EnhancedTradingStrategy:
             if market_conditions:
                 # Check if market volatility is too high
                 if market_conditions.get('volatility') > 0.05 and abs(price_change) > 0.1:  # 10% move
-                    logger.info(f"Closing position for {symbol} due to high volatility")
+                    logger.info(f"Closing position for {symbol} {position_side.upper()} due to high volatility")
                     await self.telegram_service.send_message(
-                        f"Closing position for {symbol} due to high volatility\n"
+                        f"Closing position for {symbol} {position_side.upper()} due to high volatility\n"
                         f"Current price: {current_price}\n"
                         f"Price change: {price_change:.2%}\n" 
                         f"Volatility: {market_conditions.get('volatility'):.2%}\n"
@@ -1069,9 +1069,9 @@ class EnhancedTradingStrategy:
                 if trend:
                     if (position_amt > 0 and trend.upper() == 'DOWN' and unrealized_pnl > 0) or \
                        (position_amt < 0 and trend.upper() == 'UP' and unrealized_pnl > 0):
-                        logger.info(f"Closing position for {symbol} due to trend reversal")
+                        logger.info(f"Closing position for {symbol} {position_side.upper()} due to trend reversal")
                         await self.telegram_service.send_message(
-                            f"Closing position for {symbol} due to trend reversal\n"
+                            f"Closing position for {symbol} {position_side.upper()} due to trend reversal\n"
                             f"Current price: {current_price}\n"
                             f"Price change: {price_change:.2%}\n" 
                             f"Unrealized PnL: {unrealized_pnl}"
@@ -1082,9 +1082,9 @@ class EnhancedTradingStrategy:
                 sentiment = market_conditions.get('sentiment', 'neutral')
                 if (position_amt > 0 and sentiment == 'bearish' and unrealized_pnl > 0) or \
                    (position_amt < 0 and sentiment == 'bullish' and unrealized_pnl > 0):
-                    logger.info(f"Closing position for {symbol} due to strong market sentiment")
+                    logger.info(f"Closing position for {symbol} {position_side.upper()} due to strong market sentiment")
                     await self.telegram_service.send_message(
-                        f"Closing position for {symbol} due to strong market sentiment\n"
+                        f"Closing position for {symbol} {position_side.upper()} due to strong market sentiment\n"
                         f"Current price: {current_price}\n"
                         f"Price change: {price_change:.2%}\n" 
                         f"Unrealized PnL: {unrealized_pnl}"
@@ -1225,6 +1225,8 @@ class EnhancedTradingStrategy:
             }
             
         except Exception as e:
+            import traceback
+            logger.error(f"Traceback:\n{traceback.format_exc()}")
             logger.error(f"Error calculating new stops: {str(e)}")
             return {}
 
@@ -2595,7 +2597,12 @@ class EnhancedTradingStrategy:
                         # Check if we should close the position
                         if await self.should_close_position(position):
                             logger.info(f"_monitor_positions: Closing position for {symbol} with side {position['info']['positionSide']}")
-                            await self.binance_service.close_position(symbol, position['info']['positionSide'])
+                            if await self.binance_service.close_position(symbol, position['info']['positionSide']):
+                                logger.info(f"_monitor_positions: Position closed for {symbol}")
+                                await self.telegram_service.send_message(
+                                    f"Position closed for {symbol} {position['info']['positionSide']}\n"
+                                    f"Amount: {position['info']['positionAmt']}\n"
+                                    f"PnL: {position['unrealizedPnl']}")
                             continue
                             
                         # Check if we should update stops
@@ -2939,7 +2946,12 @@ class EnhancedTradingStrategy:
             if await self.should_close_position(position):
                 logger.info(f"_manage_existing_position: Closing position for {symbol} with side {position['info']['positionSide']}")
                 # Close the position
-                await self.binance_service.close_position(symbol, position['info']['positionSide'])
+                if await self.binance_service.close_position(symbol, position['info']['positionSide']):
+                    logger.info(f"_manage_existing_position: Position closed for {symbol}")
+                    await self.telegram_service.send_message(
+                        f"Position closed for {symbol} {position['info']['positionSide']}\n"
+                        f"Amount: {position['info']['positionAmt']}\n"
+                        f"PnL: {position['unrealizedPnl']}")
                 return
                 
             # Get position details

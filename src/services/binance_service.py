@@ -1443,14 +1443,6 @@ class BinanceService:
             if result:
                 logger.info(f"Position closed for {symbol} {position_side}: {result}")
                 # Clear position cache
-                self._cache.pop('positions', None)
-                # Send telegram notification about position closure
-                await self.telegram_service.send_message(
-                    f"Position closed for {symbol} {position_side}\n"
-                    f"Amount: {amount}\n"
-                    f"Side: {side}\n"
-                    f"Order: {result}"
-                )
                 return True
             else:
                 logger.error(f"Failed to close position for {symbol} {position_side}")
