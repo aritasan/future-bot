@@ -501,7 +501,7 @@ class EnhancedTradingStrategy:
             # Check candlestick patterns với trọng số
             if is_short_side(position_type): # Check candlestick if SELL
                 pattern_score = self._check_candlestick_patterns(df, position_type)
-                if pattern_score < 0.6:  # Yêu cầu ít nhất 60% điểm
+                if pattern_score < -0.6:  # Yêu cầu ít nhất 60% điểm
                     logger.info(f"Candlestick patterns conditions not met for {position_type}")
                     return False
                 
@@ -804,7 +804,8 @@ class EnhancedTradingStrategy:
             position_type: Position type (LONG/SHORT)
             
         Returns:
-            float: Score between 0 and 1 indicating pattern strength
+            float: Score between -1 and 1 indicating pattern strength
+                  Positive for LONG, negative for SHORT
         """
         try:
             if df is None or df.empty:
@@ -854,6 +855,9 @@ class EnhancedTradingStrategy:
                 prev_2_candles = last_3_candles.iloc[:-1]
                 if all(prev_2_candles['close'] > prev_2_candles['open']):
                     score += 0.5
+                    
+                # Convert score to negative for SHORT positions
+                score = -score
                     
             return score
             
@@ -922,7 +926,7 @@ class EnhancedTradingStrategy:
                     
                 # Set minimum stop loss if still <= 0
                 if stop_loss <= 0:
-                    stop_loss = float(current_price) * 0.01  # Set to 1% of current price as minimum
+                    stop_loss = float(current_price) * 0.02  # Set to 2% of current price as minimum
             else:
                 stop_loss = float(current_price) + (float(atr) * stop_loss_multiplier)
             
