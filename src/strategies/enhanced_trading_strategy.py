@@ -2416,7 +2416,7 @@ class EnhancedTradingStrategy:
                     position_side=position_side,
                     entry_price=float(position.get('entryPrice', 0)),
                     stop_price=new_stop_loss,
-                    pnl_percent=float(position.get('unrealizedPnl', 0))
+                    pnl_usd=float(position.get('unrealizedPnl', 0))
                 )
             else:
                 logger.error(f"Failed to update stop loss for {symbol} {position_side}")
@@ -2465,7 +2465,7 @@ class EnhancedTradingStrategy:
                     position_side=position_side,
                     entry_price=float(position.get('entryPrice', 0)),
                     tp_price=new_take_profit,
-                    pnl_percent=float(position.get('unrealizedPnl', 0))
+                    pnl_usd=float(position.get('unrealizedPnl', 0))
                 )
             else:
                 logger.error(f"Failed to update take profit for {symbol} {position_side}")

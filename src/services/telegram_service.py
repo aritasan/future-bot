@@ -863,7 +863,7 @@ class TelegramService:
             return False
 
     async def send_stop_loss_notification(self, symbol: str, position_side: str, entry_price: float, 
-                                        stop_price: float, pnl_percent: float) -> bool:
+                                        stop_price: float, pnl_usd: float) -> bool:
         """Send a stop loss notification.
         
         Args:
@@ -871,7 +871,7 @@ class TelegramService:
             position_side: Position side (LONG/SHORT)
             entry_price: Position entry price
             stop_price: Stop loss price
-            pnl_percent: Percentage of profit/loss
+            pnl_usd: USDT of profit/loss
             
         Returns:
             bool: True if notification sent successfully, False otherwise
@@ -887,17 +887,17 @@ class TelegramService:
                 f"Position: {position_side}\n"
                 f"Entry Price: {entry_price:.8f}\n"
                 f"Stop Price: {stop_price:.8f}\n"
-                f"PnL: {pnl_percent:.2f}%"
+                f"PnL: {pnl_usd:.2f} USDT"
             )
             
-            return await self.send_message(message)
+            return await self.send_pnl_usdmessage(message)
             
         except Exception as e:
             logger.error(f"Error sending stop loss notification: {str(e)}")
             return False
             
     async def send_take_profit_notification(self, symbol: str, position_side: str, entry_price: float,
-                                          tp_price: float, pnl_percent: float) -> bool:
+                                          tp_price: float, pnl_usd: float) -> bool:
         """Send a take profit notification.
         
         Args:
@@ -905,7 +905,7 @@ class TelegramService:
             position_side: Position side (LONG/SHORT)
             entry_price: Position entry price
             tp_price: Take profit price
-            pnl_percent: Percentage of profit/loss
+            pnl_usd: USDT of profit/loss
             
         Returns:
             bool: True if notification sent successfully, False otherwise
@@ -921,7 +921,7 @@ class TelegramService:
                 f"Position: {position_side}\n"
                 f"Entry Price: {entry_price:.8f}\n"
                 f"TP Price: {tp_price:.8f}\n"
-                f"PnL: {pnl_percent:.2f}%"
+                f"PnL: {pnl_usd:.2f} USDT"
             )
             
             return await self.send_message(message)
