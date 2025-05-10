@@ -977,20 +977,10 @@ class EnhancedTradingStrategy:
             price_diff = abs(current_price - stop_loss)
             
             # Calculate take profit based on risk-reward ratio
-            # logger.info(f"Calculating take profit for {symbol} {position_type} {position_type.upper()}")
             if is_long_side(position_type):
                 take_profit = current_price + (price_diff * risk_reward_ratio)
             else:
                 take_profit = current_price - (price_diff * risk_reward_ratio)
-                # Ensure take profit is always positive
-                k = risk_reward_ratio
-                while take_profit <= 0 and k > 0:  # Add k > 0 check to avoid infinite loop
-                    k = k * 0.8  # Reduce multiplier by 20% each time for smoother adjustment
-                    take_profit = current_price - (price_diff * k)
-                
-                # Set minimum take profit if still <= 0
-                if take_profit <= 0:
-                    take_profit = current_price * 0.5  # Set to 50% of current price as minimum
             
             # Ensure minimum distance from current price
             min_distance = float(self.config['risk_management']['min_tp_distance'])
@@ -1000,6 +990,14 @@ class EnhancedTradingStrategy:
             else:
                 # For SHORT positions, ensure take profit is below current price
                 take_profit = min(take_profit, current_price * (1 - min_distance))
+                
+                # Additional validation for SHORT positions
+                if take_profit <= 0:
+                    # If take profit is negative, set it to a reasonable percentage below current price
+                    take_profit = current_price * 0.5  # 50% below current price
+                elif take_profit >= current_price:
+                    # If take profit is above current price, set it to a reasonable percentage below
+                    take_profit = current_price * 0.8  # 20% below current price
             
             logger.info(f"Calculated take profit for {symbol} {position_type.lower()}: {take_profit} (current price: {current_price})")
             return take_profit
@@ -1253,6 +1251,10 @@ class EnhancedTradingStrategy:
                 
             stop_distance *= trend_multiplier
             
+            # Ensure minimum stop distance (at least 2% for Binance)
+            min_stop_distance = 0.02  # 2% minimum distance
+            stop_distance = max(stop_distance, min_stop_distance)
+            
             # Calculate new stop loss and take profit
             take_profit_multiplier = self.config['risk_management'].get('take_profit_multiplier', 2.0)
             
@@ -1270,14 +1272,14 @@ class EnhancedTradingStrategy:
                 
             # For short positions, ensure stop loss is above current price and take profit is below
             if position_amt < 0:
-                if new_stop_loss <= current_price:
-                    new_stop_loss = current_price * 1.02  # Set stop loss 2% above current price
+                if new_stop_loss <= current_price * 1.02:  # Ensure at least 2% above current price
+                    new_stop_loss = current_price * 1.02
                 if new_take_profit >= current_price:
                     new_take_profit = current_price * 0.98  # Set take profit 2% below current price
             # For long positions, ensure stop loss is below current price and take profit is above
             else:
-                if new_stop_loss >= current_price:
-                    new_stop_loss = current_price * 0.98  # Set stop loss 2% below current price
+                if new_stop_loss >= current_price * 0.98:  # Ensure at least 2% below current price
+                    new_stop_loss = current_price * 0.98
                 if new_take_profit <= current_price:
                     new_take_profit = current_price * 1.02  # Set take profit 2% above current price
             

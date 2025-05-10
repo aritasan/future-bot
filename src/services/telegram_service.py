@@ -890,7 +890,7 @@ class TelegramService:
                 f"PnL: {pnl_usd:.2f} USDT"
             )
             
-            return await self.send_pnl_usdmessage(message)
+            return await self.send_message(message)
             
         except Exception as e:
             logger.error(f"Error sending stop loss notification: {str(e)}")
