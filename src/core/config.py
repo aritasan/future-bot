@@ -154,8 +154,8 @@ def load_config() -> Dict[str, Any]:
                 # General risk parameters
                 'max_risk_per_trade': 0.02,  # 2% of account balance
                 'max_risk_per_position': 0.05,  # 5% of account balance
-                'min_stop_distance': 0.01,  # 0.5% minimum stop distance
-                'min_tp_distance': 0.03,  # 1% minimum take profit distance
+                'min_stop_distance': 0.1,  # 10% minimum stop distance
+                'min_tp_distance': 0.1,  # 10% minimum take profit distance
                 'take_profit_multiplier': 7.0,  # R:R ratio
                 
                 # Stop loss calculation parameters
@@ -163,7 +163,7 @@ def load_config() -> Dict[str, Any]:
                 'volatility_multiplier': 1.5,  # Volatility adjustment factor
                 'trend_multiplier': 1.2,  # Trend strength adjustment factor
                 'base_stop_distance': 0.02,  # Base stop distance (2%)
-                'stop_loss_atr_multiplier': 3.5,  # ATR multiplier for stop loss calculation
+                'stop_loss_atr_multiplier': 5.0,  # ATR multiplier for stop loss calculation
                 
                 # DCA parameters
                 'dca': {
@@ -212,7 +212,7 @@ def load_config() -> Dict[str, Any]:
                     # New dynamic trailing stop parameters
                     'dynamic': {
                         'enabled': True,
-                        'atr_multiplier': 1.5,
+                        'atr_multiplier': 4.5,
                         'volatility_adjustment': True,
                         'trend_adjustment': True
                     },
