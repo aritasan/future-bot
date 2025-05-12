@@ -501,7 +501,7 @@ class EnhancedTradingStrategy:
             # Check candlestick patterns với trọng số
             if is_short_side(position_type): # Check candlestick if SELL
                 pattern_score = self._check_candlestick_patterns(df, position_type)
-                if pattern_score < -0.6:  # Yêu cầu ít nhất 60% điểm
+                if pattern_score > -0.5:  # Yêu cầu ít nhất 50% điểm
                     logger.info(f"Candlestick patterns conditions not met for {position_type}")
                     return False
                 
@@ -697,7 +697,7 @@ class EnhancedTradingStrategy:
                 return False
                 
             # Check position type specific conditions
-            if position_type == "LONG":
+            if is_long_side(position_type):
                 # For LONG: check volume in lower price levels
                 lower_volume = sum(vol for price, vol in profile_data.items() 
                                  if price < current_price)
@@ -748,7 +748,7 @@ class EnhancedTradingStrategy:
             # Get current price
             current_price = (float(order_book['bids'][0][0]) + float(order_book['asks'][0][0])) / 2
             
-            if position_type == "LONG":
+            if is_long_side(position_type):
                 # For LONG: check depth on bid side
                 bid_depth = sum(float(bid[1]) for bid in order_book['bids'])
                 ask_depth = sum(float(ask[1]) for ask in order_book['asks'])
@@ -3957,7 +3957,7 @@ class EnhancedTradingStrategy:
                 
             # Kiểm tra trend BTC
             btc_trend = self.get_trend(btc_data)
-            if btc_trend != "UPTREND":
+            if btc_trend != "UP":
                 return False
                 
             # Kiểm tra volume BTC
