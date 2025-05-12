@@ -235,7 +235,7 @@ class EnhancedTradingStrategy:
         except Exception as e:
             logger.error(f"Error calculating position size: {str(e)}")
             return None
-            
+
     async def generate_signals(self, symbol: str, indicator_service: IndicatorService) -> Optional[Dict]:
         """Generate trading signals for a symbol."""
         try:
@@ -1016,27 +1016,35 @@ class EnhancedTradingStrategy:
             logger.error(f"Error closing strategy: {str(e)}")
             
     async def should_close_position(self, position: dict) -> bool:
-        """Check if position should be closed based on various conditions.
-        
-        Args:
-            position: Position details
-            
-        Returns:
-            bool: True if position should be closed, False otherwise
-        """
         try:
             symbol = position.get('symbol')
             position_side = position.get('info', {}).get('positionSide')
-            entry_price = float(position.get('entryPrice', 0))
-            current_price = float(position.get('markPrice', 0))
             position_amt = float(position.get('info', {}).get('positionAmt', 0))
             unrealized_pnl = float(position.get('unrealizedPnl', 0))
-            margin = float(position.get('initialMargin', 0))
-            
-            if not all([symbol, entry_price, current_price, position_amt]):
-                logger.error(f"Missing required position data for {symbol}")
+            if position_amt == 0:
                 return False
                 
+            # Get current market data
+            df = await self.indicator_service.get_historical_data(symbol, '1h', limit=100)
+            if df is None or df.empty:
+                return False
+                
+            # Check momentum-based exit
+            if self._should_exit_by_momentum(df, position_side):
+                logger.info(f"Closing position for {symbol} {position_side.upper()} due to momentum signal")
+                await self.telegram_service.send_message(
+                    f"Closing position for {symbol} {position_side.upper()} due to momentum signal\n"
+                    f"Current price: {df['close'].iloc[-1]}\n"
+                    f"Position size: {position_amt}\n"
+                    f"Unrealized PnL: {unrealized_pnl}"
+                )
+                return True
+                
+            # Continue with existing exit conditions
+            current_price = float(df['close'].iloc[-1])
+            entry_price = float(position.get('entryPrice', 0))
+            margin = float(position.get('initialMargin', 0))
+            
             # Calculate price change
             price_change = (current_price - entry_price) / entry_price
             if position_amt < 0:  # For short positions, invert the price change
@@ -1668,6 +1676,11 @@ class EnhancedTradingStrategy:
             volatility_score_1m = min(100, (atr_1m / current_price_1m) * 1000)
             volatility_score_5m = min(100, (atr_5m / current_price_5m) * 1000)
             
+            # Calculate average volatility from historical ATR
+            average_volatility_1m = btc_data_1m['ATR'].mean() / current_price_1m
+            average_volatility_5m = btc_data_5m['ATR'].mean() / current_price_5m
+            average_volatility = (average_volatility_1m * 0.3) + (average_volatility_5m * 0.7)
+            
             # Combined volatility score with more weight on 5m
             volatility_score = (volatility_score_1m * 0.3) + (volatility_score_5m * 0.7)
             
@@ -1699,7 +1712,8 @@ class EnhancedTradingStrategy:
                 'roc_5m': roc_5m,
                 'ema': ema,
                 'current_price': current_price_5m,
-                'trend': trend
+                'trend': trend,
+                'average_volatility': average_volatility
             }
             
         except Exception as e:
@@ -1914,6 +1928,7 @@ class EnhancedTradingStrategy:
                 
             # Check if DCA is favorable
             if not self._is_dca_favorable(price_drop, market_conditions, position_type):
+                logger.info(f"DCA not favorable for {symbol} {position_type}")
                 return None
                 
             # Calculate DCA size
@@ -1945,8 +1960,14 @@ class EnhancedTradingStrategy:
                         
                         # Update orders
                         logger.info(f"_handle_dca: Updating stop loss for {symbol} to {new_stop_loss}")
-                        await self._update_stop_loss(symbol, new_stop_loss, position_type)
-                        await self._update_take_profit(symbol, new_take_profit, position_type)
+                        if await self._update_stop_loss(symbol, new_stop_loss, position_type):
+                            logger.info(f"_handle_dca: Stop loss updated for {symbol} {position_type}")
+                        else:
+                            logger.error(f"_handle_dca: Failed to update stop loss for {symbol} {position_type}")
+                        if await self._update_take_profit(symbol, new_take_profit, position_type):
+                            logger.info(f"_handle_dca: Take profit updated for {symbol} {position_type}")
+                        else:
+                            logger.error(f"_handle_dca: Failed to update take profit for {symbol} {position_type}")
                         
                         # Update DCA information
                         if is_long_side(position_type):
@@ -2212,12 +2233,14 @@ class EnhancedTradingStrategy:
             if symbol in self._last_update:
                 last_update = self._last_update[symbol]
                 if time.time() - last_update < self.config['risk_management']['trailing_stop']['update_interval']:
+                    logger.info(f"Skipping trailing stop update for {symbol} because it was updated recently")
                     return
                     
             position_side = "LONG" if is_long_side(position_type) else "SHORT"
             # Get position details
             position = await self.binance_service.get_position(symbol, position_side)
             if not position:
+                logger.warning(f"No active {position_side} position found for {symbol}")
                 return
 
             # Get current market data
@@ -2228,6 +2251,7 @@ class EnhancedTradingStrategy:
             
             # Only proceed if we have unrealized profit
             if unrealized_pnl <= 0:
+                logger.warning(f"No unrealized profit for {symbol} {position_side}")
                 return
             
             # Calculate position age
@@ -2378,7 +2402,7 @@ class EnhancedTradingStrategy:
             return current_price * (1 + emergency_distance)
 
     async def _update_stop_loss(self, symbol: str, new_stop_loss: float,
-                              position_type: str) -> None:
+                              position_type: str) -> bool:
         """
         Update stop loss for a position.
         
@@ -2386,6 +2410,8 @@ class EnhancedTradingStrategy:
             symbol: Trading pair symbol
             new_stop_loss: New stop loss price
             position_type: Position type (BUY/SELL/LONG/SHORT)
+        Returns:
+            bool: True if stop loss updated successfully, False otherwise
         """
         try:
             # Convert position_type to position_side for HEDGE mode
@@ -2395,14 +2421,14 @@ class EnhancedTradingStrategy:
             position = await self.binance_service.get_position(symbol, position_side)
             if not position or float(position.get('contracts', 0)) == 0:
                 logger.warning(f"No active {position_side} position found for {symbol}")
-                return
+                return False
                 
             current_stop_loss = await self.binance_service.get_stop_price(symbol, position_type, 'STOP_MARKET')
             logger.info(f"_update_stop_loss: Current stop loss for {symbol}: {current_stop_loss}")
 
             if not (is_long_side(position_type) and (not current_stop_loss or new_stop_loss > current_stop_loss * 1.02)) and \
                 not (is_short_side(position_type) and (not current_stop_loss or new_stop_loss < current_stop_loss * 0.98)):
-                return
+                return False
             
             # Update stop loss using binance_service
             success = await self.binance_service._update_stop_loss(
@@ -2416,18 +2442,21 @@ class EnhancedTradingStrategy:
                 await self.telegram_service.send_stop_loss_notification(
                     symbol=symbol,
                     position_side=position_side,
+                    position_size=float(position.get('info', {}).get('positionAmt', 0)),
                     entry_price=float(position.get('entryPrice', 0)),
                     stop_price=new_stop_loss,
                     pnl_usd=float(position.get('unrealizedPnl', 0))
                 )
+                return True
             else:
                 logger.error(f"Failed to update stop loss for {symbol} {position_side}")
-                
+                return False
         except Exception as e:
             logger.error(f"Error updating stop loss for {symbol}: {str(e)}")
+            return False
 
     async def _update_take_profit(self, symbol: str, new_take_profit: float,
-                               position_type: str) -> None:
+                               position_type: str) -> bool:
         """
         Update take profit for a position.
         
@@ -2435,6 +2464,8 @@ class EnhancedTradingStrategy:
             symbol: Trading pair symbol
             new_take_profit: New take profit price
             position_type: Position type (BUY/SELL/LONG/SHORT)
+        Returns:
+            bool: True if take profit updated successfully, False otherwise
         """
         try:
             # Convert position_type to position_side for HEDGE mode
@@ -2444,14 +2475,14 @@ class EnhancedTradingStrategy:
             position = await self.binance_service.get_position(symbol, position_side)
             if not position or float(position.get('contracts', 0)) == 0:
                 logger.warning(f"No active {position_side} position found for {symbol}")
-                return
+                return False
                 
             current_take_profit = await self.binance_service.get_stop_price(symbol, position_type, 'TAKE_PROFIT_MARKET')
             logger.info(f"_update_take_profit: Current take profit for {symbol}: {current_take_profit}")
 
             if not (is_long_side(position_type) and (not current_take_profit or new_take_profit > current_take_profit * 1.02)) and \
                 not (is_short_side(position_type) and (not current_take_profit or new_take_profit < current_take_profit * 0.98)):
-                return
+                return False
 
             # Update take profit using binance_service
             success = await self.binance_service._update_take_profit(
@@ -2469,12 +2500,13 @@ class EnhancedTradingStrategy:
                     tp_price=new_take_profit,
                     pnl_usd=float(position.get('unrealizedPnl', 0))
                 )
+                return True
             else:
                 logger.error(f"Failed to update take profit for {symbol} {position_side}")
-                
+                return False
         except Exception as e:
             logger.error(f"Error updating take profit for {symbol}: {str(e)}")
-
+            return False
     async def _analyze_market_conditions(self, symbol: str) -> Dict:
         """Analyze current market conditions.
         
@@ -2707,11 +2739,17 @@ class EnhancedTradingStrategy:
                                 position_side = position.get('side', 'LONG')
                                 if 'stop_loss' in new_stops:
                                     unrealized_pnl = float(position.get('unrealizedPnl', 0))
-                                    if unrealized_pnl > 0:
-                                        await self._update_stop_loss(symbol, new_stops['stop_loss'], position_side)
-                                        logger.info(f"_monitor_positions: Updated stop loss for {symbol} to {new_stops['stop_loss']}")
+                                    margin = float(position.get('initialMargin', 0))
+                                    if unrealized_pnl > margin:
+                                        if await self._update_stop_loss(symbol, new_stops['stop_loss'], position_side):
+                                            logger.info(f"_monitor_positions: Updated stop loss for {symbol} {position_side} to {new_stops['stop_loss']}")
+                                        else:
+                                            logger.error(f"_monitor_positions: Failed to update stop loss for {symbol} {position_side}")
                                 if 'take_profit' in new_stops:
-                                    await self._update_take_profit(symbol, new_stops['take_profit'], position_side)
+                                    if await self._update_take_profit(symbol, new_stops['take_profit'], position_side):
+                                        logger.info(f"_monitor_positions: Updated take profit for {symbol} {position_side} to {new_stops['take_profit']}")
+                                    else:
+                                        logger.error(f"_monitor_positions: Failed to update take profit for {symbol} {position_side}")
                                     
         except Exception as e:
             logger.error(f"Error monitoring positions: {str(e)}")
@@ -3063,16 +3101,24 @@ class EnhancedTradingStrategy:
                 if new_stops:
                     # Update stop loss and take profit
                     logger.info(f"_manage_existing_position: Updating stop loss for {symbol} to {new_stops['stop_loss']}")
-                    await self._update_stop_loss(
+                    if await self._update_stop_loss(
                         symbol=symbol,
                         new_stop_loss=new_stops['stop_loss'],
                         position_type=position['info']['positionSide']
-                    )
-                    await self._update_take_profit(
+                    ):
+                        logger.info(f"_manage_existing_position: Stop loss updated for {symbol} {position['info']['positionSide']}")
+                    else:
+                        logger.error(f"_manage_existing_position: Failed to update stop loss for {symbol} {position['info']['positionSide']}")
+                    
+                    if await self._update_take_profit(
                         symbol=symbol,
                         new_take_profit=new_stops['take_profit'],
                         position_type=position['info']['positionSide']
-                    )
+                    ):
+                        logger.info(f"_manage_existing_position: Take profit updated for {symbol} {position['info']['positionSide']}")
+                    else:
+                        logger.error(f"_manage_existing_position: Failed to update take profit for {symbol} {position['info']['positionSide']}")
+                    
                     
             # Check for DCA opportunity
             dca_result = await self._handle_dca(symbol, position)
@@ -4041,4 +4087,111 @@ class EnhancedTradingStrategy:
         except Exception as e:
             logger.error(f"Error calculating timeframe score: {str(e)}")
             return 0.0
+
+    def _calculate_momentum(self, df: pd.DataFrame, lookback_period: int = 14) -> float:
+        """
+        Calculate momentum using rate of change (ROC)
+        """
+        try:
+            # Calculate rate of change
+            roc = ((df['close'].iloc[-1] - df['close'].iloc[-lookback_period]) / 
+                   df['close'].iloc[-lookback_period]) * 100
+            
+            # Calculate momentum strength
+            momentum_strength = abs(roc)
+            
+            # Calculate momentum direction
+            momentum_direction = 1 if roc > 0 else -1
+            
+            return {
+                'strength': momentum_strength,
+                'direction': momentum_direction,
+                'roc': roc
+            }
+        except Exception as e:
+            logger.error(f"Error calculating momentum: {str(e)}")
+            return {'strength': 0, 'direction': 0, 'roc': 0}
+
+    async def _adjust_position_size_by_volatility(self, base_size: float, symbol: str) -> float:
+        """
+        Adjust position size based on current market volatility and BTC correlation
+        """
+        try:
+            # Get current volatility
+            current_volatility = await self._get_current_volatility()
+            
+            # Get historical volatility for comparison
+            historical_volatility = await self._calculate_btc_volatility()
+            avg_volatility = historical_volatility.get('average_volatility', 0.02)
+            
+            # Calculate volatility ratio
+            volatility_ratio = current_volatility / avg_volatility if avg_volatility > 0 else 1
+            
+            # Calculate correlation with BTC
+            correlation = await self._calculate_correlation(symbol, "BTCUSDT")
+            correlation_factor = abs(correlation)  # Use absolute correlation value
+            
+            # Adjust position size based on volatility and correlation
+            if volatility_ratio > 1.5:  # High volatility
+                if correlation_factor > 0.7:  # High correlation with BTC
+                    adjusted_size = base_size * 0.4  # Reduce more due to high correlation
+                else:
+                    adjusted_size = base_size * 0.5  # Normal reduction
+            elif volatility_ratio > 1.2:  # Moderately high volatility
+                if correlation_factor > 0.7:
+                    adjusted_size = base_size * 0.6
+                else:
+                    adjusted_size = base_size * 0.75
+            elif volatility_ratio < 0.8:  # Low volatility
+                if correlation_factor > 0.7:
+                    adjusted_size = base_size * 1.1  # Smaller increase due to high correlation
+                else:
+                    adjusted_size = base_size * 1.25
+            else:
+                if correlation_factor > 0.7:
+                    adjusted_size = base_size * 0.9  # Slight reduction for high correlation
+                else:
+                    adjusted_size = base_size
+            
+            # Ensure minimum position size
+            min_position_size = self.config.get('min_position_size', 0.001)
+            adjusted_size = max(adjusted_size, min_position_size)
+            
+            logger.info(f"Position size adjustment for {symbol}: "
+                       f"base_size={base_size}, "
+                       f"volatility_ratio={volatility_ratio:.2f}, "
+                       f"correlation={correlation:.2f}, "
+                       f"adjusted_size={adjusted_size:.4f}")
+            
+            return adjusted_size
+            
+        except Exception as e:
+            logger.error(f"Error adjusting position size by volatility: {str(e)}")
+            return base_size
+
+    def _should_exit_by_momentum(self, df: pd.DataFrame, position_type: str, 
+                               momentum_threshold: float = 2.0) -> bool:
+        """
+        Determine if position should be closed based on momentum
+        """
+        try:
+            momentum = self._calculate_momentum(df)
+            
+            # For long positions
+            if is_long_side(position_type):
+                # Exit if strong negative momentum
+                if momentum['direction'] == -1 and momentum['strength'] > momentum_threshold:
+                    return True
+                    
+            # For short positions
+            elif is_short_side(position_type):
+                # Exit if strong positive momentum
+                if momentum['direction'] == 1 and momentum['strength'] > momentum_threshold:
+                    return True
+                    
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error in momentum exit check: {str(e)}")
+            return False
 
