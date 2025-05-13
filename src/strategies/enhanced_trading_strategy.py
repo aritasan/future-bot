@@ -230,7 +230,7 @@ class EnhancedTradingStrategy:
                 logger.warning(f"Position size {position_size} exceeds available balance with leverage")
                 return None
                 
-            return position_size
+            return await self._adjust_position_size_by_volatility(position_size, symbol)
             
         except Exception as e:
             logger.error(f"Error calculating position size: {str(e)}")
@@ -1030,7 +1030,7 @@ class EnhancedTradingStrategy:
                 return False
                 
             # Check momentum-based exit
-            if self._should_exit_by_momentum(df, position_side):
+            if self._should_exit_by_momentum(df, position):
                 logger.info(f"Closing position for {symbol} {position_side.upper()} due to momentum signal")
                 await self.telegram_service.send_message(
                     f"Closing position for {symbol} {position_side.upper()} due to momentum signal\n"
@@ -4113,9 +4113,6 @@ class EnhancedTradingStrategy:
             return {'strength': 0, 'direction': 0, 'roc': 0}
 
     async def _adjust_position_size_by_volatility(self, base_size: float, symbol: str) -> float:
-        """
-        Adjust position size based on current market volatility and BTC correlation
-        """
         try:
             # Get current volatility
             current_volatility = await self._get_current_volatility()
@@ -4129,39 +4126,67 @@ class EnhancedTradingStrategy:
             
             # Calculate correlation with BTC
             correlation = await self._calculate_correlation(symbol, "BTCUSDT")
-            correlation_factor = abs(correlation)  # Use absolute correlation value
+            correlation_factor = abs(correlation)
             
-            # Adjust position size based on volatility and correlation
-            if volatility_ratio > 1.5:  # High volatility
-                if correlation_factor > 0.7:  # High correlation with BTC
-                    adjusted_size = base_size * 0.4  # Reduce more due to high correlation
-                else:
-                    adjusted_size = base_size * 0.5  # Normal reduction
+            # Get market trend
+            market_trend = await self._get_market_trend(symbol)
+            
+            # Get volume profile
+            volume_profile = await self._analyze_volume_profile(symbol)
+            volume_score = volume_profile.get('score', 0.5)
+            
+            # Calculate time factor (reduce position size during low liquidity hours)
+            current_hour = datetime.now().hour
+            time_factor = 1.0
+            if current_hour in [0, 1, 2, 3, 4, 5]:  # Low liquidity hours
+                time_factor = 0.8
+            
+            # Adjust position size based on multiple factors
+            adjustment_factor = 1.0
+            
+            # Volatility adjustment
+            if volatility_ratio > 2.0:  # Extreme volatility
+                adjustment_factor *= 0.7
+            elif volatility_ratio > 1.5:  # High volatility
+                adjustment_factor *= 0.8
             elif volatility_ratio > 1.2:  # Moderately high volatility
-                if correlation_factor > 0.7:
-                    adjusted_size = base_size * 0.6
-                else:
-                    adjusted_size = base_size * 0.75
+                adjustment_factor *= 0.9
             elif volatility_ratio < 0.8:  # Low volatility
-                if correlation_factor > 0.7:
-                    adjusted_size = base_size * 1.1  # Smaller increase due to high correlation
-                else:
-                    adjusted_size = base_size * 1.25
-            else:
-                if correlation_factor > 0.7:
-                    adjusted_size = base_size * 0.9  # Slight reduction for high correlation
-                else:
-                    adjusted_size = base_size
+                adjustment_factor *= 1.1
+            
+            # Correlation adjustment (only if correlation is very high)
+            if correlation_factor > 0.85:  # Very high correlation
+                adjustment_factor *= 0.9
+            
+            # Market trend adjustment
+            if market_trend == "bullish":
+                adjustment_factor *= 1.1
+            elif market_trend == "bearish":
+                adjustment_factor *= 0.9
+            
+            # Volume profile adjustment
+            adjustment_factor *= (0.8 + volume_score * 0.4)  # Volume score impact
+            
+            # Apply time factor
+            adjustment_factor *= time_factor
+            
+            # Calculate final position size
+            adjusted_size = base_size * adjustment_factor
             
             # Ensure minimum position size
             min_position_size = self.config.get('min_position_size', 0.001)
             adjusted_size = max(adjusted_size, min_position_size)
             
+            # Log adjustment details
             logger.info(f"Position size adjustment for {symbol}: "
-                       f"base_size={base_size}, "
-                       f"volatility_ratio={volatility_ratio:.2f}, "
-                       f"correlation={correlation:.2f}, "
-                       f"adjusted_size={adjusted_size:.4f}")
+                    f"base_size={base_size}, "
+                    f"volatility_ratio={volatility_ratio:.2f}, "
+                    f"correlation={correlation:.2f}, "
+                    f"market_trend={market_trend}, "
+                    f"volume_score={volume_score:.2f}, "
+                    f"time_factor={time_factor:.2f}, "
+                    f"final_adjustment={adjustment_factor:.2f}, "
+                    f"adjusted_size={adjusted_size:.4f}")
             
             return adjusted_size
             
@@ -4169,26 +4194,87 @@ class EnhancedTradingStrategy:
             logger.error(f"Error adjusting position size by volatility: {str(e)}")
             return base_size
 
-    def _should_exit_by_momentum(self, df: pd.DataFrame, position_type: str, 
-                               momentum_threshold: float = 2.0) -> bool:
+    def _should_exit_by_momentum(self, df: pd.DataFrame, position: Dict, 
+                           momentum_threshold: float = 2.0) -> bool:
         """
-        Determine if position should be closed based on momentum
+        Determine if position should be closed based on momentum with enhanced conditions
         """
         try:
+            # Calculate momentum
             momentum = self._calculate_momentum(df)
             
+            # Get additional market data
+            volume = df['volume'].iloc[-1]
+            avg_volume = df['volume'].rolling(20).mean().iloc[-1]
+            volume_ratio = volume / avg_volume if avg_volume > 0 else 1
+            
+            # Calculate trend using EMA
+            ema20 = df['close'].ewm(span=20).mean().iloc[-1]
+            ema50 = df['close'].ewm(span=50).mean().iloc[-1]
+            current_price = df['close'].iloc[-1]
+            
+            # Determine trend strength
+            trend_strength = abs((ema20 - ema50) / ema50) * 100
+            
+            # Get position information
+            position_age = (datetime.now() - position.get('updateTime', datetime.now())).total_seconds() / 3600  # hours
+            position_type = position.get('info', {}).get('positionSide', 'LONG')
+            unrealized_pnl = position.get('unrealizedPnl', 0)
+            entry_price = position.get('entryPrice', current_price)
+            
+            # Calculate price change percentage
+            price_change_pct = ((current_price - entry_price) / entry_price) * 100
+            
+            # Dynamic momentum threshold based on market conditions
+            dynamic_threshold = momentum_threshold
+            
+            # Adjust threshold based on volume
+            if volume_ratio > 2.0:  # High volume
+                dynamic_threshold *= 1.2  # Require stronger momentum
+            elif volume_ratio < 0.5:  # Low volume
+                dynamic_threshold *= 0.8  # Lower threshold
+                
+            # Adjust threshold based on trend strength
+            if trend_strength > 5.0:  # Strong trend
+                dynamic_threshold *= 1.3  # Require stronger momentum
+                
+            # Adjust threshold based on position age
+            if position_age < 1:  # Less than 1 hour
+                dynamic_threshold *= 1.5  # Require stronger momentum
+            elif position_age > 24:  # More than 24 hours
+                dynamic_threshold *= 0.8  # Lower threshold
+                
             # For long positions
             if is_long_side(position_type):
-                # Exit if strong negative momentum
-                if momentum['direction'] == -1 and momentum['strength'] > momentum_threshold:
-                    return True
-                    
+                # Exit conditions for long positions
+                if momentum['direction'] == -1 and momentum['strength'] > dynamic_threshold:
+                    # Additional checks for long positions
+                    if price_change_pct < -2.0:  # Price dropped more than 2%
+                        if volume_ratio > 1.5:  # High volume
+                            return True
+                    elif price_change_pct < -5.0:  # Price dropped more than 5%
+                        return True
+                        
             # For short positions
             elif is_short_side(position_type):
-                # Exit if strong positive momentum
-                if momentum['direction'] == 1 and momentum['strength'] > momentum_threshold:
-                    return True
-                    
+                # Exit conditions for short positions
+                if momentum['direction'] == 1 and momentum['strength'] > dynamic_threshold:
+                    # Additional checks for short positions
+                    if price_change_pct > 2.0:  # Price increased more than 2%
+                        if volume_ratio > 1.5:  # High volume
+                            return True
+                    elif price_change_pct > 5.0:  # Price increased more than 5%
+                        return True
+            
+            # Log decision details
+            logger.info(f"Momentum exit check for {position_type}: "
+                    f"momentum_strength={momentum['strength']:.2f}, "
+                    f"dynamic_threshold={dynamic_threshold:.2f}, "
+                    f"volume_ratio={volume_ratio:.2f}, "
+                    f"trend_strength={trend_strength:.2f}, "
+                    f"position_age={position_age:.1f}h, "
+                    f"price_change={price_change_pct:.2f}%")
+            
             return False
             
         except Exception as e:
