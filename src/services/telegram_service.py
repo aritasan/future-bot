@@ -862,13 +862,15 @@ class TelegramService:
             logger.error(f"Error sending trailing stop notification: {str(e)}")
             return False
 
-    async def send_stop_loss_notification(self, symbol: str, position_side: str, entry_price: float, 
+    async def send_stop_loss_notification(self, symbol: str, position_side: str, 
+                                        position_size: float, entry_price: float, 
                                         stop_price: float, pnl_usd: float) -> bool:
         """Send a stop loss notification.
         
         Args:
             symbol: Trading pair symbol
             position_side: Position side (LONG/SHORT)
+            position_size: Position size
             entry_price: Position entry price
             stop_price: Stop loss price
             pnl_usd: USDT of profit/loss
@@ -885,6 +887,7 @@ class TelegramService:
                 f"🛑 <b>Stop Loss Triggered</b>\n\n"
                 f"Symbol: {symbol}\n"
                 f"Position: {position_side}\n"
+                f"Size: {position_size}\n"
                 f"Entry Price: {entry_price:.8f}\n"
                 f"Stop Price: {stop_price:.8f}\n"
                 f"PnL: {pnl_usd:.2f} USDT"
@@ -896,13 +899,15 @@ class TelegramService:
             logger.error(f"Error sending stop loss notification: {str(e)}")
             return False
             
-    async def send_take_profit_notification(self, symbol: str, position_side: str, entry_price: float,
+    async def send_take_profit_notification(self, symbol: str, position_side: str,
+                                        position_size: float, entry_price: float,
                                           tp_price: float, pnl_usd: float) -> bool:
         """Send a take profit notification.
         
         Args:
             symbol: Trading pair symbol
             position_side: Position side (LONG/SHORT)
+            position_size: Position size
             entry_price: Position entry price
             tp_price: Take profit price
             pnl_usd: USDT of profit/loss
@@ -919,6 +924,7 @@ class TelegramService:
                 f"🎯 <b>Take Profit Triggered</b>\n\n"
                 f"Symbol: {symbol}\n"
                 f"Position: {position_side}\n"
+                f"Size: {position_size}\n"
                 f"Entry Price: {entry_price:.8f}\n"
                 f"TP Price: {tp_price:.8f}\n"
                 f"PnL: {pnl_usd:.2f} USDT"
