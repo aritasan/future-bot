@@ -235,7 +235,7 @@ class BinanceService:
             )
             
             if order:
-                logger.info(f"Order placed successfully for {order_params['symbol']} {order_params['side']}: {order['id']}")
+                logger.info(f"Order placed successfully for {order_params['symbol']} {order_params['type']}: {order_params['params']['positionSide']}")
                 return order
             return None
             
@@ -829,8 +829,20 @@ class BinanceService:
             return None
             
     async def get_klines(self, symbol: str, timeframe: str = '5m', limit: int = 100) -> Optional[List]:
-        """Get kline/candlestick data for a symbol."""
+        """Get kline/candlestick data for a symbol.
+        
+        Args:
+            symbol: Trading pair symbol
+            timeframe: Timeframe for klines (default: '5m')
+            limit: Number of klines to fetch (default: 100)
+            
+        Returns:
+            Optional[List]: List of klines if successful, None otherwise
+        """
         try:
+            # Ensure symbol is string
+            symbol = str(symbol)
+            
             # Check cache first
             cache_key = f"klines_{symbol}_{timeframe}_{limit}"
             cached_data = await self._get_cached_data(cache_key)
@@ -844,9 +856,26 @@ class BinanceService:
                 timeframe=timeframe,
                 limit=limit
             )
+            
             if klines:
-                self._set_cached_data(cache_key, klines)
-            return klines
+                # Convert numeric values to float
+                processed_klines = []
+                for kline in klines:
+                    processed_kline = [
+                        float(kline[0]),  # timestamp
+                        float(kline[1]),  # open
+                        float(kline[2]),  # high
+                        float(kline[3]),  # low
+                        float(kline[4]),  # close
+                        float(kline[5])   # volume
+                    ]
+                    processed_klines.append(processed_kline)
+                    
+                self._set_cached_data(cache_key, processed_klines)
+                return processed_klines
+                
+            return None
+            
         except Exception as e:
             logger.error(f"Error getting klines for {symbol}: {str(e)}")
             return None

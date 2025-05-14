@@ -55,3 +55,15 @@ def is_long_side(side: str) -> bool:
 def is_short_side(side: str) -> bool:
     """Check if a side is short"""
     return side.upper() == "SHORT" or side.upper() == "SELL"
+
+def is_trending_up(trend: str) -> bool:
+    """Check if a trend is trending up"""
+    return trend is not None and (trend.upper() == "UP" or trend.upper() == "BULLISH")
+
+def is_trending_down(trend: str) -> bool:
+    """Check if a trend is trending down"""
+    return trend is not None and (trend.upper() == "DOWN" or trend.upper() == "BEARISH")
+
+def is_trending_sideways(trend: str) -> bool:
+    """Check if a trend is trending sideways"""
+    return trend is not None and (trend.upper() == "SIDEWAYS" or trend.upper() == "NEUTRAL")

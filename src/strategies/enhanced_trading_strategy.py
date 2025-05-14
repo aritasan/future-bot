@@ -17,7 +17,8 @@ from src.services.sentiment_service import SentimentService
 from src.services.binance_service import BinanceService
 from src.services.telegram_service import TelegramService
 from src.services.notification_service import NotificationService
-from src.utils.helpers import is_long_side, is_short_side
+from src.utils.helpers import is_long_side, is_short_side, is_trending_down,\
+    is_trending_up
 
 logger = logging.getLogger(__name__)
 
@@ -230,7 +231,7 @@ class EnhancedTradingStrategy:
                 logger.warning(f"Position size {position_size} exceeds available balance with leverage")
                 return None
                 
-            return await self._adjust_position_size_by_volatility(position_size, symbol)
+            return await self._adjust_position_size_by_volatility(symbol, position_size)
             
         except Exception as e:
             logger.error(f"Error calculating position size: {str(e)}")
@@ -255,7 +256,7 @@ class EnhancedTradingStrategy:
             market_structure = self._analyze_market_structure(timeframe_data)
             
             # Analyze volume profile
-            volume_profile = self._analyze_volume_profile(timeframe_data['5m'])
+            volume_profile = await self._analyze_volume_profile(symbol, timeframe='1h')
             
             # Get funding rate
             funding_rate = await self.binance_service.get_funding_rate(symbol)
@@ -430,50 +431,103 @@ class EnhancedTradingStrategy:
             logger.error(f"Error in market structure analysis: {str(e)}")
             return {}
             
-    def _analyze_volume_profile(self, df: pd.DataFrame) -> Dict:
-        """Analyze volume profile for price data.
-        
-        Args:
-            df: Price data DataFrame
-            
-        Returns:
-            Dict: Volume profile analysis results
-        """
+    async def _analyze_volume_profile(self, symbol: str, timeframe: str = '1h') -> Dict:
+        """Analyze volume profile for a symbol"""
         try:
-            if df is None or df.empty:
-                logger.error("No data provided for volume profile analysis")
-                return {}
-                
-            # Calculate value area
-            value_area = self._calculate_value_area(df)
+            # Get historical klines
+            klines = await self.binance_service.get_klines(
+                symbol=symbol,
+                timeframe=timeframe,
+                limit=100
+            )
             
-            if not value_area:
-                logger.error("Failed to calculate value area")
+            if not klines:
+                logger.warning(f"No klines data available for {symbol}")
                 return {}
                 
+            # Convert to DataFrame with correct columns
+            df = pd.DataFrame(klines, columns=[
+                'timestamp', 'open', 'high', 'low', 'close', 'volume'
+            ])
+            
+            # Convert numeric columns
+            numeric_columns = ['open', 'high', 'low', 'close', 'volume']
+            df[numeric_columns] = df[numeric_columns].apply(pd.to_numeric, errors='coerce')
+            
             # Get current price
-            current_price = df['close'].iloc[-1]
+            current_price = await self.binance_service.get_current_price(symbol)
+            if not current_price:
+                current_price = df['close'].iloc[-1]
             
-            # Determine volume profile position
-            if value_area['value_area_high'] is not None and value_area['value_area_low'] is not None:
-                # Calculate position within value area
-                value_area_range = value_area['value_area_high'] - value_area['value_area_low']
-                if value_area_range > 0:
-                    position = (current_price - value_area['value_area_low']) / value_area_range
-                else:
-                    position = 0.5
-                    
-                return {
-                    'value_area_high': value_area['value_area_high'],
-                    'value_area_low': value_area['value_area_low'],
-                    'value_area_position': position,
-                    'current_price': current_price,
-                    'volume_profile': value_area['volume_profile']
-                }
+            # Calculate volume profile
+            price_range = df['high'].max() - df['low'].min()
+            num_bins = 10
+            bin_size = price_range / num_bins
+            
+            # Create price bins
+            bins = np.linspace(df['low'].min(), df['high'].max(), num_bins + 1)
+            df['price_bin'] = pd.cut(df['close'], bins=bins)
+            
+            # Calculate volume per bin with observed=True to avoid warning
+            volume_profile = df.groupby('price_bin', observed=True)['volume'].sum()
+            
+            # Convert volume profile to dict with string keys
+            volume_profile_dict = {}
+            for bin_price, volume in volume_profile.items():
+                if isinstance(bin_price, pd.Interval):
+                    key = f"{bin_price.left:.8f}_{bin_price.right:.8f}"
+                    volume_profile_dict[key] = float(volume)
+            
+            # Find POC (Point of Control)
+            poc_price = volume_profile.idxmax()
+            if isinstance(poc_price, pd.Interval):
+                poc_price = (poc_price.left + poc_price.right) / 2
+            
+            # Calculate value area
+            total_volume = volume_profile.sum()
+            value_area_volume = total_volume * 0.68  # 68% of total volume
+            
+            # Sort bins by volume
+            sorted_bins = volume_profile.sort_values(ascending=False)
+            cumulative_volume = 0
+            value_area_bins = []
+            
+            for bin_price, volume in sorted_bins.items():
+                cumulative_volume += volume
+                value_area_bins.append(bin_price)
+                if cumulative_volume >= value_area_volume:
+                    break
+            
+            # Calculate value area boundaries
+            if value_area_bins:
+                value_area_high = max(v_bin.right for v_bin in value_area_bins if isinstance(v_bin, pd.Interval))
+                value_area_low = min(v_bin.left for v_bin in value_area_bins if isinstance(v_bin, pd.Interval))
             else:
-                logger.error("Invalid value area data")
-                return {}
-                
+                value_area_high = df['high'].max()
+                value_area_low = df['low'].min()
+            
+            # Identify high volume nodes (bins with volume > 1.5x average)
+            avg_volume = volume_profile.mean()
+            high_volume_nodes = []
+            for bin_price, volume in volume_profile.items():
+                if volume > avg_volume * 1.5:
+                    if isinstance(bin_price, pd.Interval):
+                        node_price = (bin_price.left + bin_price.right) / 2
+                        high_volume_nodes.append({
+                            'price': float(node_price),
+                            'volume': float(volume),
+                            'strength': float(volume / avg_volume)
+                        })
+            
+            return {
+                'poc_price': float(poc_price),
+                'value_area_high': float(value_area_high),
+                'value_area_low': float(value_area_low),
+                'volume_profile': volume_profile_dict,
+                'high_volume_nodes': high_volume_nodes,
+                'current_price': float(current_price)
+            }
+            
         except Exception as e:
             logger.error(f"Error in volume profile analysis: {str(e)}")
             return {}
@@ -499,12 +553,17 @@ class EnhancedTradingStrategy:
                 return False
                 
             # Check candlestick patterns với trọng số
-            if is_short_side(position_type): # Check candlestick if SELL
-                pattern_score = self._check_candlestick_patterns(df, position_type)
-                if pattern_score > -0.5:  # Yêu cầu ít nhất 50% điểm
-                    logger.info(f"Candlestick patterns conditions not met for {position_type}")
-                    return False
-                
+            # pattern_score = self._check_candlestick_patterns(df, position_type)
+            # if is_short_side(position_type): # Check candlestick if SELL
+            #     if pattern_score > -0.5:  # Yêu cầu ít nhất 50% điểm
+            #         logger.info(f"Candlestick patterns conditions not met for {position_type}")
+            #         return False
+            
+            # if is_long_side(position_type):
+            #     if pattern_score < 0.5:  # Yêu cầu ít nhất 50% điểm
+            #         logger.info(f"Candlestick patterns conditions not met for {position_type}")
+            #         return False
+            
             # Check funding rate với ngưỡng động
             funding_threshold = 0.0002 * (1 + volatility)  # Tăng ngưỡng khi volatility cao
             if is_long_side(position_type) and funding_rate > funding_threshold:
@@ -659,70 +718,111 @@ class EnhancedTradingStrategy:
             return 0.0
 
     def _check_volume_profile_conditions(self, volume_profile: Dict, position_type: str, min_volume_ratio: float = 0.3) -> bool:
-        """Check volume profile conditions for a specific position type.
+        """Check volume profile conditions for entry.
         
         Args:
-            volume_profile: Dictionary containing volume profile data
+            volume_profile: Volume profile data
             position_type: Position type (LONG/SHORT)
-            min_volume_ratio: Minimum volume ratio required (default: 0.3)
+            min_volume_ratio: Minimum volume ratio threshold
             
         Returns:
             bool: True if conditions are met, False otherwise
         """
         try:
-            if not volume_profile or 'volume_profile' not in volume_profile:
-                logger.info(f"Volume profile data is missing or invalid")
+            if not volume_profile:
+                logger.error("No volume profile data available")
                 return False
                 
-            diff_price_percent = 0.1
-            # Get current price and value area
-            current_price = volume_profile.get('current_price')
-            value_area_high = volume_profile.get('value_area_high')
-            value_area_low = volume_profile.get('value_area_low')
-            
-            if current_price is None or value_area_high is None or value_area_low is None:
-                logger.info(f"Missing required price data in volume profile")
+            # Get current price
+            current_price = float(volume_profile.get('current_price', 0))
+            if current_price <= 0:
+                logger.error("Invalid current price in volume profile")
                 return False
                 
-            # Get volume profile data
-            profile_data = volume_profile['volume_profile']
+            # Get profile data
+            profile_data = volume_profile.get('volume_profile', {})
             if not profile_data:
-                logger.info(f"No volume profile data available")
+                logger.error("No profile data available")
+                return False
+                
+            # Convert string price ranges to float using average of range
+            converted_profile = {}
+            for price_range, vol in profile_data.items():
+                try:
+                    # Split price range and convert to float
+                    if '_' in price_range:
+                        low, high = map(float, price_range.split('_'))
+                        avg_price = (low + high) / 2
+                        converted_profile[avg_price] = float(vol)
+                    else:
+                        # If single price, convert directly
+                        converted_profile[float(price_range)] = float(vol)
+                except (ValueError, TypeError) as e:
+                    logger.error(f"Error converting price range {price_range}: {str(e)}")
+                    continue
+                    
+            if not converted_profile:
+                logger.error("No valid price data after conversion")
                 return False
                 
             # Calculate total volume
-            total_volume = sum(profile_data.values())
-            if total_volume == 0:
-                logger.info(f"Total volume is zero")
+            total_volume = sum(converted_profile.values())
+            if total_volume <= 0:
+                logger.error("Invalid total volume")
                 return False
                 
-            # Check position type specific conditions
             if is_long_side(position_type):
                 # For LONG: check volume in lower price levels
-                lower_volume = sum(vol for price, vol in profile_data.items() 
+                lower_volume = sum(vol for price, vol in converted_profile.items() 
                                  if price < current_price)
-                if lower_volume / total_volume < min_volume_ratio:  # At least min_volume_ratio volume in lower levels
-                    logger.info(f"Not enough volume in lower price levels for LONG position")
+                volume_ratio = lower_volume / total_volume
+                
+                # Check if there's significant volume below current price
+                if volume_ratio < min_volume_ratio:
+                    logger.info(f"LONG: Insufficient volume below current price: {volume_ratio:.2%} < {min_volume_ratio:.2%}")
                     return False
                     
-                # Check if current price is near value area low
-                # if current_price > value_area_low * (1 + diff_price_percent):
-                #     logger.info(f"Current price not near value area low for LONG position: {current_price} {value_area_low}")
-                #     return False
+                # Check if POC is below current price
+                poc = float(volume_profile.get('poc', 0))
+                if poc >= current_price:
+                    logger.info(f"LONG: POC {poc} is not below current price {current_price}")
+                    return False
                     
-            else:  # SHORT position
+            else:  # SHORT
                 # For SHORT: check volume in higher price levels
-                higher_volume = sum(vol for price, vol in profile_data.items() 
+                higher_volume = sum(vol for price, vol in converted_profile.items() 
                                   if price > current_price)
-                if higher_volume / total_volume < min_volume_ratio:  # At least min_volume_ratio volume in higher levels
-                    logger.info(f"Not enough volume in higher price levels for SHORT position")
+                volume_ratio = higher_volume / total_volume
+                
+                # Check if there's significant volume above current price
+                if volume_ratio < min_volume_ratio:
+                    logger.info(f"SHORT: Insufficient volume above current price: {volume_ratio:.2%} < {min_volume_ratio:.2%}")
                     return False
                     
-                # Check if current price is near value area high
-                if current_price < value_area_high * (1 - diff_price_percent):
-                    logger.info(f"Current price not near value area high for SHORT position: {current_price} {value_area_high}")
+                # Check if POC is above current price
+                poc = float(volume_profile.get('poc', 0))
+                if poc <= current_price:
+                    logger.info(f"SHORT: POC {poc} is not above current price {current_price}")
                     return False
                     
+            # Check value area conditions
+            value_area = volume_profile.get('value_area', {})
+            if value_area:
+                upper = float(value_area.get('upper', 0))
+                lower = float(value_area.get('lower', 0))
+                
+                if is_long_side(position_type):
+                    # For LONG: check if current price is above value area
+                    if current_price <= upper:
+                        logger.info(f"LONG: Current price {current_price} is not above value area upper {upper}")
+                        return False
+                else:  # SHORT
+                    # For SHORT: check if current price is below value area
+                    if current_price >= lower:
+                        logger.info(f"SHORT: Current price {current_price} is not below value area lower {lower}")
+                        return False
+                        
+            logger.info(f"Volume profile conditions met for {position_type}")
             return True
             
         except Exception as e:
@@ -1108,8 +1208,8 @@ class EnhancedTradingStrategy:
                 # Check if market trend has reversed
                 trend = market_conditions.get('btc_trend')
                 if trend:
-                    if (position_amt > 0 and trend.upper() == 'DOWN' and unrealized_pnl > 0) or \
-                       (position_amt < 0 and trend.upper() == 'UP' and unrealized_pnl > 0):
+                    if (position_amt > 0 and is_trending_down(trend) and unrealized_pnl > 0) or \
+                       (position_amt < 0 and is_trending_up(trend) and unrealized_pnl > 0):
                         logger.info(f"Closing position for {symbol} {position_side.upper()} due to trend reversal")
                         await self.telegram_service.send_message(
                             f"Closing position for {symbol} {position_side.upper()} due to trend reversal\n"
@@ -1120,9 +1220,9 @@ class EnhancedTradingStrategy:
                         return True
                         
                 # Check if market sentiment is strongly against position
-                sentiment = market_conditions.get('sentiment', 'neutral')
-                if (position_amt > 0 and sentiment == 'bearish' and unrealized_pnl > 0) or \
-                   (position_amt < 0 and sentiment == 'bullish' and unrealized_pnl > 0):
+                sentiment = market_conditions.get('sentiment', 0)
+                if (position_amt > 0 and sentiment < 0 and unrealized_pnl > 0) or \
+                   (position_amt < 0 and sentiment > 0 and unrealized_pnl > 0):
                     logger.info(f"Closing position for {symbol} {position_side.upper()} due to strong market sentiment")
                     await self.telegram_service.send_message(
                         f"Closing position for {symbol} {position_side.upper()} due to strong market sentiment\n"
@@ -1135,6 +1235,8 @@ class EnhancedTradingStrategy:
             return False
             
         except Exception as e:
+            import traceback
+            logger.error(f"Traceback:\n{traceback.format_exc()}")
             logger.error(f"Error in should_close_position: {str(e)}")
             return False
             
@@ -1177,13 +1279,13 @@ class EnhancedTradingStrategy:
                 # Check if price moved significantly
                 if is_long_side(position["side"]):
                     price_change = (current_price - entry_price) / entry_price
-                    if price_change > 0.02:  # 2% move
+                    if price_change > 0.04:  # 4% move
                         # Update last update time
                         self.binance_service._set_cached_data(cache_key, current_time)
                         return True
                 else:
                     price_change = (entry_price - current_price) / entry_price
-                    if price_change > 0.02:  # 2% move
+                    if price_change > 0.04:  # 4% move
                         # Update last update time
                         self.binance_service._set_cached_data(cache_key, current_time)
                         return True
@@ -1252,7 +1354,7 @@ class EnhancedTradingStrategy:
             # Adjust stop distance based on trend
             trend = market_conditions.get('btc_trend', 'UP')
             # If trend is in our favor, we can use a tighter stop
-            if (position_amt > 0 and trend.upper() == 'UP') or (position_amt < 0 and trend.upper() == 'DOWN'):
+            if (position_amt > 0 and is_trending_up(trend)) or (position_amt < 0 and is_trending_down(trend)):
                 trend_multiplier = 0.8  # Tighter stop in trend direction
             else:
                 trend_multiplier = 1.2  # Wider stop against trend
@@ -1503,8 +1605,8 @@ class EnhancedTradingStrategy:
 
                 # Adjust for trend
                 trend = market_conditions.get('btc_trend', 'UP')
-                if (is_long_side(position_type) and trend.upper() == 'UP') or \
-                   (is_short_side(position_type) and trend.upper() == 'DOWN'):
+                if (is_long_side(position_type) and is_trending_up(trend)) or \
+                   (is_short_side(position_type) and is_trending_down(trend)):
                     atr_multiplier *= 0.9  # Tighter stop in trend direction
                 else:
                     atr_multiplier *= 1.1  # Wider stop against trend
@@ -1534,7 +1636,7 @@ class EnhancedTradingStrategy:
         """Calculate signal score with dynamic weights and logging."""
         try:
             # Xác định position type dựa trên trend
-            position_type = 'LONG' if self.get_trend(df) == 'UP' else 'SHORT'
+            position_type = 'LONG' if is_trending_up(self.get_trend(df)) else 'SHORT'
             
             # Lấy trọng số động
             weights = await self._get_dynamic_weights(position_type)
@@ -1927,13 +2029,13 @@ class EnhancedTradingStrategy:
                 return None
                 
             # Check if DCA is favorable
-            if not self._is_dca_favorable(price_drop, market_conditions, position_type):
+            if not self._is_dca_favorable(symbol, price_drop, market_conditions, position_type):
                 logger.info(f"DCA not favorable for {symbol} {position_type}")
                 return None
                 
             # Calculate DCA size
             current_size = float(position.get('contracts', 0))
-            dca_size = await self._calculate_dca_size(current_size, price_drop, position_type)
+            dca_size = await self._calculate_dca_size(symbol, current_size, price_drop, position_type)
             if not dca_size or dca_size <= 0:
                 logger.error(f"Invalid DCA size calculated for {symbol}: {dca_size}")
                 return None
@@ -2014,208 +2116,181 @@ class EnhancedTradingStrategy:
             logger.error(f"Error handling DCA for {symbol}: {str(e)}")
             return None
 
-    def _is_dca_favorable(self, price_drop: float, market_conditions: Dict, position_type: str) -> bool:
-        """Check if DCA is favorable based on multiple conditions.
+    def _is_dca_favorable(self, symbol: str, price_change: float, market_conditions: Dict, position_type: str) -> bool:
+        """Check if DCA conditions are favorable.
         
         Args:
-            price_drop: Percentage price drop from entry
+            symbol: Symbol of the position
+            price_change: Price change percentage from entry (positive for increase, negative for decrease)
             market_conditions: Current market conditions
-            position_type: Type of position (LONG/SHORT)
+            position_type: Position type (LONG/SHORT)
             
         Returns:
-            bool: True if DCA is favorable, False otherwise
+            bool: True if DCA conditions are favorable, False otherwise
         """
         try:
-            if not market_conditions:
-                logger.error("No market conditions provided")
+            # Get current market conditions
+            volatility = market_conditions.get('volatility', 0)
+            trend = market_conditions.get('btc_trend', 'NEUTRAL')
+            volume = market_conditions.get('volume', 0)
+            
+            # Check if market conditions are favorable
+            if volatility > 0.05:  # High volatility
+                logger.info(f"DCA not favorable: High volatility {volatility}")
                 return False
                 
-            if position_type.upper() not in ['LONG', 'SHORT']:
-                logger.error(f"Invalid position type: {position_type}")
+            # Check trend conditions
+            if is_trending_down(trend) and is_long_side(position_type):
+                logger.info(f"{symbol} DCA not favorable: Bearish trend for LONG position")
                 return False
+                
+            if is_trending_up(trend) and is_short_side(position_type):
+                logger.info(f"{symbol} DCA not favorable: Bullish trend for SHORT position")
+                return False
+                
+            # Define minimum price change thresholds for DCA
+            MIN_PRICE_CHANGE = 0.04  # 4% minimum price change
+            MAX_PRICE_CHANGE = 0.10  # 10% maximum price change for DCA
+            
+            if is_long_side(position_type):
+                # For LONG positions, we want price to drop by at least MIN_PRICE_CHANGE
+                # but not more than MAX_PRICE_CHANGE
+                if price_change > -MIN_PRICE_CHANGE:
+                    logger.info(f"{symbol} DCA not favorable for LONG: Price drop {price_change:.2%} less than minimum {MIN_PRICE_CHANGE:.2%}")
+                    return False
+                if price_change < -MAX_PRICE_CHANGE:
+                    logger.info(f"{symbol} DCA not favorable for LONG: Price drop {price_change:.2%} exceeds maximum {MAX_PRICE_CHANGE:.2%}")
+                    return False
+                    
+            elif is_short_side(position_type):
+                # For SHORT positions, we want price to increase by at least MIN_PRICE_CHANGE
+                # but not more than MAX_PRICE_CHANGE
+                if price_change < MIN_PRICE_CHANGE:
+                    logger.info(f"{symbol} DCA not favorable for SHORT: Price increase {price_change:.2%} less than minimum {MIN_PRICE_CHANGE:.2%}")
+                    return False
+                if price_change > MAX_PRICE_CHANGE:
+                    logger.info(f"{symbol} DCA not favorable for SHORT: Price increase {price_change:.2%} exceeds maximum {MAX_PRICE_CHANGE:.2%}")
+                    return False
+            
+            logger.info(f"{symbol} DCA conditions favorable for {position_type} with price change {price_change:.2%}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"{symbol} Error checking DCA conditions: {str(e)}")
+            return False
+
+    async def _calculate_dca_size(self, symbol: str, current_size: float, price_change: float, position_type: str) -> Optional[float]:
+        """Calculate DCA size based on current position size and price change.
+        
+        Args:
+            symbol: Symbol of the position
+            current_size: Current position size
+            price_change: Price change percentage from entry (positive for increase, negative for decrease)
+            position_type: Position type (LONG/SHORT)
+            
+        Returns:
+            Optional[float]: DCA size if conditions are met, None otherwise
+        """
+        try:
+            # Get market conditions
+            market_conditions = await self._get_market_conditions()
+            if not market_conditions:
+                logger.error(f"{symbol} Failed to get market conditions for DCA calculation")
+                return None
+                
+            # Check if DCA is favorable
+            if not self._is_dca_favorable(symbol, price_change, market_conditions, position_type):
+                logger.info(f"{symbol} DCA conditions not favorable for {position_type} with price change {price_change:.2%}")
+                return None
                 
             # Get DCA configuration
             dca_config = self.config.get('risk_management', {}).get('dca', {})
             if not dca_config:
-                logger.error("No DCA configuration found")
-                return False
-                
-            # Convert all values to float for comparison
-            price_drop = float(price_drop)
-            min_price_drop = float(dca_config['price_drop_thresholds'][0])
-            
-            # Check price drop threshold
-            if price_drop < min_price_drop:
-                return False
-                
-            # Check volatility condition
-            volatility = market_conditions.get('volatility', 0.0)
-            if volatility > 0.02:  # High volatility > 2%
-                logger.info(f"DCA not favorable due to high volatility: {volatility:.2%}")
-                return False
-                
-            # Check trend condition based on position type
-            trend = market_conditions.get('btc_trend', 'NEUTRAL')
-            if is_long_side(position_type) and trend.upper() == 'DOWN':
-                logger.info(f"DCA not favorable for LONG position in DOWN trend")
-                return False
-            if is_short_side(position_type) and trend.upper() == 'UP':
-                logger.info(f"DCA not favorable for SHORT position in UP trend")
-                return False
-                
-            # Check market sentiment
-            sentiment = market_conditions.get('sentiment', 'neutral')
-            if is_long_side(position_type) and sentiment == 'bearish':
-                logger.info(f"DCA not favorable for LONG position in bearish sentiment")
-                return False
-            if is_short_side(position_type) and sentiment == 'bullish':
-                logger.info(f"DCA not favorable for SHORT position in bullish sentiment")
-                return False
-                
-            # Check risk environment
-            if not market_conditions.get('risk_on', True):
-                logger.info("DCA not favorable in risk-off environment")
-                return False
-                
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error checking DCA favorability for {position_type}: {str(e)}")
-            return False
-
-    async def _calculate_dca_size(self, current_size: float, price_drop: float, position_type: str) -> Optional[float]:
-        """Calculate DCA size based on current position size and price movement.
-        
-        Args:
-            current_size: Current position size
-            price_drop: Price movement percentage (positive for LONG, negative for SHORT)
-            position_type: Position type (LONG/SHORT)
-            
-        Returns:
-            Optional[float]: DCA size or None if invalid
-        """
-        try:
-            # Validate inputs
-            if current_size <= 0:
-                logger.error(f"Invalid current size for DCA: {current_size}")
+                logger.error(f"{symbol} No DCA configuration found")
                 return None
                 
-            if position_type.upper() not in ["LONG", "SHORT"]:
-                logger.error(f"Invalid position type for DCA: {position_type}")
+            # Get base DCA size
+            base_dca_size = float(dca_config.get('base_size', 0.5))
+            if base_dca_size <= 0:
+                logger.error(f"{symbol} Invalid base DCA size")
                 return None
                 
-            # Get DCA configuration
-            dca_config = self.config['risk_management']['dca']
-            if not dca_config:
-                logger.error("No DCA configuration found")
-                return None
+            # Calculate DCA size based on price change
+            if is_long_side(position_type):
+                # For LONG positions, increase DCA size as price drops
+                dca_multiplier = 1.0 + abs(price_change)  # Increase size with larger drops
+            elif is_short_side(position_type):  # SHORT
+                # For SHORT positions, increase DCA size as price rises
+                dca_multiplier = 1.0 + abs(price_change)  # Increase size with larger rises
                 
-            # Get market conditions
-            market_conditions = await self._get_market_conditions(position_type)
-            if not market_conditions:
-                logger.error("Failed to get market conditions")
-                return None
-                
-            # Calculate base multiplier based on price drop
-            price_movement = abs(price_drop)
-            base_multiplier = 1.0
-            
-            # Adjust multiplier based on price drop thresholds
-            price_drop_thresholds = dca_config['price_drop_thresholds']
-            for i, threshold in enumerate(price_drop_thresholds):
-                if price_movement >= threshold:
-                    base_multiplier = 1.0 + (i * 0.5)  # Increase multiplier for larger drops
-                    break
-                    
-            # Adjust for market conditions
-            volatility = market_conditions.get('volatility', 0.0)
-            if volatility > 0.05:
-                base_multiplier *= 0.8  # Reduce size in high volatility
-            elif volatility < 0.01:
-                base_multiplier *= 1.2  # Increase size in low volatility
-                
-            # Adjust for trend strength
-            trend = market_conditions.get('btc_trend', 'UP')
-            if (is_long_side(position_type) and trend.upper() == 'UP') or \
-               (is_short_side(position_type) and trend.upper() == 'DOWN'):
-                base_multiplier *= 1.2
-            else:
-                base_multiplier *= 0.8
-                
-                
-            # Calculate time-based adjustment
-            last_dca_time = self._last_dca_time.get(position_type, 0)
-            time_since_last_dca = time.time() - last_dca_time
-            
-            time_windows = dca_config['time_based_adjustment']['time_windows']
-            size_multipliers = dca_config['time_based_adjustment']['size_multipliers']
-            
-            time_multiplier = 1.0
-            for window, multiplier in zip(time_windows, size_multipliers):
-                if time_since_last_dca >= window:
-                    time_multiplier = multiplier
-                    break
-                    
-            # Apply risk reduction for each DCA attempt
-            dca_attempts = market_conditions.get(f'{position_type.lower()}_dca_attempts', 0)
-            risk_reduction = dca_config['risk_reduction']
-            risk_multiplier = 1.0 - (dca_attempts * risk_reduction)
-            
             # Calculate final DCA size
-            dca_size = current_size * base_multiplier * time_multiplier * risk_multiplier
+            dca_size = current_size * base_dca_size * dca_multiplier
             
-            # Apply risk control limits
-            max_position_size = dca_config['risk_control']['max_position_size']
-            account_balance = await self.binance_service.get_account_balance()
-            if account_balance:
-                usdt_balance = float(account_balance.get('USDT', {}).get('total', 0))
-                max_allowed_size = usdt_balance * max_position_size
-                dca_size = min(dca_size, max_allowed_size)
-                
-            # Final validation
+            # Validate DCA size
             if dca_size <= 0:
-                logger.error(f"Calculated invalid DCA size: {dca_size}")
+                logger.error(f"{symbol} Invalid DCA size calculated: {dca_size}")
                 return None
                 
-            logger.info(f"DCA size calculation: current_size={current_size}, "
-                       f"price_drop={price_drop}, position_type={position_type}, "
-                       f"base_multiplier={base_multiplier}, time_multiplier={time_multiplier}, "
-                       f"risk_multiplier={risk_multiplier}, final_dca={dca_size}")
-                       
+            # Get minimum order size
+            min_order_size = float(dca_config.get('min_order_size', 0.001))
+            if dca_size < min_order_size:
+                logger.info(f"{symbol} DCA size {dca_size} below minimum {min_order_size}")
+                return None
+                
+            # Get maximum DCA size
+            max_dca_size = float(dca_config.get('max_dca_size', 2.0))
+            if dca_size > max_dca_size:
+                logger.info(f"{symbol} DCA size {dca_size} exceeds maximum {max_dca_size}")
+                dca_size = max_dca_size
+                
+            logger.info(f"{symbol} Calculated DCA size {dca_size} for {position_type} with price change {price_change:.2%}")
             return dca_size
             
         except Exception as e:
-            import traceback
-            logger.error(f"Traceback:\n{traceback.format_exc()}")
-            logger.error(f"Error calculating DCA size: {str(e)}")
+            logger.error(f"{symbol} Error calculating DCA size: {str(e)}")
             return None
 
     async def _get_market_conditions(self, symbol: str = None) -> Dict:
         """Get current market conditions.
         
         Args:
-            symbol: Optional trading pair symbol. If not provided, will use BTCUSDT as default.
+            symbol: Optional symbol to get specific market conditions
             
         Returns:
-            Dict: Market conditions dictionary
+            Dict: Market conditions or empty dict if error
         """
         try:
-            # Lấy dữ liệu BTC
-            btc_data = await self._get_btc_data()
+            # Get BTC volatility
+            btc_volatility = await self.analyze_btc_volatility()
+            if not btc_volatility:
+                logger.error("Failed to get BTC volatility")
+                return {}
+                
+            # Get market trend
+            if symbol:
+                trend = await self._get_market_trend(symbol)
+            else:
+                trend = 'NEUTRAL'
+                
+            # Get market sentiment
+            if symbol:
+                sentiment = await self._get_market_sentiment(symbol)
+            else:
+                sentiment = 0.0
+                
+            # Get market liquidity
+            liquidity = await self._calculate_market_liquidity()
             
-            # Lấy sentiment thị trường
-            market_sentiment = await self.analyze_market_sentiment(symbol or "BTCUSDT")
+            # Get risk environment
+            risk_on = await self._is_risk_on_environment()
             
-            # Tính toán các metrics
-            conditions = {
-                'btc_trend': self.get_trend(btc_data) if btc_data is not None else 'neutral',
-                'sentiment': market_sentiment.get('overall_sentiment', 'neutral'),
-                'volatility': await self._get_current_volatility(),
-                'liquidity': await self._calculate_market_liquidity(),
-                'risk_on': await self._is_risk_on_environment()
+            return {
+                'btc_trend': trend,
+                'volatility': btc_volatility.get('volatility', 0.0),
+                'sentiment': sentiment,
+                'liquidity': liquidity,
+                'risk_on': risk_on
             }
-            
-            return conditions
             
         except Exception as e:
             logger.error(f"Error getting market conditions: {str(e)}")
@@ -3150,7 +3225,7 @@ class EnhancedTradingStrategy:
             # Calculate volume trend (3-period)
             volume_trend = (df["volume"].iloc[-1] / df["volume"].iloc[-3]) - 1
             
-            if position_type == "LONG":
+            if is_long_side(position_type):
                 # For LONG: higher volume is better, but need to consider trend
                 if volume_ratio >= 2.0 and volume_trend > 0:  # Very high volume with uptrend
                     return 1.0
@@ -3166,7 +3241,7 @@ class EnhancedTradingStrategy:
                     return -0.2
                 else:  # Very low volume
                     return -0.4
-            else:  # SHORT
+            elif is_short_side(position_type):  # SHORT
                 # For SHORT: moderate volume is better, avoid extreme low/high
                 if 0.8 <= volume_ratio <= 1.2:  # Moderate volume
                     return -1.0  # Negative score for SHORT
@@ -3266,7 +3341,7 @@ class EnhancedTradingStrategy:
             if avg_correlation == 0:
                 return 0.0
                 
-            if position_type == "LONG":
+            if is_long_side(position_type):
                 # For LONG: higher correlation is better
                 if correlation > avg_correlation:
                     return 1.0
@@ -3275,7 +3350,7 @@ class EnhancedTradingStrategy:
                     correlation_ratio = correlation / avg_correlation
                     return max(0, min(1, correlation_ratio))  # Ensure score is between 0 and 1
                     
-            else:  # SHORT
+            elif is_short_side(position_type):  # SHORT
                 # For SHORT: lower correlation is better
                 if correlation < avg_correlation:
                     return -1.0  # Negative score for SHORT
@@ -3388,7 +3463,7 @@ class EnhancedTradingStrategy:
             nearest_support = main_timeframe.get('nearest_support', 0)
             nearest_resistance = main_timeframe.get('nearest_resistance', 0)
             
-            if position_type == "LONG":
+            if is_long_side(position_type):
                 # For LONG: being near support is good
                 if structure == "support":
                     # Calculate strength based on distance to support
@@ -3401,7 +3476,7 @@ class EnhancedTradingStrategy:
                 else:  # neutral
                     return 0.3
                     
-            else:  # SHORT
+            elif is_short_side(position_type):  # SHORT
                 # For SHORT: being near resistance is good
                 if structure == "resistance":
                     # Calculate strength based on distance to resistance
@@ -3428,10 +3503,11 @@ class EnhancedTradingStrategy:
             current_price = volume_profile.get('current_price', 0)
             total_volume = sum(node['volume'] for node in high_volume_nodes)
             
-            if position_type == "LONG":
+            if is_long_side(position_type):
                 # For LONG: check volume at lower price levels
                 low_price_nodes = [node for node in high_volume_nodes if node['price'] < current_price]
                 if not low_price_nodes:
+                    logger.info(f"No low price nodes found")
                     return 0.0
                     
                 # Calculate volume ratio at lower prices
@@ -3440,14 +3516,17 @@ class EnhancedTradingStrategy:
                 
                 # Calculate score based on volume ratio
                 if volume_ratio > 0.5:  # More than 50% volume at lower prices
+                    logger.info(f"50% volume at lower prices: {volume_ratio}")
                     return 1.0
                 else:
+                    logger.info(f"LONG Volume ratio: {volume_ratio}")
                     return volume_ratio * 2  # Proportional to volume ratio
                     
-            else:  # SHORT
+            elif is_short_side(position_type):  # SHORT
                 # For SHORT: check volume at higher price levels
                 high_price_nodes = [node for node in high_volume_nodes if node['price'] > current_price]
                 if not high_price_nodes:
+                    logger.info(f"No high price nodes found")
                     return 0.0
                     
                 # Calculate volume ratio at higher prices
@@ -3456,8 +3535,10 @@ class EnhancedTradingStrategy:
                 
                 # Calculate negative score based on volume ratio
                 if volume_ratio > 0.5:  # More than 50% volume at higher prices
+                    logger.info(f"50% volume at higher prices: {volume_ratio}")
                     return -1.0  # Negative score for SHORT
                 else:
+                    logger.info(f"SHORT Volume ratio: {volume_ratio}")
                     return -volume_ratio * 2  # Negative score proportional to volume ratio
                     
         except Exception as e:
@@ -3470,7 +3551,7 @@ class EnhancedTradingStrategy:
             if funding_rate == 0:
                 return 0.0
                 
-            if position_type == "LONG":
+            if is_long_side(position_type):
                 # For LONG: negative funding rate is good
                 if funding_rate < -0.0001:  # Significant negative funding rate
                     return 1.0
@@ -3478,7 +3559,7 @@ class EnhancedTradingStrategy:
                     return 0.5
                 else:  # Positive funding rate
                     return -0.5
-            else:  # SHORT
+            elif is_short_side(position_type):  # SHORT
                 # For SHORT: positive funding rate is good
                 if funding_rate > 0.0001:  # Significant positive funding rate
                     return -1.0  # Negative score for SHORT
@@ -3500,10 +3581,10 @@ class EnhancedTradingStrategy:
             # Normalize open interest to a score between -1 and 1
             normalized_oi = min(max(open_interest / 1000000, 0.1), 1.0)  # Assuming 1M as max OI
             
-            if position_type == "LONG":
+            if is_long_side(position_type):
                 # For LONG: Higher OI is better
                 return normalized_oi  # Positive score (0.1 to 1.0)
-            else:  # SHORT
+            elif is_short_side(position_type):  # SHORT
                 # For SHORT: Lower OI is better
                 return -(1.0 - normalized_oi)  # Negative score (-0.9 to 0.0)
                     
@@ -3528,7 +3609,7 @@ class EnhancedTradingStrategy:
                 
             depth_ratio = bid_depth / ask_depth
             
-            if position_type == "LONG":
+            if is_long_side(position_type):
                 # For LONG: higher bid depth is better
                 if depth_ratio > 1.5:  # Significantly higher bid depth
                     return 1.0
@@ -3536,7 +3617,7 @@ class EnhancedTradingStrategy:
                     return 0.5
                 else:  # Lower bid depth
                     return -0.5
-            else:  # SHORT
+            elif is_short_side(position_type):  # SHORT
                 # For SHORT: higher ask depth is better (negative score)
                 if depth_ratio < 0.67:  # Significantly higher ask depth
                     return -1.0  # Negative score for SHORT
@@ -3740,7 +3821,7 @@ class EnhancedTradingStrategy:
                 weights['trend'] -= self.adjustment_factors['weight_adjustment']
                 
             # Điều chỉnh theo market sentiment
-            if market_conditions.get('sentiment', 'neutral') == 'bearish':
+            if market_conditions.get('sentiment', 0) < 0:
                 weights['sentiment'] += self.adjustment_factors['weight_adjustment']
                 weights['trend'] -= self.adjustment_factors['weight_adjustment']
                 
@@ -4059,8 +4140,8 @@ class EnhancedTradingStrategy:
             
             if is_long_side(position_type):
                 # For LONG: count bullish timeframes and average their strengths
-                bullish_count = sum(1 for trend in trends.values() if trend.upper() == 'UP')
-                bullish_strength = sum(strengths[tf] for tf, trend in trends.items() if trend.upper() == 'UP')
+                bullish_count = sum(1 for trend in trends.values() if is_trending_up(trend))
+                bullish_strength = sum(strengths[tf] for tf, trend in trends.items() if is_trending_up(trend))
                 
                 if bullish_count == 3:  # All timeframes bullish
                     return 1.0
@@ -4072,8 +4153,8 @@ class EnhancedTradingStrategy:
                     return -0.5
             elif is_short_side(position_type):  # SHORT
                 # For SHORT: count bearish timeframes and average their strengths (negative scores)
-                bearish_count = sum(1 for trend in trends.values() if trend.upper() == 'DOWN')
-                bearish_strength = sum(strengths[tf] for tf, trend in trends.items() if trend.upper() == 'DOWN')
+                bearish_count = sum(1 for trend in trends.values() if is_trending_down(trend))
+                bearish_strength = sum(strengths[tf] for tf, trend in trends.items() if is_trending_down(trend))
                 
                 if bearish_count == 3:  # All timeframes bearish
                     return -1.0  # Negative score for SHORT
@@ -4112,83 +4193,52 @@ class EnhancedTradingStrategy:
             logger.error(f"Error calculating momentum: {str(e)}")
             return {'strength': 0, 'direction': 0, 'roc': 0}
 
-    async def _adjust_position_size_by_volatility(self, base_size: float, symbol: str) -> float:
+    async def _adjust_position_size_by_volatility(self, symbol: str, base_size: float) -> float:
+        """Adjust position size based on market volatility"""
         try:
-            # Get current volatility
-            current_volatility = await self._get_current_volatility()
+            # Get historical klines
+            klines = await self.binance_service.get_klines(
+                symbol=symbol,
+                timeframe='1h',
+                limit=24  # Last 24 hours
+            )
             
-            # Get historical volatility for comparison
-            historical_volatility = await self._calculate_btc_volatility()
-            avg_volatility = historical_volatility.get('average_volatility', 0.02)
+            if not klines:
+                logger.warning(f"No klines data available for {symbol}")
+                return base_size
+                
+            # Convert to DataFrame
+            df = pd.DataFrame(klines, columns=[
+                'timestamp', 'open', 'high', 'low', 'close', 'volume'
+            ])
             
-            # Calculate volatility ratio
-            volatility_ratio = current_volatility / avg_volatility if avg_volatility > 0 else 1
+            # Convert numeric columns
+            numeric_columns = ['open', 'high', 'low', 'close']
+            df[numeric_columns] = df[numeric_columns].apply(pd.to_numeric, errors='coerce')
             
-            # Calculate correlation with BTC
-            correlation = await self._calculate_correlation(symbol, "BTCUSDT")
-            correlation_factor = abs(correlation)
+            # Calculate volatility
+            df['returns'] = df['close'].pct_change()
+            volatility = df['returns'].std() * np.sqrt(24)  # Annualized volatility
             
-            # Get market trend
-            market_trend = await self._get_market_trend(symbol)
+            # Get market volatility
+            market_volatility = await self._get_market_volatility()
+            if market_volatility is None:
+                return base_size
+                
+            # Calculate relative volatility
+            relative_vol = volatility / market_volatility
             
-            # Get volume profile
-            volume_profile = await self._analyze_volume_profile(symbol)
-            volume_score = volume_profile.get('score', 0.5)
-            
-            # Calculate time factor (reduce position size during low liquidity hours)
-            current_hour = datetime.now().hour
-            time_factor = 1.0
-            if current_hour in [0, 1, 2, 3, 4, 5]:  # Low liquidity hours
-                time_factor = 0.8
-            
-            # Adjust position size based on multiple factors
-            adjustment_factor = 1.0
-            
-            # Volatility adjustment
-            if volatility_ratio > 2.0:  # Extreme volatility
-                adjustment_factor *= 0.7
-            elif volatility_ratio > 1.5:  # High volatility
-                adjustment_factor *= 0.8
-            elif volatility_ratio > 1.2:  # Moderately high volatility
-                adjustment_factor *= 0.9
-            elif volatility_ratio < 0.8:  # Low volatility
-                adjustment_factor *= 1.1
-            
-            # Correlation adjustment (only if correlation is very high)
-            if correlation_factor > 0.85:  # Very high correlation
-                adjustment_factor *= 0.9
-            
-            # Market trend adjustment
-            if market_trend == "bullish":
-                adjustment_factor *= 1.1
-            elif market_trend == "bearish":
-                adjustment_factor *= 0.9
-            
-            # Volume profile adjustment
-            adjustment_factor *= (0.8 + volume_score * 0.4)  # Volume score impact
-            
-            # Apply time factor
-            adjustment_factor *= time_factor
-            
-            # Calculate final position size
-            adjusted_size = base_size * adjustment_factor
-            
-            # Ensure minimum position size
-            min_position_size = self.config.get('min_position_size', 0.001)
-            adjusted_size = max(adjusted_size, min_position_size)
-            
-            # Log adjustment details
-            logger.info(f"Position size adjustment for {symbol}: "
-                    f"base_size={base_size}, "
-                    f"volatility_ratio={volatility_ratio:.2f}, "
-                    f"correlation={correlation:.2f}, "
-                    f"market_trend={market_trend}, "
-                    f"volume_score={volume_score:.2f}, "
-                    f"time_factor={time_factor:.2f}, "
-                    f"final_adjustment={adjustment_factor:.2f}, "
-                    f"adjusted_size={adjusted_size:.4f}")
-            
-            return adjusted_size
+            # Adjust position size
+            if relative_vol > 2.0:  # Very high volatility
+                adjusted_size = base_size * 0.5
+            elif relative_vol > 1.5:  # High volatility
+                adjusted_size = base_size * 0.75
+            elif relative_vol < 0.5:  # Low volatility
+                adjusted_size = base_size * 1.25
+            else:  # Normal volatility
+                adjusted_size = base_size
+                
+            return max(adjusted_size, base_size * 0.5)  # Never go below 50% of base size
             
         except Exception as e:
             logger.error(f"Error adjusting position size by volatility: {str(e)}")
@@ -4280,4 +4330,29 @@ class EnhancedTradingStrategy:
         except Exception as e:
             logger.error(f"Error in momentum exit check: {str(e)}")
             return False
+
+    async def _get_market_volatility(self) -> Optional[float]:
+        """
+        Calculate market volatility based on BTC data.
+        Returns the annualized volatility of BTC.
+        """
+        try:
+            # Get BTC data for the last 24 hours
+            btc_data = await self._get_btc_data()
+            if btc_data is None or btc_data.empty:
+                logger.warning("No BTC data available for market volatility calculation")
+                return None
+
+            # Calculate returns
+            btc_data['returns'] = btc_data['close'].pct_change()
+            
+            # Calculate annualized volatility (24 hours)
+            market_volatility = btc_data['returns'].std() * np.sqrt(24)
+            
+            logger.info(f"Market volatility: {market_volatility:.4f}")
+            return market_volatility
+            
+        except Exception as e:
+            logger.error(f"Error calculating market volatility: {str(e)}")
+            return None
 
