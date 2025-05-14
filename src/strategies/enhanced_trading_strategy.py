@@ -1208,16 +1208,121 @@ class EnhancedTradingStrategy:
                 # Check if market trend has reversed
                 trend = market_conditions.get('btc_trend')
                 if trend:
-                    if (position_amt > 0 and is_trending_down(trend) and unrealized_pnl > 0) or \
-                       (position_amt < 0 and is_trending_up(trend) and unrealized_pnl > 0):
-                        logger.info(f"Closing position for {symbol} {position_side.upper()} due to trend reversal")
-                        await self.telegram_service.send_message(
-                            f"Closing position for {symbol} {position_side.upper()} due to trend reversal\n"
-                            f"Current price: {current_price}\n"
-                            f"Price change: {price_change:.2%}\n" 
-                            f"Unrealized PnL: {unrealized_pnl}"
-                        )
-                        return True
+                    # Get BTC volatility
+                    btc_volatility = await self.analyze_btc_volatility()
+                    if not btc_volatility:
+                        logger.warning("Failed to get BTC volatility for correlation analysis")
+                        return False
+                        
+                    # Get correlation analysis
+                    correlation_analysis = await self.analyze_altcoin_correlation(symbol, btc_volatility)
+                    
+                #     result = {
+                #     'correlation': float(adjusted_correlation),
+                #     'returns_correlation': float(best_correlation),
+                #     'reaction_strength': float(reaction_strength),
+                #     'is_strongly_correlated': is_strongly_correlated,
+                #     'is_reacting': is_reacting,
+                #     'reaction': 'STRONG' if is_strongly_correlated else 'MODERATE' if is_reacting else 'WEAK',
+                #     'data_points': len(corr_df),
+                #     'btc_std': float(btc_std),
+                #     'alt_std': float(alt_std),
+                #     'lag': best_lag,
+                #     'trend_alignment': float(trend_alignment),
+                #     'btc_trend': btc_trend,
+                #     'alt_trend': alt_trend
+                # }
+                    
+                    if correlation_analysis:
+                        correlation = correlation_analysis.get('correlation', 0)
+                        reaction_strength = correlation_analysis.get('reaction_strength', 0)
+                        trend_alignment = correlation_analysis.get('trend_alignment', 0)
+                        btc_trend = correlation_analysis.get('btc_trend', 'NEUTRAL')
+                        alt_trend = correlation_analysis.get('alt_trend', 'NEUTRAL')
+                        
+                        # Get trend strength
+                        df = await self.indicator_service.calculate_indicators(symbol)
+                        if df is not None and not df.empty:
+                            adx = df['ADX'].iloc[-1] if 'ADX' in df.columns else 0
+                            trend_strength = adx / 100.0
+                            
+                            # Define thresholds
+                            CORRELATION_THRESHOLD = 0.7  # Strong correlation threshold
+                            TREND_STRENGTH_THRESHOLD = 0.25  # Strong trend threshold
+                            
+                            # Check for trend reversal with correlation consideration
+                            if position_amt > 0:  # LONG position
+                                if (is_trending_down(trend) and 
+                                    ((correlation > CORRELATION_THRESHOLD and trend_alignment < 0) or  # Strong negative correlation
+                                     (trend_strength > TREND_STRENGTH_THRESHOLD and is_trending_down(btc_trend) and is_trending_down(alt_trend)))):  # Strong trend alignment
+                                    logger.info(f"Closing LONG position for {symbol} due to BTC trend reversal and correlation")
+                                    await self.telegram_service.send_message(
+                                        f"Closing LONG position for {symbol} due to BTC trend reversal and correlation\n"
+                                        f"Current price: {current_price}\n"
+                                        f"Price change: {price_change:.2%}\n"
+                                        f"Unrealized PnL: {unrealized_pnl}\n"
+                                        f"BTC Trend: {btc_trend}\n"
+                                        f"Alt Trend: {alt_trend}\n"
+                                        f"Correlation: {correlation:.2f}\n"
+                                        f"Reaction Strength: {reaction_strength:.2f}\n"
+                                        f"Trend Alignment: {trend_alignment:.2f}\n"
+                                        f"Trend Strength: {trend_strength:.2f}"
+                                    )
+                                    return True
+                                    
+                            elif position_amt < 0:  # SHORT position
+                                if (is_trending_up(trend) and 
+                                    ((correlation > CORRELATION_THRESHOLD and trend_alignment > 0) or  # Strong positive correlation
+                                     (trend_strength > TREND_STRENGTH_THRESHOLD and is_trending_up(btc_trend) and is_trending_up(alt_trend)))):  # Strong trend alignment
+                                    logger.info(f"Closing SHORT position for {symbol} due to BTC trend reversal and correlation")
+                                    await self.telegram_service.send_message(
+                                        f"Closing SHORT position for {symbol} due to BTC trend reversal and correlation\n"
+                                        f"Current price: {current_price}\n"
+                                        f"Price change: {price_change:.2%}\n"
+                                        f"Unrealized PnL: {unrealized_pnl}\n"
+                                        f"BTC Trend: {btc_trend}\n"
+                                        f"Alt Trend: {alt_trend}\n"
+                                        f"Correlation: {correlation:.2f}\n"
+                                        f"Reaction Strength: {reaction_strength:.2f}\n"
+                                        f"Trend Alignment: {trend_alignment:.2f}\n"
+                                        f"Trend Strength: {trend_strength:.2f}"
+                                    )
+                                    return True
+                                    
+                            # Check for divergence between BTC and altcoin
+                            if position_amt > 0:  # LONG position
+                                if (is_trending_down(btc_trend) and is_trending_up(alt_trend) and 
+                                    correlation > CORRELATION_THRESHOLD and 
+                                    trend_strength > TREND_STRENGTH_THRESHOLD):
+                                    logger.info(f"Closing LONG position for {symbol} due to trend divergence")
+                                    await self.telegram_service.send_message(
+                                        f"Closing LONG position for {symbol} due to trend divergence\n"
+                                        f"Current price: {current_price}\n"
+                                        f"Price change: {price_change:.2%}\n"
+                                        f"Unrealized PnL: {unrealized_pnl}\n"
+                                        f"BTC Trend: {btc_trend}\n"
+                                        f"Alt Trend: {alt_trend}\n"
+                                        f"Correlation: {correlation:.2f}\n"
+                                        f"Trend Strength: {trend_strength:.2f}"
+                                    )
+                                    return True
+                                    
+                            elif position_amt < 0:  # SHORT position
+                                if (is_trending_up(btc_trend) and is_trending_down(alt_trend) and 
+                                    correlation > CORRELATION_THRESHOLD and 
+                                    trend_strength > TREND_STRENGTH_THRESHOLD):
+                                    logger.info(f"Closing SHORT position for {symbol} due to trend divergence")
+                                    await self.telegram_service.send_message(
+                                        f"Closing SHORT position for {symbol} due to trend divergence\n"
+                                        f"Current price: {current_price}\n"
+                                        f"Price change: {price_change:.2%}\n"
+                                        f"Unrealized PnL: {unrealized_pnl}\n"
+                                        f"BTC Trend: {btc_trend}\n"
+                                        f"Alt Trend: {alt_trend}\n"
+                                        f"Correlation: {correlation:.2f}\n"
+                                        f"Trend Strength: {trend_strength:.2f}"
+                                    )
+                                    return True
                         
                 # Check if market sentiment is strongly against position
                 sentiment_analysis = await self.analyze_market_sentiment(symbol)
