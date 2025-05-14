@@ -1220,18 +1220,108 @@ class EnhancedTradingStrategy:
                         return True
                         
                 # Check if market sentiment is strongly against position
-                sentiment = market_conditions.get('sentiment', 0)
-                if (position_amt > 0 and sentiment < 0 and unrealized_pnl > 0) or \
-                   (position_amt < 0 and sentiment > 0 and unrealized_pnl > 0):
-                    logger.info(f"Closing position for {symbol} {position_side.upper()} due to strong market sentiment")
-                    await self.telegram_service.send_message(
-                        f"Closing position for {symbol} {position_side.upper()} due to strong market sentiment\n"
-                        f"Current price: {current_price}\n"
-                        f"Price change: {price_change:.2%}\n" 
-                        f"Unrealized PnL: {unrealized_pnl}"
-                    )
-                    return True
+                sentiment_analysis = await self.analyze_market_sentiment(symbol)
+                if sentiment_analysis:
+                    # Get individual sentiment components
+                    rsi_sentiment = sentiment_analysis.get('rsi_sentiment', 'neutral')
+                    mfi_sentiment = sentiment_analysis.get('mfi_sentiment', 'neutral')
+                    obv_sentiment = sentiment_analysis.get('obv_sentiment', 'neutral')
+                    trend_strength = sentiment_analysis.get('trend_strength', 'weak')
+                    overall_sentiment = sentiment_analysis.get('overall_sentiment', 'neutral')
                     
+                    # Calculate sentiment score
+                    sentiment_score = self._calculate_sentiment_score(sentiment_analysis, position_side)
+                    
+                    # Check for strong sentiment reversal
+                    sentiment_threshold = 0.6  # Threshold for strong sentiment
+                    sentiment_duration = 3  # Number of candles to confirm sentiment
+                    
+                    # Get historical sentiment data
+                    df = await self.indicator_service.calculate_indicators(symbol)
+                    if df is not None and not df.empty:
+                        # Calculate historical sentiment scores
+                        historical_sentiments = []
+                        for i in range(min(sentiment_duration, len(df))):
+                            historical_data = {
+                                'rsi_sentiment': 'bullish' if df['RSI'].iloc[-(i+1)] < 30 else 'bearish' if df['RSI'].iloc[-(i+1)] > 70 else 'neutral',
+                                'mfi_sentiment': 'bullish' if df['MFI'].iloc[-(i+1)] < 20 else 'bearish' if df['MFI'].iloc[-(i+1)] > 80 else 'neutral',
+                                'obv_sentiment': 'bullish' if df['OBV'].iloc[-(i+1)] > 0 else 'bearish' if df['OBV'].iloc[-(i+1)] < 0 else 'neutral',
+                                'trend_strength': 'strong' if df['ADX'].iloc[-(i+1)] > 25 else 'weak',
+                                'overall_sentiment': 'bullish' if (
+                                    (df['RSI'].iloc[-(i+1)] < 30 and df['MFI'].iloc[-(i+1)] < 20) or
+                                    (df['OBV'].iloc[-(i+1)] > 0 and df['ADX'].iloc[-(i+1)] > 25)
+                                ) else 'bearish' if (
+                                    (df['RSI'].iloc[-(i+1)] > 70 and df['MFI'].iloc[-(i+1)] > 80) or
+                                    (df['OBV'].iloc[-(i+1)] < 0 and df['ADX'].iloc[-(i+1)] > 25)
+                                ) else 'neutral'
+                            }
+                            historical_sentiments.append(self._calculate_sentiment_score(historical_data, position_side))
+                        
+                        # Check if sentiment has been consistently against position
+                        if len(historical_sentiments) == sentiment_duration:
+                            if position_amt > 0:  # LONG position
+                                if all(score < -sentiment_threshold for score in historical_sentiments):
+                                    logger.info(f"Closing LONG position for {symbol} due to strong bearish sentiment")
+                                    await self.telegram_service.send_message(
+                                        f"Closing LONG position for {symbol} due to strong bearish sentiment\n"
+                                        f"Current price: {current_price}\n"
+                                        f"Price change: {price_change:.2%}\n"
+                                        f"Unrealized PnL: {unrealized_pnl}\n"
+                                        f"Sentiment score: {sentiment_score:.2f}\n"
+                                        f"RSI sentiment: {rsi_sentiment}\n"
+                                        f"MFI sentiment: {mfi_sentiment}\n"
+                                        f"OBV sentiment: {obv_sentiment}\n"
+                                        f"Trend strength: {trend_strength}"
+                                    )
+                                    return True
+                            elif position_amt < 0:  # SHORT position
+                                if all(score > sentiment_threshold for score in historical_sentiments):
+                                    logger.info(f"Closing SHORT position for {symbol} due to strong bullish sentiment")
+                                    await self.telegram_service.send_message(
+                                        f"Closing SHORT position for {symbol} due to strong bullish sentiment\n"
+                                        f"Current price: {current_price}\n"
+                                        f"Price change: {price_change:.2%}\n"
+                                        f"Unrealized PnL: {unrealized_pnl}\n"
+                                        f"Sentiment score: {sentiment_score:.2f}\n"
+                                        f"RSI sentiment: {rsi_sentiment}\n"
+                                        f"MFI sentiment: {mfi_sentiment}\n"
+                                        f"OBV sentiment: {obv_sentiment}\n"
+                                        f"Trend strength: {trend_strength}"
+                                    )
+                                    return True
+                    
+                    # Check for extreme sentiment conditions
+                    if position_amt > 0:  # LONG position
+                        if (rsi_sentiment == 'bearish' and mfi_sentiment == 'bearish' and 
+                            obv_sentiment == 'bearish' and trend_strength == 'strong'):
+                            logger.info(f"Closing LONG position for {symbol} due to extreme bearish sentiment")
+                            await self.telegram_service.send_message(
+                                f"Closing LONG position for {symbol} due to extreme bearish sentiment\n"
+                                f"Current price: {current_price}\n"
+                                f"Price change: {price_change:.2%}\n"
+                                f"Unrealized PnL: {unrealized_pnl}\n"
+                                f"RSI sentiment: {rsi_sentiment}\n"
+                                f"MFI sentiment: {mfi_sentiment}\n"
+                                f"OBV sentiment: {obv_sentiment}\n"
+                                f"Trend strength: {trend_strength}"
+                            )
+                            return True
+                    elif position_amt < 0:  # SHORT position
+                        if (rsi_sentiment == 'bullish' and mfi_sentiment == 'bullish' and 
+                            obv_sentiment == 'bullish' and trend_strength == 'strong'):
+                            logger.info(f"Closing SHORT position for {symbol} due to extreme bullish sentiment")
+                            await self.telegram_service.send_message(
+                                f"Closing SHORT position for {symbol} due to extreme bullish sentiment\n"
+                                f"Current price: {current_price}\n"
+                                f"Price change: {price_change:.2%}\n"
+                                f"Unrealized PnL: {unrealized_pnl}\n"
+                                f"RSI sentiment: {rsi_sentiment}\n"
+                                f"MFI sentiment: {mfi_sentiment}\n"
+                                f"OBV sentiment: {obv_sentiment}\n"
+                                f"Trend strength: {trend_strength}"
+                            )
+                            return True
+            
             return False
             
         except Exception as e:
