@@ -293,33 +293,62 @@ class EnhancedTradingStrategy:
             if not sentiment:
                 logger.warning(f"Failed to analyze sentiment for {symbol}")
                 return None
-                
-            # Calculate signal score with new components
-            signal_score = await self.calculate_signal_score(
-                symbol=symbol,
-                df=df,
-                timeframe_analysis=timeframe_analysis,
-                btc_volatility=btc_volatility,
-                altcoin_correlation=altcoin_correlation,
-                sentiment=sentiment,
-                market_structure=market_structure,
-                volume_profile=volume_profile,
-                funding_rate=funding_rate,
-                open_interest=open_interest,
-                order_book=order_book
-            )
-            
-            # Determine position type based on signal score
-            if signal_score >= self.config['trading']['signal_thresholds']['long_entry']:
-                position_type = "LONG"
-                logger.info(f"Signal score {signal_score:.2f} above threshold for {symbol}")
-            elif signal_score <= self.config['trading']['signal_thresholds']['short_entry']:
-                position_type = "SHORT"
-                logger.info(f"Signal score {signal_score:.2f} below threshold for {symbol}")
+
+            # Check for trend following and breakout signals
+            market_conditions = {
+                'df': df,
+                'timeframe_data': timeframe_data,
+                'market_structure': market_structure,
+                'volume_profile': volume_profile,
+                'funding_rate': funding_rate,
+                'open_interest': open_interest,
+                'order_book': order_book,
+                'timeframe_analysis': timeframe_analysis,
+                'btc_volatility': btc_volatility,
+                'altcoin_correlation': altcoin_correlation,
+                'sentiment': sentiment
+            }
+
+            # Check trend following signal
+            trend_signal = self._check_trend_following_signal(symbol, market_conditions)
+            if trend_signal:
+                logger.info(f"Trend following signal detected for {symbol}: {trend_signal}")
+                signal_score = trend_signal['confidence'] * 100  # Convert confidence to score
+                position_type = "LONG" if is_long_side(trend_signal['side']) else "SHORT"
             else:
-                # logger.info(f"Signal score {signal_score:.2f} below threshold for {symbol}")
-                return None
-                
+                # Check breakout signal
+                breakout_signal = self._check_breakout_signal(symbol, market_conditions)
+                if breakout_signal:
+                    logger.info(f"Breakout signal detected for {symbol}: {breakout_signal}")
+                    signal_score = breakout_signal['confidence'] * 100  # Convert confidence to score
+                    position_type = "LONG" if is_long_side(breakout_signal['side']) else "SHORT"
+                else:
+                    # Calculate signal score with new components
+                    signal_score = await self.calculate_signal_score(
+                        symbol=symbol,
+                        df=df,
+                        timeframe_analysis=timeframe_analysis,
+                        btc_volatility=btc_volatility,
+                        altcoin_correlation=altcoin_correlation,
+                        sentiment=sentiment,
+                        market_structure=market_structure,
+                        volume_profile=volume_profile,
+                        funding_rate=funding_rate,
+                        open_interest=open_interest,
+                        order_book=order_book
+                    )
+                    
+                    # Determine position type based on signal score
+                    if signal_score >= self.config['trading']['signal_thresholds']['long_entry']:
+                        position_type = "LONG"
+                        logger.info(f"Signal score {signal_score:.2f} above threshold for {symbol}")
+                    elif signal_score <= self.config['trading']['signal_thresholds']['short_entry']:
+                        position_type = "SHORT"
+                        logger.info(f"Signal score {signal_score:.2f} below threshold for {symbol}")
+                    else:
+                        logger.info(f"Signal score {signal_score:.2f} below threshold for {symbol}")
+                        return None
+
             # Check additional entry conditions
             if not await self._check_entry_conditions(
                 df=df,
@@ -331,7 +360,7 @@ class EnhancedTradingStrategy:
             ):
                 logger.info(f"Entry conditions not met for {symbol}")
                 return None
-                
+
             # Log signal details
             logger.info(f"{symbol} Signal score: {signal_score}")
             logger.info(f"Generated {position_type} signal for {symbol} with score {signal_score:.2f}")
@@ -344,8 +373,9 @@ class EnhancedTradingStrategy:
             logger.info(f"- Market Structure: {market_structure.get('structure', 'NEUTRAL')}")
             logger.info(f"- Funding Rate: {funding_rate:.4f}")
             logger.info(f"- Open Interest: {open_interest}")
-            
-            return {
+
+            # Prepare signal response
+            signal = {
                 'symbol': symbol,
                 'position_type': position_type,
                 'score': signal_score,
@@ -364,7 +394,21 @@ class EnhancedTradingStrategy:
                     'order_book': order_book
                 }
             }
-            
+
+            # Add trend following or breakout signal details if available
+            if trend_signal:
+                signal['signal_type'] = 'trend_following'
+                signal['stop_loss'] = trend_signal['stop_loss']
+                signal['take_profit'] = trend_signal['take_profit']
+                signal['conditions'] = trend_signal['conditions']
+            elif breakout_signal:
+                signal['signal_type'] = 'breakout'
+                signal['stop_loss'] = breakout_signal['stop_loss']
+                signal['take_profit'] = breakout_signal['take_profit']
+                signal['conditions'] = breakout_signal['conditions']
+
+            return signal
+
         except Exception as e:
             import traceback
             logger.error(f"Traceback:\n{traceback.format_exc()}")
