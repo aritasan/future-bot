@@ -82,29 +82,6 @@ class EnhancedTradingStrategy:
         self._cache_ttl = 300  # 5 minutes
         self._last_update = {}
         
-        # DCA settings with dynamic levels
-        self.dca_settings = {
-            'base_levels': [
-                {'drop': 0.02, 'multiplier': 1.0, 'max_uses': 2},  # 2% drop - same size
-                {'drop': 0.04, 'multiplier': 1.5, 'max_uses': 1},  # 4% drop - 1.5x size
-                {'drop': 0.06, 'multiplier': 2.0, 'max_uses': 1}   # 6% drop - 2x size
-            ],
-            'dynamic_adjustment': {
-                'volatility_factor': 1.2,  # Increase levels in high volatility
-                'trend_factor': 1.1,       # Increase levels in strong trend
-                'volume_factor': 1.15      # Increase levels in high volume
-            },
-            'max_total_multiplier': 3.0,   # Maximum total position size multiplier
-            'min_time_between_dca': 3600,  # Minimum time between DCA orders (1 hour)
-            'max_dca_attempts': 3          # Maximum number of DCA attempts per position
-        }
-        
-        # Trailing stop settings
-        self.trailing_settings = [
-            {'profit': 0.01, 'trail_percent': 0.005, 'atr_multiplier': 1.0},  # 1% profit - 0.5% trail
-            {'profit': 0.02, 'trail_percent': 0.008, 'atr_multiplier': 1.2},  # 2% profit - 0.8% trail
-            {'profit': 0.03, 'trail_percent': 0.01, 'atr_multiplier': 1.5}    # 3% profit - 1.0% trail
-        ]
         
         # Trade tracking variables
         self._last_trade_time = {}
@@ -114,10 +91,6 @@ class EnhancedTradingStrategy:
         self._last_trade_stop_loss = {}
         self._last_trade_take_profit = {}
         self._position_entry_time = {}  # Track entry time for each position
-        self._order_history = {}  # Track order history per symbol
-        self._min_order_interval = 120  # Minimum 5 minutes between orders
-        self._max_orders_per_hour = 10  # Maximum 3 orders per hour
-        self._max_risk_per_symbol = 0.3  # Maximum 30% risk per symbol
         
         # Thêm các tham số cấu hình mới
         self.base_thresholds = {
@@ -717,7 +690,6 @@ class EnhancedTradingStrategy:
                         
                     df1 = df1.tail(min_length)
                     df2 = df2.tail(min_length)
-                    
                     # Calculate correlation with timeout handling
                     try:
                         correlation = df1['close'].corr(df2['close'])
@@ -2235,96 +2207,93 @@ class EnhancedTradingStrategy:
             Optional[Dict]: DCA details if successful, None otherwise
         """
         try:
-            # Get current price
+            logger.info(f"_handle_dca: Starting DCA process for {symbol}")
+            
+            # Get current price and position details
             current_price = await self.binance_service.get_current_price(symbol)
             if not current_price:
-                logger.error(f"Failed to get current price for {symbol}")
-                return None
-                
-            # Validate position details
-            if not position or float(position.get('contracts', 0)) <= 0:
-                logger.error(f"Invalid position for {symbol}")
-                return None
-                
-            # Calculate price drop percentage
-            entry_price = float(position.get('entryPrice', 0))
-            if entry_price <= 0:
-                logger.error(f"Invalid entry price for {symbol}")
+                logger.error(f"_handle_dca: Failed to get current price for {symbol}")
                 return None
                 
             position_type = position.get('side', 'LONG')
-            # Calculate price drop based on position type
-            if is_long_side(position_type):
-                # For LONG: price drop = (entry_price - current_price) / entry_price
-                price_drop = (entry_price - current_price) / entry_price * 100
-            else:
-                # For SHORT: price drop = (current_price - entry_price) / entry_price
-                price_drop = (current_price - entry_price) / entry_price * 100
+            entry_price = float(position.get('entryPrice', 0))
+            
+            # Calculate price drop
+            price_drop = (current_price - entry_price) / entry_price * 100
                 
             # Get market conditions
             market_conditions = await self._get_market_conditions(symbol)
             if not market_conditions:
-                logger.error(f"Failed to get market conditions for {symbol}")
+                logger.error(f"_handle_dca: Failed to get market conditions for {symbol}")
+                return None
+                
+            # Check DCA limits
+            if not self._check_dca_limits(symbol, position_type):
+                logger.info(f"_handle_dca: DCA limits reached for {symbol}")
                 return None
                 
             # Check if DCA is favorable
             if not self._is_dca_favorable(symbol, price_drop, market_conditions, position_type):
-                logger.info(f"DCA not favorable for {symbol} {position_type}")
+                logger.info(f"_handle_dca: DCA conditions not favorable for {symbol} {position_type}")
                 return None
                 
             # Calculate DCA size
-            current_size = float(position.get('contracts', 0))
+            current_size = abs(float(position.get('info', {}).get('positionAmt', 0)))
             dca_size = await self._calculate_dca_size(symbol, current_size, price_drop, position_type)
-            if not dca_size or dca_size <= 0:
-                logger.error(f"Invalid DCA size calculated for {symbol}: {dca_size}")
+            if not dca_size:
+                logger.error(f"_handle_dca: Failed to calculate DCA size for {symbol}")
                 return None
                 
-            # Place DCA order
+            logger.info(f"_handle_dca: Calculated DCA size {dca_size} for {symbol}")
+            
+            # Prepare order parameters
             order_params = {
                 'symbol': symbol,
                 'side': 'BUY' if is_long_side(position_type) else 'SELL',
                 'type': 'MARKET',
-                'amount': dca_size,
-                'reduceOnly': False
+                'amount': dca_size
             }
             
-            # Place order with retry mechanism
+            # Place DCA order
             max_retries = 3
             for attempt in range(max_retries):
                 try:
+                    logger.info(f"_handle_dca: Attempting to place DCA order for {symbol} (attempt {attempt + 1})")
                     order = await self.binance_service.place_order(order_params)
-                    if order:
-                        # Calculate new stop loss and take profit
-                        new_stop_loss = await self._calculate_stop_loss(symbol, position_type, current_price, 
-                                                                      await self.indicator_service.calculate_atr(symbol))
-                        new_take_profit = await self._calculate_take_profit(symbol, position_type, current_price, new_stop_loss)
+                    if not order:
+                        logger.error(f"_handle_dca: Failed to place DCA order for {symbol} - no order returned")
+                        continue
                         
-                        # Update orders
-                        logger.info(f"_handle_dca: Updating stop loss for {symbol} to {new_stop_loss}")
-                        if await self._update_stop_loss(symbol, new_stop_loss, position_type):
-                            logger.info(f"_handle_dca: Stop loss updated for {symbol} {position_type}")
-                        else:
-                            logger.error(f"_handle_dca: Failed to update stop loss for {symbol} {position_type}")
-                        if await self._update_take_profit(symbol, new_take_profit, position_type):
-                            logger.info(f"_handle_dca: Take profit updated for {symbol} {position_type}")
-                        else:
-                            logger.error(f"_handle_dca: Failed to update take profit for {symbol} {position_type}")
+                    logger.info(f"_handle_dca: DCA order placed successfully for {symbol}: {order.get('id')}")
+                    
+                    # Calculate new stop loss and take profit
+                    logger.info(f"_handle_dca: Calculating new stop loss and take profit for {symbol}")
+                    atr = await self.indicator_service.calculate_atr(symbol)
+                    if not atr:
+                        logger.error(f"_handle_dca: Failed to calculate ATR for {symbol}")
                         
-                        # Update DCA information
-                        if is_long_side(position_type):
-                            market_conditions['long_dca_attempts'] += 1
-                            market_conditions['long_active_dca_positions'].append({
-                                'entry_price': current_price,
-                                'size': dca_size
-                            })
-                        else:
-                            market_conditions['short_dca_attempts'] += 1
-                            market_conditions['short_active_dca_positions'].append({
-                                'entry_price': current_price,
-                                'size': dca_size
-                            })
-                            
-                        # Send notification
+                    new_stop_loss = await self._calculate_stop_loss(symbol, position_type, current_price, atr)
+                    new_take_profit = await self._calculate_take_profit(symbol, position_type, current_price, new_stop_loss)
+                        
+                    logger.info(f"_handle_dca: New stop loss: {new_stop_loss}, take profit: {new_take_profit} for {symbol}")
+                    
+                    # Update stop loss
+                    logger.info(f"_handle_dca: Updating stop loss for {symbol} to {new_stop_loss}")
+                    if await self._update_stop_loss(symbol, new_stop_loss, position_type):
+                        logger.info(f"_handle_dca: Stop loss updated successfully for {symbol}")
+                    else:
+                        logger.error(f"_handle_dca: Failed to update stop loss for {symbol}")
+                        
+                    # Update take profit
+                    logger.info(f"_handle_dca: Updating take profit for {symbol} to {new_take_profit}")
+                    if await self._update_take_profit(symbol, new_take_profit, position_type):
+                        logger.info(f"_handle_dca: Take profit updated successfully for {symbol}")
+                    else:
+                        logger.error(f"_handle_dca: Failed to update take profit for {symbol}")
+                    
+                    # Send notification
+                    logger.info(f"_handle_dca: Sending DCA notification for {symbol}")
+                    try:
                         await self.telegram_service.send_dca_notification({
                             'symbol': symbol,
                             'dca_amount': dca_size,
@@ -2333,26 +2302,55 @@ class EnhancedTradingStrategy:
                             'order_id': order.get('id', 'N/A'),
                             'position_type': position_type
                         })
-                        
-                        return {
-                            'order_id': order.get('id'),
-                            'dca_amount': dca_size,
-                            'new_entry_price': current_price,
-                            'price_drop': price_drop,
-                            'position_type': position_type
+                        logger.info(f"_handle_dca: DCA notification sent successfully for {symbol}")
+                    except Exception as e:
+                        logger.error(f"_handle_dca: Failed to send DCA notification for {symbol}: {str(e)}")
+                    
+                    # Create DCA history entry
+                    dca_history_entry = {
+                        'timestamp': datetime.now().isoformat(),
+                        'order_id': order.get('id'),
+                        'dca_amount': dca_size,
+                        'entry_price': current_price,
+                        'price_drop': price_drop,
+                        'position_type': position_type,
+                        'stop_loss': new_stop_loss,
+                        'take_profit': new_take_profit,
+                        'market_conditions': {
+                            'volatility': market_conditions.get('volatility', 0),
+                            'trend': market_conditions.get('btc_trend', 'NEUTRAL'),
+                            'volume': market_conditions.get('volume', 0)
                         }
+                    }
+                    
+                    # Update DCA history
+                    if symbol not in self._dca_history:
+                        self._dca_history[symbol] = []
+                    self._dca_history[symbol].append(dca_history_entry)
+                    
+                    return {
+                        'order_id': order.get('id'),
+                        'dca_amount': dca_size,
+                        'new_entry_price': current_price,
+                        'price_drop': price_drop,
+                        'position_type': position_type,
+                        'dca_history': self._dca_history[symbol]
+                    }
+                    
                 except Exception as e:
+                    logger.error(f"_handle_dca: Error in DCA process for {symbol} (attempt {attempt + 1}): {str(e)}")
                     if attempt < max_retries - 1:
-                        logger.warning(f"DCA order attempt {attempt + 1} failed for {symbol}: {str(e)}")
                         await asyncio.sleep(1)
                     else:
-                        logger.error(f"Failed to place DCA order for {symbol}: {str(e)}")
+                        logger.error(f"_handle_dca: All DCA attempts failed for {symbol}")
                         return None
                         
             return None
             
         except Exception as e:
-            logger.error(f"Error handling DCA for {symbol}: {str(e)}")
+            import traceback
+            logger.error(f"Traceback:\n{traceback.format_exc()}")
+            logger.error(f"_handle_dca: Unexpected error in DCA process for {symbol}: {str(e)}")
             return None
 
     def _is_dca_favorable(self, symbol: str, price_change: float, market_conditions: Dict, position_type: str) -> bool:
@@ -2388,17 +2386,17 @@ class EnhancedTradingStrategy:
                 return False
                 
             # Define minimum price change thresholds for DCA
-            MIN_PRICE_CHANGE = 0.04  # 4% minimum price change
-            MAX_PRICE_CHANGE = 0.10  # 10% maximum price change for DCA
+            MIN_PRICE_CHANGE = 4  # 4% minimum price change
+            MAX_PRICE_CHANGE = 10  # 10% maximum price change for DCA
             
             if is_long_side(position_type):
                 # For LONG positions, we want price to drop by at least MIN_PRICE_CHANGE
                 # but not more than MAX_PRICE_CHANGE
                 if price_change > -MIN_PRICE_CHANGE:
-                    logger.info(f"{symbol} DCA not favorable for LONG: Price drop {price_change:.2%} less than minimum {MIN_PRICE_CHANGE:.2%}")
+                    logger.info(f"{symbol} DCA not favorable for LONG: Price drop {price_change:.2%} less than minimum {-MIN_PRICE_CHANGE:.2%}")
                     return False
                 if price_change < -MAX_PRICE_CHANGE:
-                    logger.info(f"{symbol} DCA not favorable for LONG: Price drop {price_change:.2%} exceeds maximum {MAX_PRICE_CHANGE:.2%}")
+                    logger.info(f"{symbol} DCA not favorable for LONG: Price drop {price_change:.2%} exceeds maximum {-MAX_PRICE_CHANGE:.2%}")
                     return False
                     
             elif is_short_side(position_type):
@@ -2419,69 +2417,43 @@ class EnhancedTradingStrategy:
             return False
 
     async def _calculate_dca_size(self, symbol: str, current_size: float, price_change: float, position_type: str) -> Optional[float]:
-        """Calculate DCA size based on current position size and price change.
-        
-        Args:
-            symbol: Symbol of the position
-            current_size: Current position size
-            price_change: Price change percentage from entry (positive for increase, negative for decrease)
-            position_type: Position type (LONG/SHORT)
-            
-        Returns:
-            Optional[float]: DCA size if conditions are met, None otherwise
-        """
+        """Calculate DCA size based on current position size and price change."""
         try:
-            # Get market conditions
-            market_conditions = await self._get_market_conditions()
-            if not market_conditions:
-                logger.error(f"{symbol} Failed to get market conditions for DCA calculation")
-                return None
-                
-            # Check if DCA is favorable
-            if not self._is_dca_favorable(symbol, price_change, market_conditions, position_type):
-                logger.info(f"{symbol} DCA conditions not favorable for {position_type} with price change {price_change:.2%}")
-                return None
-                
             # Get DCA configuration
             dca_config = self.config.get('risk_management', {}).get('dca', {})
-            if not dca_config:
-                logger.error(f"{symbol} No DCA configuration found")
-                return None
-                
-            # Get base DCA size
-            base_dca_size = float(dca_config.get('base_size', 0.5))
-            if base_dca_size <= 0:
-                logger.error(f"{symbol} Invalid base DCA size")
-                return None
-                
-            # Calculate DCA size based on price change
-            if is_long_side(position_type):
-                # For LONG positions, increase DCA size as price drops
-                dca_multiplier = 1.0 + abs(price_change)  # Increase size with larger drops
-            elif is_short_side(position_type):  # SHORT
-                # For SHORT positions, increase DCA size as price rises
-                dca_multiplier = 1.0 + abs(price_change)  # Increase size with larger rises
-                
-            # Calculate final DCA size
-            dca_size = current_size * base_dca_size * dca_multiplier
             
-            # Validate DCA size
-            if dca_size <= 0:
-                logger.error(f"{symbol} Invalid DCA size calculated: {dca_size}")
+            # Calculate base DCA size
+            base_dca_size = current_size * float(dca_config.get('dca_size_multiplier', 0.5))
+            
+            # Adjust DCA size based on price change
+            price_change_factor = abs(price_change) / 100  # Convert percentage to decimal
+            dca_size = base_dca_size * (1 + price_change_factor)
+            
+            # Get current price and position
+            current_price = await self.binance_service.get_current_price(symbol)
+            position = await self.binance_service.get_position(symbol)
+            
+            if not current_price or not position:
+                logger.error(f"{symbol} Failed to get current price or position for DCA calculation")
                 return None
                 
-            # Get minimum order size
-            min_order_size = float(dca_config.get('min_order_size', 0.001))
-            if dca_size < min_order_size:
-                logger.info(f"{symbol} DCA size {dca_size} below minimum {min_order_size}")
-                return None
-                
-            # Get maximum DCA size
-            max_dca_size = float(dca_config.get('max_dca_size', 2.0))
-            if dca_size > max_dca_size:
+            # Calculate max DCA size based on current position value
+            current_position_size = float(position.get('info', {}).get('positionAmt', 0))
+            current_position_value = abs(current_position_size * current_price)
+            max_dca_percentage = float(dca_config.get('max_dca_percentage', 0.5))  # Default 50% of current position
+            max_dca_size = current_position_value * max_dca_percentage / current_price
+            
+            # Apply minimum and maximum constraints
+            min_dca_size = float(dca_config.get('min_dca_size', 0.001))  # Minimum size in base currency
+            max_dca_size = min(max_dca_size, float(dca_config.get('max_dca_size_multiplier', 2.0)) * current_position_size) # Maximum size in base currency
+            
+            if dca_size < min_dca_size:
+                logger.info(f"{symbol} DCA size {dca_size} below minimum {min_dca_size}")
+                dca_size = min_dca_size
+            elif dca_size > max_dca_size:
                 logger.info(f"{symbol} DCA size {dca_size} exceeds maximum {max_dca_size}")
                 dca_size = max_dca_size
-                
+            
             logger.info(f"{symbol} Calculated DCA size {dca_size} for {position_type} with price change {price_change:.2%}")
             return dca_size
             
@@ -2742,6 +2714,7 @@ class EnhancedTradingStrategy:
 
             if not (is_long_side(position_type) and (not current_stop_loss or new_stop_loss > current_stop_loss * 1.02)) and \
                 not (is_short_side(position_type) and (not current_stop_loss or new_stop_loss < current_stop_loss * 0.98)):
+                logger.info(f"_update_stop_loss: New stop loss {new_stop_loss} is not valid for {symbol} {position_side}")
                 return False
             
             # Update stop loss using binance_service
@@ -4594,4 +4567,56 @@ class EnhancedTradingStrategy:
         except Exception as e:
             logger.error(f"Error calculating market volatility: {str(e)}")
             return None
+
+    def _check_dca_limits(self, symbol: str, position_type: str) -> bool:
+        """Check if DCA is allowed based on history and limits.
+        
+        Args:
+            symbol: Trading pair symbol
+            position_type: Position type (LONG/SHORT)
+            
+        Returns:
+            bool: True if DCA is allowed, False otherwise
+        """
+        try:
+            if symbol not in self._dca_history:
+                return True
+                
+            dca_history = self._dca_history[symbol]
+            if not dca_history:
+                return True
+                
+            # Get DCA configuration
+            dca_config = self.config.get('risk_management', {}).get('dca', {})
+            max_dca_attempts = dca_config.get('max_attempts', 3)
+            min_dca_interval = dca_config.get('min_interval', 3600)  # 1 hour in seconds
+            
+            # Check number of DCA attempts
+            if len(dca_history) >= max_dca_attempts:
+                logger.info(f"DCA limit reached: {len(dca_history)} attempts for {symbol}")
+                return False
+                
+            # Check time interval between DCAs
+            last_dca_time = datetime.fromisoformat(dca_history[-1]['timestamp'])
+            time_since_last_dca = (datetime.now() - last_dca_time).total_seconds()
+            if time_since_last_dca < min_dca_interval:
+                logger.info(f"DCA too soon: {time_since_last_dca} seconds since last DCA for {symbol}")
+                return False
+                
+            # Check effectiveness of previous DCAs
+            if len(dca_history) >= 2:
+                last_two_dcas = dca_history[-2:]
+                price_trend = last_two_dcas[-1]['entry_price'] - last_two_dcas[0]['entry_price']
+                
+                # If price is still dropping after DCA, be more cautious
+                if (is_long_side(position_type) and price_trend < 0) or \
+                   (is_short_side(position_type) and price_trend > 0):
+                    logger.info(f"Previous DCAs not effective: price still moving against position for {symbol}")
+                    return False
+                    
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error checking DCA limits for {symbol}: {str(e)}")
+            return False
 

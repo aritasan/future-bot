@@ -163,12 +163,16 @@ def load_config() -> Dict[str, Any]:
                 'volatility_multiplier': 1.5,  # Volatility adjustment factor
                 'trend_multiplier': 1.2,  # Trend strength adjustment factor
                 'base_stop_distance': 0.02,  # Base stop distance (2%)
-                'stop_loss_atr_multiplier': 5.0,  # ATR multiplier for stop loss calculation
+                'stop_loss_atr_multiplier': 7.0,  # ATR multiplier for stop loss calculation
                 
                 # DCA parameters
                 'dca': {
                     'enabled': True,
+                    'dca_size_multiplier': 0.5,  # 50% of initial position size
+                    'max_dca_size_multiplier': 2,  # Maximum DCA size multiplier
+                    'min_dca_size': 0.001,  # Minimum DCA size
                     'max_attempts': 3,  # Maximum number of DCA attempts per position
+                    'min_interval': 3600,  # Minimum time between DCA attempts (1 hour)
                     'risk_reduction': 0.5,  # Reduce risk by 50% for each DCA attempt
                     'price_drop_thresholds': [0.02, 0.05, 0.1],  # Price drop thresholds
                     'volume_threshold': 1.5,  # Minimum volume ratio
