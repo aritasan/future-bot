@@ -324,6 +324,7 @@ class EnhancedTradingStrategy:
 
             # Check additional entry conditions
             if not await self._check_entry_conditions(
+                symbol= symbol,
                 df=df,
                 volume_profile=volume_profile,
                 funding_rate=funding_rate,
@@ -549,57 +550,266 @@ class EnhancedTradingStrategy:
             logger.error(f"Error in volume profile analysis: {str(e)}")
             return {}
 
-    async def _check_entry_conditions(self, df: pd.DataFrame, 
+    async def _check_entry_conditions(self, symbol: str, df: pd.DataFrame, 
                           volume_profile: Dict, funding_rate: float,
                           open_interest: float, order_book: Dict,
                           position_type: str) -> bool:
-        """Check if entry conditions are met based on market structure and other factors."""
+        """Check if entry conditions are met for a position."""
         try:
-            # Tính toán các ngưỡng động
-            avg_volume = df['volume'].rolling(20).mean().iloc[-1]
-            volatility = df['close'].pct_change().std()
+            # Initialize scores
+            scores = {
+                'trend': 0.0,
+                'volume': 0.0,
+                'volatility': 0.0,
+                'correlation': 0.0,
+                'sentiment': 0.0,
+                'market_structure': 0.0,
+                'volume_profile': 0.0,
+                'funding_rate': 0.0,
+                'open_interest': 0.0,
+                'order_book': 0.0,
+                'technical_patterns': 0.0
+            }
             
-            # Check volume profile với ngưỡng thấp hơn
-            if not self._check_volume_profile_conditions(volume_profile, position_type, min_volume_ratio=0.2):
-                logger.info(f"Volume profile conditions not met for {position_type}")
-                return False
-                
-            # Check order book với điều kiện động
-            if not self._check_order_book_conditions(order_book, position_type, min_depth=avg_volume * 0.1):
-                logger.info(f"Order book conditions not met for {position_type}")
-                return False
-                
-            # Check candlestick patterns với trọng số
-            # pattern_score = self._check_candlestick_patterns(df, position_type)
-            # if is_short_side(position_type): # Check candlestick if SELL
-            #     if pattern_score > -0.5:  # Yêu cầu ít nhất 50% điểm
-            #         logger.info(f"Candlestick patterns conditions not met for {position_type}")
-            #         return False
+            # Get market conditions for dynamic thresholds
+            market_conditions = await self._get_market_conditions(symbol)
+            volatility = market_conditions.get('volatility', 0)
+            btc_trend = market_conditions.get('btc_trend', 'NEUTRAL')
             
-            # if is_long_side(position_type):
-            #     if pattern_score < 0.5:  # Yêu cầu ít nhất 50% điểm
-            #         logger.info(f"Candlestick patterns conditions not met for {position_type}")
-            #         return False
+            # 1. Trend Analysis (0-100 points)
+            trend = self.get_trend(df)
+            trend_strength = df['ADX'].iloc[-1] if 'ADX' in df.columns else 0
             
-            # Check funding rate với ngưỡng động
-            funding_threshold = 0.0002 * (1 + volatility)  # Tăng ngưỡng khi volatility cao
-            if is_long_side(position_type) and funding_rate > funding_threshold:
-                logger.info(f"Funding rate conditions not met for {position_type} {funding_rate}")
-                return False
-            elif is_short_side(position_type) and funding_rate < -funding_threshold:
-                logger.info(f"Funding rate conditions not met for {position_type} {funding_rate}")
-                return False
+            # Check trend alignment with BTC
+            btc_df = await self._get_btc_data()
+            if btc_df is not None:
+                btc_trend = self.get_trend(btc_df)
+                if trend == btc_trend:
+                    scores['trend'] += 30  # Bonus for trend alignment with BTC
+            
+            if is_long_side(position_type):
+                if is_trending_up(trend):
+                    scores['trend'] += 40
+                    if trend_strength > 25:  # Strong trend
+                        scores['trend'] += 30
+            else:
+                if is_trending_down(trend):
+                    scores['trend'] += 40
+                    if trend_strength > 25:  # Strong trend
+                        scores['trend'] += 30
+                        
+            # 2. Volume Analysis (0-100 points)
+            avg_volume = df['volume'].mean()
+            current_volume = df['volume'].iloc[-1]
+            volume_ratio = current_volume / avg_volume
+            
+            # Volume trend analysis
+            volume_trend = df['volume'].pct_change().mean()
+            if volume_trend > 0:
+                scores['volume'] += 20  # Increasing volume trend
+            
+            if volume_ratio > 1.5:
+                scores['volume'] += 40  # High volume
+            elif volume_ratio > 1.2:
+                scores['volume'] += 20  # Moderate volume
                 
-            # Check open interest với ngưỡng động
-            min_oi = max(50000, avg_volume * 0.1)  # Lấy lớn hơn giữa 50,000 và 10% volume trung bình
-            if open_interest < min_oi:
-                logger.info(f"Open interest conditions not met for {position_type} {open_interest}")
-                return False
+            # 3. Volatility Analysis (0-100 points)
+            atr = df['ATR'].iloc[-1] if 'ATR' in df.columns else 0
+            volatility_ratio = atr / df['close'].iloc[-1]
+            
+            if 0.001 <= volatility_ratio <= 0.005:  # Optimal volatility range
+                scores['volatility'] += 50
+            elif 0.0005 <= volatility_ratio <= 0.01:  # Acceptable range
+                scores['volatility'] += 30
                 
-            return True
+            # 4. Correlation Analysis (0-100 points)
+            correlation = await self._calculate_correlation(symbol, 'BTCUSDT')
+            if abs(correlation) > 0.7:  # Strong correlation
+                if (is_long_side(position_type) and correlation > 0) or \
+                   (is_short_side(position_type) and correlation < 0):
+                    scores['correlation'] += 50  # Favorable correlation
+                else:
+                    scores['correlation'] += 20  # Unfavorable but strong correlation
+            elif abs(correlation) > 0.5:  # Moderate correlation
+                scores['correlation'] += 30
+                
+            # 5. Sentiment Analysis (0-100 points)
+            rsi = df['RSI'].iloc[-1] if 'RSI' in df.columns else 50
+            mfi = df['MFI'].iloc[-1] if 'MFI' in df.columns else 50
+            
+            if is_long_side(position_type):
+                if rsi < 30:  # Oversold
+                    scores['sentiment'] += 30
+                if mfi < 20:  # Oversold
+                    scores['sentiment'] += 30
+                if df['OBV'].iloc[-1] > df['OBV'].iloc[-2]:  # Increasing OBV
+                    scores['sentiment'] += 40
+            else:
+                if rsi > 70:  # Overbought
+                    scores['sentiment'] += 30
+                if mfi > 80:  # Overbought
+                    scores['sentiment'] += 30
+                if df['OBV'].iloc[-1] < df['OBV'].iloc[-2]:  # Decreasing OBV
+                    scores['sentiment'] += 40
+                    
+            # 6. Market Structure (0-100 points)
+            support_resistance = self._calculate_support_resistance(df)
+            current_price = df['close'].iloc[-1]
+            
+            if is_long_side(position_type):
+                nearest_support = max([s for s in support_resistance['support_levels'] if s < current_price], default=0)
+                if nearest_support:
+                    distance_to_support = (current_price - nearest_support) / current_price
+                    if distance_to_support <= 0.01:  # Within 1% of support
+                        scores['market_structure'] += 50
+                    elif distance_to_support <= 0.02:  # Within 2% of support
+                        scores['market_structure'] += 30
+            else:
+                nearest_resistance = min([r for r in support_resistance['resistance_levels'] if r > current_price], default=float('inf'))
+                if nearest_resistance:
+                    distance_to_resistance = (nearest_resistance - current_price) / current_price
+                    if distance_to_resistance <= 0.01:  # Within 1% of resistance
+                        scores['market_structure'] += 50
+                    elif distance_to_resistance <= 0.02:  # Within 2% of resistance
+                        scores['market_structure'] += 30
+                        
+            # 7. Volume Profile (0-100 points)
+            value_area = self._calculate_value_area(df)
+            current_price = df['close'].iloc[-1]
+            
+            # Use volume_profile data if available
+            if volume_profile:
+                # Check volume distribution
+                volume_imbalance = volume_profile.get('volume_imbalance', 0)
+                if is_long_side(position_type) and volume_imbalance > 0.2:  # Strong buying pressure
+                    scores['volume_profile'] += 30
+                elif is_short_side(position_type) and volume_imbalance < -0.2:  # Strong selling pressure
+                    scores['volume_profile'] += 30
+                    
+                # Check volume nodes
+                volume_nodes = volume_profile.get('volume_nodes', [])
+                if volume_nodes:
+                    # Find nearest volume node
+                    nearest_node = min(volume_nodes, key=lambda x: abs(x['price'] - current_price))
+                    if abs(nearest_node['price'] - current_price) / current_price <= 0.01:  # Within 1%
+                        scores['volume_profile'] += 20  # Price near significant volume node
+                        
+                # Check volume gaps
+                volume_gaps = volume_profile.get('volume_gaps', [])
+                if volume_gaps:
+                    # Check if price is near a volume gap
+                    for gap in volume_gaps:
+                        if gap['low'] <= current_price <= gap['high']:
+                            scores['volume_profile'] += 20  # Price in volume gap
+                            break
+                            
+            # Add value area analysis
+            if is_long_side(position_type):
+                if current_price < value_area['value_area_low']:
+                    scores['volume_profile'] += 30  # Below value area
+                elif current_price < value_area['current_price']:
+                    scores['volume_profile'] += 20  # Below POC
+            else:
+                if current_price > value_area['value_area_high']:
+                    scores['volume_profile'] += 30  # Above value area
+                elif current_price > value_area['current_price']:
+                    scores['volume_profile'] += 20  # Above POC
+                    
+            # Add volume trend analysis
+            volume_trend = df['volume'].pct_change().mean()
+            if volume_trend > 0:
+                scores['volume_profile'] += 10  # Increasing volume trend
+                
+            # Add volume comparison with average
+            avg_volume = df['volume'].mean()
+            current_volume = df['volume'].iloc[-1]
+            if current_volume > avg_volume * 1.5:
+                scores['volume_profile'] += 10  # High volume
+                    
+            # 8. Funding Rate (0-100 points)
+            funding_threshold = 0.0002 * (1 + volatility)  # Dynamic threshold based on volatility
+            if is_long_side(position_type):
+                if funding_rate < -funding_threshold:
+                    scores['funding_rate'] += 50  # Favorable funding rate
+                elif funding_rate < 0:
+                    scores['funding_rate'] += 30  # Slightly favorable
+            else:
+                if funding_rate > funding_threshold:
+                    scores['funding_rate'] += 50  # Favorable funding rate
+                elif funding_rate > 0:
+                    scores['funding_rate'] += 30  # Slightly favorable
+                    
+            # 9. Open Interest (0-100 points)
+            min_oi = max(50000, avg_volume * 0.1)  # Dynamic minimum based on volume
+            if open_interest and open_interest > 0:
+                oi_ratio = open_interest / min_oi
+                if oi_ratio > 2:
+                    scores['open_interest'] += 50  # High open interest
+                elif oi_ratio > 1.5:
+                    scores['open_interest'] += 30  # Moderate open interest
+                    
+            # 10. Order Book (0-100 points)
+            if order_book:
+                bid_ask_ratio = sum(bid[1] for bid in order_book['bids'][:5]) / sum(ask[1] for ask in order_book['asks'][:5])
+                if is_long_side(position_type) and bid_ask_ratio > 1.2:
+                    scores['order_book'] += 50  # Strong buying pressure
+                elif is_short_side(position_type) and bid_ask_ratio < 0.8:
+                    scores['order_book'] += 50  # Strong selling pressure
+                    
+            # 11. Technical Patterns (0-100 points)
+            pattern_score = self._check_candlestick_patterns(df, position_type)
+            scores['technical_patterns'] = (pattern_score + 1) * 50  # Convert -1 to 1 range to 0-100
+            
+            # Calculate total score
+            weights = {
+                'trend': 0.2,
+                'volume': 0.1,
+                'volatility': 0.1,
+                'correlation': 0.1,
+                'sentiment': 0.1,
+                'market_structure': 0.1,
+                'volume_profile': 0.1,
+                'funding_rate': 0.05,
+                'open_interest': 0.05,
+                'order_book': 0.05,
+                'technical_patterns': 0.05
+            }
+            
+            total_score = sum(scores[component] * weights[component] for component in scores)
+            
+            # Log detailed scores
+            logger.info(f"{symbol} Entry condition scores:")
+            for component, score in scores.items():
+                logger.info(f"- {component}: {score:.2f}")
+            logger.info(f"Total score: {total_score:.2f}")
+            
+            # Dynamic threshold based on market conditions
+            base_threshold = 60  # Base threshold
+            market_adjustment = 0
+            
+            # Adjust threshold based on BTC trend
+            if btc_trend == trend:
+                market_adjustment -= 10  # Lower threshold when aligned with BTC
+            elif btc_trend == 'NEUTRAL':
+                market_adjustment += 5  # Slightly higher threshold in neutral BTC market
+            else:
+                market_adjustment += 15  # Higher threshold when against BTC trend
+                
+            # Adjust threshold based on volatility
+            if volatility > 0.02:  # High volatility
+                market_adjustment += 10  # Higher threshold in high volatility
+            elif volatility < 0.005:  # Low volatility
+                market_adjustment -= 5  # Lower threshold in low volatility
+                
+            final_threshold = base_threshold + market_adjustment
+            
+            # Log threshold information
+            logger.info(f"{symbol} Entry threshold: {final_threshold:.2f} (Base: {base_threshold}, Market Adjustment: {market_adjustment})")
+            
+            return total_score >= final_threshold
             
         except Exception as e:
-            logger.error(f"Error checking entry conditions: {str(e)}")
+            logger.error(f"Error in _check_entry_conditions: {str(e)}")
             return False
 
     async def _check_correlation_conditions(self, symbol: str, position_type: str) -> bool:
@@ -2712,10 +2922,13 @@ class EnhancedTradingStrategy:
             current_stop_loss = await self.binance_service.get_stop_price(symbol, position_type, 'STOP_MARKET')
             logger.info(f"_update_stop_loss: Current stop loss for {symbol}: {current_stop_loss}")
 
-            if not (is_long_side(position_type) and (not current_stop_loss or new_stop_loss > current_stop_loss * 1.02)) and \
-                not (is_short_side(position_type) and (not current_stop_loss or new_stop_loss < current_stop_loss * 0.98)):
-                logger.info(f"_update_stop_loss: New stop loss {new_stop_loss} is not valid for {symbol} {position_side}")
-                return False
+            if not (is_long_side(position_type) and (not current_stop_loss or new_stop_loss > current_stop_loss * 1.02)):
+                logger.info(f"_update_stop_loss: New stop loss for {symbol} LONG: {new_stop_loss} to minimium 2% = {current_stop_loss * 1.02}")
+                new_stop_loss = current_stop_loss * 1.02
+            
+            if not (is_short_side(position_type) and (not current_stop_loss or new_stop_loss < current_stop_loss * 0.98)):
+                logger.info(f"_update_stop_loss: New stop loss for {symbol} SHORT: {new_stop_loss} to minimium 2% = {current_stop_loss * 0.98}")
+                new_stop_loss = current_stop_loss * 0.98
             
             # Update stop loss using binance_service
             success = await self.binance_service._update_stop_loss(
@@ -2766,10 +2979,14 @@ class EnhancedTradingStrategy:
                 
             current_take_profit = await self.binance_service.get_stop_price(symbol, position_type, 'TAKE_PROFIT_MARKET')
             logger.info(f"_update_take_profit: Current take profit for {symbol}: {current_take_profit}")
-
-            if not (is_long_side(position_type) and (not current_take_profit or new_take_profit > current_take_profit * 1.02)) and \
-                not (is_short_side(position_type) and (not current_take_profit or new_take_profit < current_take_profit * 0.98)):
-                return False
+            
+            if not (is_long_side(position_type) and (not current_take_profit or new_take_profit > current_take_profit * 1.02)):
+                logger.info(f"_update_take_profit: New take profit for {symbol} LONG: {new_take_profit} to minimium 2% = {current_take_profit * 1.02}")
+                new_take_profit = current_take_profit * 1.02
+                
+            if not (is_short_side(position_type) and (not current_take_profit or new_take_profit < current_take_profit * 0.98)):
+                logger.info(f"_update_take_profit: New take profit for {symbol} SHORT: {new_take_profit} to minimium 2% = {current_take_profit * 0.98}")
+                new_take_profit = current_take_profit * 0.98
 
             # Update take profit using binance_service
             success = await self.binance_service._update_take_profit(
@@ -3057,9 +3274,8 @@ class EnhancedTradingStrategy:
                         if unrealized_pnl > 0:
                             continue  # Skip this position but continue with others
                             
-                        dca_result = await self._handle_dca(symbol, position)
-                        if dca_result:
-                            await self.telegram_service.send_dca_notification(dca_result)
+                        await self._handle_dca(symbol, position)
+                        
                         
         except Exception as e:
             logger.error(f"Error monitoring DCA: {str(e)}")
