@@ -2672,14 +2672,14 @@ class EnhancedTradingStrategy:
                     
                     # Update stop loss
                     logger.info(f"_handle_dca: Updating stop loss for {symbol} to {new_stop_loss}")
-                    if await self._update_stop_loss(symbol, new_stop_loss, position_type):
+                    if await self._update_stop_loss(symbol, new_stop_loss, position_type, True):
                         logger.info(f"_handle_dca: Stop loss updated successfully for {symbol}")
                     else:
                         logger.error(f"_handle_dca: Failed to update stop loss for {symbol}")
                         
                     # Update take profit
                     logger.info(f"_handle_dca: Updating take profit for {symbol} to {new_take_profit}")
-                    if await self._update_take_profit(symbol, new_take_profit, position_type):
+                    if await self._update_take_profit(symbol, new_take_profit, position_type, True):
                         logger.info(f"_handle_dca: Take profit updated successfully for {symbol}")
                     else:
                         logger.error(f"_handle_dca: Failed to update take profit for {symbol}")
@@ -3081,7 +3081,7 @@ class EnhancedTradingStrategy:
             return current_price * (1 + emergency_distance)
 
     async def _update_stop_loss(self, symbol: str, new_stop_loss: float,
-                              position_type: str) -> bool:
+                              position_type: str, is_dca: bool = False) -> bool:
         """
         Update stop loss for a position.
         
@@ -3089,6 +3089,7 @@ class EnhancedTradingStrategy:
             symbol: Trading pair symbol
             new_stop_loss: New stop loss price
             position_type: Position type (BUY/SELL/LONG/SHORT)
+            is_dca: Whether this is a DCA stop loss update
         Returns:
             bool: True if stop loss updated successfully, False otherwise
         """
@@ -3105,13 +3106,13 @@ class EnhancedTradingStrategy:
             current_stop_loss = await self.binance_service.get_stop_price(symbol, position_type, 'STOP_MARKET')
             logger.info(f"_update_stop_loss: Current stop loss for {symbol}: {current_stop_loss}")
 
-            if not (is_long_side(position_type) and (not current_stop_loss or new_stop_loss > current_stop_loss * 1.02)):
-                logger.info(f"_update_stop_loss: New stop loss for {symbol} LONG: {new_stop_loss} to minimium 2% = {current_stop_loss * 1.02}")
-                new_stop_loss = current_stop_loss * 1.02
-            
-            if not (is_short_side(position_type) and (not current_stop_loss or new_stop_loss < current_stop_loss * 0.98)):
-                logger.info(f"_update_stop_loss: New stop loss for {symbol} SHORT: {new_stop_loss} to minimium 2% = {current_stop_loss * 0.98}")
-                new_stop_loss = current_stop_loss * 0.98
+            if not is_dca:
+                # Check if new stop loss is within 2% of current stop loss
+                # This is to prevent unnecessary updates
+                if not (is_long_side(position_type) and (not current_stop_loss or new_stop_loss > current_stop_loss * 1.02)) \
+                    or not (is_short_side(position_type) and (not current_stop_loss or new_stop_loss < current_stop_loss * 0.98)):
+                    logger.info(f"Update stop loss for {symbol} was not applied.")
+                    return False
             
             # Update stop loss using binance_service
             success = await self.binance_service._update_stop_loss(
@@ -3139,7 +3140,7 @@ class EnhancedTradingStrategy:
             return False
 
     async def _update_take_profit(self, symbol: str, new_take_profit: float,
-                               position_type: str) -> bool:
+                               position_type: str, is_dca: bool = False) -> bool:
         """
         Update take profit for a position.
         
@@ -3147,6 +3148,7 @@ class EnhancedTradingStrategy:
             symbol: Trading pair symbol
             new_take_profit: New take profit price
             position_type: Position type (BUY/SELL/LONG/SHORT)
+            is_dca: Whether this is a DCA update
         Returns:
             bool: True if take profit updated successfully, False otherwise
         """
@@ -3163,13 +3165,13 @@ class EnhancedTradingStrategy:
             current_take_profit = await self.binance_service.get_stop_price(symbol, position_type, 'TAKE_PROFIT_MARKET')
             logger.info(f"_update_take_profit: Current take profit for {symbol}: {current_take_profit}")
             
-            if not (is_long_side(position_type) and (not current_take_profit or new_take_profit > current_take_profit * 1.02)):
-                logger.info(f"_update_take_profit: New take profit for {symbol} LONG: {new_take_profit} to minimium 2% = {current_take_profit * 1.02}")
-                new_take_profit = current_take_profit * 1.02
-                
-            if not (is_short_side(position_type) and (not current_take_profit or new_take_profit < current_take_profit * 0.98)):
-                logger.info(f"_update_take_profit: New take profit for {symbol} SHORT: {new_take_profit} to minimium 2% = {current_take_profit * 0.98}")
-                new_take_profit = current_take_profit * 0.98
+            if not is_dca:
+                # Check if new take profit is within 2% of current take profit
+                # This is to prevent unnecessary updates
+                if not (is_long_side(position_type) and (not current_take_profit or new_take_profit > current_take_profit * 1.02)) \
+                    or not (is_short_side(position_type) and (not current_take_profit or new_take_profit < current_take_profit * 0.98)):
+                    logger.info(f"Update take profit for {symbol} was not applied.")
+                    return False
 
             # Update take profit using binance_service
             success = await self.binance_service._update_take_profit(
