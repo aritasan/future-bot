@@ -142,7 +142,7 @@ def load_config() -> Dict[str, Any]:
                 'leverage': DEFAULT_LEVERAGE,
                 "signal_thresholds": {
                     "long_entry": 0.25,  # Increased from 0.25 for stricter entry conditions
-                    "short_entry": -0.25,  # Decreased from -0.25 for stricter entry conditions
+                    "short_entry": -0.78,  # Decreased from -0.25 for stricter entry conditions
                     "exit": 0.0,  # Neutral threshold for exit signals
                     "trend_strength": 0.5,  # Minimum trend strength required
                     "volume_ratio": 1.2,  # Minimum volume ratio required
