@@ -27,7 +27,7 @@ class EnhancedTradingStrategy:
     
     def __init__(self, config: Dict, binance_service: BinanceService, indicator_service: IndicatorService,
                  notification_service: NotificationService, telegram_service: TelegramService):
-        """Initialize the trading strategy.
+        """Initialize the strategy.
         
         Args:
             config: Configuration dictionary
@@ -119,6 +119,14 @@ class EnhancedTradingStrategy:
             'weight_adjustment': 0.05,
             'score_adjustment': 0.2
         }
+        
+        self._signal_history = {}  # Cache for signal data
+        self._position_history = {}  # Cache for position data
+        self._correlation_cache = {}  # Cache for correlation data
+        self._correlation_cache_ttl = 300  # Cache TTL in seconds (5 minutes)
+        self._correlation_timeout = 10  # Timeout for correlation requests in seconds
+        self._max_correlation_retries = 3  # Maximum number of retries for correlation requests
+        self._correlation_semaphore = asyncio.Semaphore(5)  # Limit concurrent correlation requests
         
     async def initialize(self) -> bool:
         """Initialize the strategy.
@@ -256,7 +264,7 @@ class EnhancedTradingStrategy:
                 return None
                 
             # Analyze altcoin correlation
-            altcoin_correlation = await self.analyze_altcoin_correlation(symbol, btc_volatility)
+            altcoin_correlation = await self.analyze_altcoin_correlation(symbol)
             if not altcoin_correlation:
                 logger.warning(f"Failed to analyze correlation for {symbol}")
                 return None
@@ -319,7 +327,7 @@ class EnhancedTradingStrategy:
                         position_type = "SHORT"
                         logger.info(f"Signal score {signal_score:.2f} below threshold for {symbol}")
                     else:
-                        logger.info(f"Signal score {signal_score:.2f} below threshold for {symbol}")
+                        logger.info(f"Signal score {signal_score:.2f} not in threshold for {symbol}")
                         return None
 
             # Check additional entry conditions
@@ -478,9 +486,7 @@ class EnhancedTradingStrategy:
                 current_price = df['close'].iloc[-1]
             
             # Calculate volume profile
-            price_range = df['high'].max() - df['low'].min()
             num_bins = 10
-            bin_size = price_range / num_bins
             
             # Create price bins
             bins = np.linspace(df['low'].min(), df['high'].max(), num_bins + 1)
@@ -558,23 +564,43 @@ class EnhancedTradingStrategy:
         try:
             # Initialize scores
             scores = {
-                'trend': 0.0,
-                'volume': 0.0,
-                'volatility': 0.0,
-                'correlation': 0.0,
-                'sentiment': 0.0,
-                'market_structure': 0.0,
-                'volume_profile': 0.0,
-                'funding_rate': 0.0,
-                'open_interest': 0.0,
-                'order_book': 0.0,
-                'technical_patterns': 0.0
+                'trend': 0.0,        # 25%
+                'market_structure': 0.0,  # 15%
+                'market_regime': 0.0,    # 15%
+                'volume': 0.0,       # 10%
+                'volatility': 0.0,   # 10%
+                'correlation': 0.0,  # 10%
+                'sentiment': 0.0,    # 10%
+                'volume_profile': 0.0,    # 10%
+                'funding_rate': 0.0,      # 5%
+                'open_interest': 0.0,     # 5%
+                'order_book': 0.0,        # 5%
+                'technical_patterns': 0.0,  # 5%
+                'market_breadth': 0.0,     # 5%
+                'market_momentum': 0.0,    # 5%
+                'market_liquidity': 0.0    # 5%
             }
             
             # Get market conditions for dynamic thresholds
             market_conditions = await self._get_market_conditions(symbol)
             volatility = market_conditions.get('volatility', 0)
             btc_trend = market_conditions.get('btc_trend', 'NEUTRAL')
+            
+            # Analyze market regime
+            regime_analysis = await self._analyze_market_regime(symbol, position_type)
+            scores['market_regime'] = regime_analysis['score']
+            
+            # Analyze market breadth
+            breadth_analysis = await self._analyze_market_breadth(symbol, position_type)
+            scores['market_breadth'] = breadth_analysis['score']
+            
+            # Analyze market momentum
+            momentum_analysis = await self._analyze_market_momentum(symbol)
+            scores['market_momentum'] = momentum_analysis['score']
+            
+            # Analyze market liquidity
+            liquidity_analysis = await self._analyze_market_liquidity(symbol, position_type)
+            scores['market_liquidity'] = liquidity_analysis['score']
             
             # 1. Trend Analysis (0-100 points)
             trend = self.get_trend(df)
@@ -760,19 +786,23 @@ class EnhancedTradingStrategy:
             pattern_score = self._check_candlestick_patterns(df, position_type)
             scores['technical_patterns'] = (pattern_score + 1) * 50  # Convert -1 to 1 range to 0-100
             
-            # Calculate total score
+            # Calculate total score with updated weights
             weights = {
-                'trend': 0.2,
-                'volume': 0.1,
-                'volatility': 0.1,
-                'correlation': 0.1,
-                'sentiment': 0.1,
-                'market_structure': 0.1,
-                'volume_profile': 0.1,
+                'trend': 0.25,           # Increased from 0.20
+                'market_structure': 0.15, # Increased from 0.10
+                'market_regime': 0.15,   # New component
+                'volume': 0.10,
+                'volatility': 0.10,
+                'correlation': 0.10,
+                'sentiment': 0.10,
+                'volume_profile': 0.10,
                 'funding_rate': 0.05,
                 'open_interest': 0.05,
                 'order_book': 0.05,
-                'technical_patterns': 0.05
+                'technical_patterns': 0.05,  # Reduced from 0.10
+                'market_breadth': 0.05,      # New component
+                'market_momentum': 0.05,     # New component
+                'market_liquidity': 0.05     # New component
             }
             
             total_score = sum(scores[component] * weights[component] for component in scores)
@@ -787,19 +817,112 @@ class EnhancedTradingStrategy:
             base_threshold = 60  # Base threshold
             market_adjustment = 0
             
-            # Adjust threshold based on BTC trend
-            if btc_trend == trend:
-                market_adjustment -= 10  # Lower threshold when aligned with BTC
-            elif btc_trend == 'NEUTRAL':
-                market_adjustment += 5  # Slightly higher threshold in neutral BTC market
-            else:
-                market_adjustment += 15  # Higher threshold when against BTC trend
+            # Adjust threshold based on market regime
+            if regime_analysis['regime'] == 'BULLISH_ACCELERATION' and is_long_side(position_type):
+                market_adjustment -= 15  # Strong bullish trend for longs
+            elif regime_analysis['regime'] == 'BEARISH_ACCELERATION' and is_short_side(position_type):
+                market_adjustment -= 15  # Strong bearish trend for shorts
+            elif regime_analysis['regime'] == 'VOLATILE_RANGE':
+                market_adjustment += 20  # Higher threshold in volatile range
+            elif regime_analysis['regime'] == 'TRENDING':
+                market_adjustment -= 10  # Moderate trend adjustment
                 
-            # Adjust threshold based on volatility
-            if volatility > 0.02:  # High volatility
+            # Adjust threshold based on market breadth
+            breadth_strength = breadth_analysis.get('strength', 0)
+            if is_trending_up(breadth_analysis['breadth']) and is_long_side(position_type):
+                market_adjustment -= (5 + breadth_strength * 0.1)  # Adjust based on breadth strength
+            elif is_trending_down(breadth_analysis['breadth']) and is_short_side(position_type):
+                market_adjustment -= (5 + breadth_strength * 0.1)  # Adjust based on breadth strength
+                
+            # Adjust threshold based on market momentum
+            momentum_strength = momentum_analysis.get('weighted_strength', 0)
+            if is_trending_up(momentum_analysis['momentum']) and is_long_side(position_type):
+                market_adjustment -= (5 + momentum_strength * 0.15)  # Adjust based on momentum strength
+            elif is_trending_down(momentum_analysis['momentum']) and is_short_side(position_type):
+                market_adjustment -= (5 + momentum_strength * 0.15)  # Adjust based on momentum strength
+                
+            # Adjust threshold based on market liquidity
+            if liquidity_analysis['liquidity'] == 'LOW':
+                market_adjustment += 15  # Higher threshold in low liquidity
+            elif liquidity_analysis['liquidity'] == 'HIGH':
+                market_adjustment -= 5  # Lower threshold in high liquidity
+                
+            # Additional adjustment based on volatility regime
+            if regime_analysis.get('volatility_regime') == 'HIGH_VOLATILITY':
                 market_adjustment += 10  # Higher threshold in high volatility
-            elif volatility < 0.005:  # Low volatility
+            elif regime_analysis.get('volatility_regime') == 'LOW_VOLATILITY':
                 market_adjustment -= 5  # Lower threshold in low volatility
+                
+            # Additional adjustment based on correlation regime
+            if regime_analysis.get('correlation_regime') == 'HIGH_CORRELATION':
+                market_adjustment -= 5  # Lower threshold in high correlation
+            elif regime_analysis.get('correlation_regime') == 'LOW_CORRELATION':
+                market_adjustment += 5  # Higher threshold in low correlation
+            
+            # Adjust threshold based on market regime
+            if regime_analysis['regime'] == 'TREND_ACCELERATION':
+                if is_long_side(position_type) and regime_analysis.get('trend_regime') == 'BULLISH':
+                    market_adjustment -= 15  # Strong bullish trend for longs
+                elif is_short_side(position_type) and regime_analysis.get('trend_regime') == 'BEARISH':
+                    market_adjustment -= 15  # Strong bearish trend for shorts
+            elif regime_analysis['regime'] == 'TREND_DECELERATION':
+                market_adjustment += 10  # Higher threshold in decelerating trend
+                
+            # Adjust threshold based on market breadth
+            if breadth_analysis['breadth'] == 'BULLISH' and is_long_side(position_type):
+                market_adjustment -= (5 + breadth_strength * 0.1)  # Adjust based on breadth strength
+            elif breadth_analysis['breadth'] == 'BEARISH' and is_short_side(position_type):
+                market_adjustment -= (5 + breadth_strength * 0.1)  # Adjust based on breadth strength
+                
+            # Adjust threshold based on market momentum
+            if momentum_analysis['momentum'] == 'BULLISH' and is_long_side(position_type):
+                market_adjustment -= (5 + momentum_strength * 0.15)  # Adjust based on momentum strength
+            elif momentum_analysis['momentum'] == 'BEARISH' and is_short_side(position_type):
+                market_adjustment -= (5 + momentum_strength * 0.15)  # Adjust based on momentum strength
+                
+            # Adjust threshold based on market liquidity
+            if liquidity_analysis['liquidity'] == 'LOW':
+                market_adjustment += 15  # Higher threshold in low liquidity
+            elif liquidity_analysis['liquidity'] == 'HIGH':
+                market_adjustment -= 5  # Lower threshold in high liquidity
+                
+            # Additional adjustment based on volatility regime
+            if regime_analysis.get('volatility_regime') == 'HIGH_VOLATILITY':
+                market_adjustment += 10  # Higher threshold in high volatility
+            elif regime_analysis.get('volatility_regime') == 'LOW_VOLATILITY':
+                market_adjustment -= 5  # Lower threshold in low volatility
+                
+            # Additional adjustment based on correlation regime
+            if regime_analysis.get('correlation_regime') == 'HIGH_CORRELATION':
+                market_adjustment -= 5  # Lower threshold in high correlation
+            elif regime_analysis.get('correlation_regime') == 'LOW_CORRELATION':
+                market_adjustment += 5  # Higher threshold in low correlation
+            
+            # Adjust threshold based on BTC trend
+            btc_trend = await self._get_market_trend('BTCUSDT')
+            if is_trending_up(btc_trend) and is_long_side(position_type):
+                market_adjustment -= 5  # Lower threshold when BTC trend aligns
+            elif is_trending_down(btc_trend) and is_short_side(position_type):
+                market_adjustment -= 5  # Lower threshold when BTC trend aligns
+                
+            # Adjust threshold based on funding rate
+            if funding_rate > 0.01 and is_long_side(position_type):
+                market_adjustment += 5  # Higher threshold for longs in high positive funding
+            elif funding_rate < -0.01 and is_short_side(position_type):
+                market_adjustment += 5  # Higher threshold for shorts in high negative funding
+                
+            # Adjust threshold based on open interest
+            if open_interest > 1000000:  # High open interest
+                market_adjustment -= 5  # Lower threshold in high open interest
+            elif open_interest < 100000:  # Low open interest
+                market_adjustment += 5  # Higher threshold in low open interest
+                
+            # Adjust threshold based on order book imbalance
+            bid_ask_ratio = order_book.get('bid_ask_ratio', 1.0)
+            if bid_ask_ratio > 1.2 and is_long_side(position_type):
+                market_adjustment -= 5  # Lower threshold for longs with strong buying pressure
+            elif bid_ask_ratio < 0.8 and is_short_side(position_type):
+                market_adjustment -= 5  # Lower threshold for shorts with strong selling pressure
                 
             final_threshold = base_threshold + market_adjustment
             
@@ -1306,7 +1429,7 @@ class EnhancedTradingStrategy:
             if is_long_side(position_type):
                 take_profit = current_price + (price_diff * risk_reward_ratio)
             else:
-                take_profit = current_price - (price_diff * risk_reward_ratio)
+                take_profit = current_price - (price_diff * risk_reward_ratio/4)
             
             # Ensure minimum distance from current price
             min_distance = float(self.config['risk_management']['min_tp_distance'])
@@ -1441,24 +1564,7 @@ class EnhancedTradingStrategy:
                         return False
                         
                     # Get correlation analysis
-                    correlation_analysis = await self.analyze_altcoin_correlation(symbol, btc_volatility)
-                    
-                #     result = {
-                #     'correlation': float(adjusted_correlation),
-                #     'returns_correlation': float(best_correlation),
-                #     'reaction_strength': float(reaction_strength),
-                #     'is_strongly_correlated': is_strongly_correlated,
-                #     'is_reacting': is_reacting,
-                #     'reaction': 'STRONG' if is_strongly_correlated else 'MODERATE' if is_reacting else 'WEAK',
-                #     'data_points': len(corr_df),
-                #     'btc_std': float(btc_std),
-                #     'alt_std': float(alt_std),
-                #     'lag': best_lag,
-                #     'trend_alignment': float(trend_alignment),
-                #     'btc_trend': btc_trend,
-                #     'alt_trend': alt_trend
-                # }
-                    
+                    correlation_analysis = await self.analyze_altcoin_correlation(symbol)
                     if correlation_analysis:
                         correlation = correlation_analysis.get('correlation', 0)
                         reaction_strength = correlation_analysis.get('reaction_strength', 0)
@@ -1558,7 +1664,7 @@ class EnhancedTradingStrategy:
                     mfi_sentiment = sentiment_analysis.get('mfi_sentiment', 'neutral')
                     obv_sentiment = sentiment_analysis.get('obv_sentiment', 'neutral')
                     trend_strength = sentiment_analysis.get('trend_strength', 'weak')
-                    overall_sentiment = sentiment_analysis.get('overall_sentiment', 'neutral')
+                    # overall_sentiment = sentiment_analysis.get('overall_sentiment', 'neutral')
                     
                     # Calculate sentiment score
                     sentiment_score = self._calculate_sentiment_score(sentiment_analysis, position_side)
@@ -1957,52 +2063,141 @@ class EnhancedTradingStrategy:
             logger.error(f"Error analyzing BTC volatility: {str(e)}")
             return None
             
-    async def analyze_altcoin_correlation(self, symbol: str, btc_volatility: Dict) -> Dict:
-        """Analyze altcoin correlation with BTC and adjust based on BTC volatility.
-        
-        Args:
-            symbol: Trading pair symbol
-            btc_volatility: BTC volatility information
-            
-        Returns:
-            Dict: Correlation analysis results
-        """
+    async def analyze_altcoin_correlation(self, symbol: str) -> Dict:
+        """Analyze correlation between altcoin and BTC."""
         try:
+            # Check cache first
+            cache_key = f"{symbol}_correlation"
             current_time = time.time()
-            cache_key = f"correlation_{symbol}"
             
-            if cache_key in self._cache:
-                cached_data, timestamp = self._cache[cache_key]
-                if current_time - timestamp < self._cache_ttl:
+            if cache_key in self._correlation_cache:
+                cached_data, timestamp = self._correlation_cache[cache_key]
+                if current_time - timestamp < self._correlation_cache_ttl:
+                    logger.info(f"Using cached correlation data for {symbol}")
                     return cached_data
-            
-            # Calculate fresh analysis
-            analysis = await self._calculate_altcoin_correlation(symbol)
-            if analysis:
-                # Adjust correlation based on BTC volatility
-                if btc_volatility and 'volatility_level' in btc_volatility:
-                    btc_vol = btc_volatility['volatility_level']
-                    if btc_vol == 'HIGH':  # High BTC volatility
-                        analysis['correlation'] *= 1.2  # Increase correlation during high volatility
-                        analysis['volatility_adjusted'] = True
-                    elif btc_vol == 'LOW':  # Low BTC volatility
-                        analysis['correlation'] *= 0.8  # Decrease correlation during low volatility
-                        analysis['volatility_adjusted'] = True
-                    else:
-                        analysis['volatility_adjusted'] = False
+
+            # Get historical data with timeout and retry
+            async with self._correlation_semaphore:  # Limit concurrent requests
+                for attempt in range(self._max_correlation_retries):
+                    try:
+                        # Get BTC data first
+                        btc_df = await asyncio.wait_for(
+                            self.indicator_service.get_historical_data('BTCUSDT', timeframe='1h', limit=100),
+                            timeout=self._correlation_timeout
+                        )
+                        
+                        if btc_df is None or btc_df.empty:
+                            logger.warning(f"Failed to get BTC data for correlation analysis")
+                            return self._get_default_correlation()
+                            
+                        # Get altcoin data
+                        alt_df = await asyncio.wait_for(
+                            self.indicator_service.get_historical_data(symbol, timeframe='1h', limit=100),
+                            timeout=self._correlation_timeout
+                        )
+                        
+                        if alt_df is None or alt_df.empty:
+                            logger.warning(f"Failed to get {symbol} data for correlation analysis")
+                            return self._get_default_correlation()
+                            
+                        # Calculate correlation
+                        correlation = alt_df['close'].corr(btc_df['close'])
+                        
+                        # Calculate returns correlation
+                        btc_returns = btc_df['close'].pct_change()
+                        alt_returns = alt_df['close'].pct_change()
+                        returns_correlation = alt_returns.corr(btc_returns)
+                        
+                        # Calculate reaction strength
+                        btc_std = btc_returns.std()
+                        alt_std = alt_returns.std()
+                        reaction_strength = alt_std / btc_std if btc_std > 0 else 0
+                        
+                        # Calculate trend alignment
+                        btc_trend = self.get_trend(btc_df)
+                        alt_trend = self.get_trend(alt_df)
+                        trend_alignment = 1 if btc_trend == alt_trend else -1
+                        
+                        # Determine correlation strength
+                        is_strongly_correlated = abs(correlation) > 0.7
+                        is_reacting = abs(returns_correlation) > 0.5
+                        
+                        # Calculate lag
+                        max_lag = 5
+                        best_correlation = 0
+                        best_lag = 0
+                        
+                        for lag in range(max_lag):
+                            lagged_corr = alt_returns.corr(btc_returns.shift(lag))
+                            if abs(lagged_corr) > abs(best_correlation):
+                                best_correlation = lagged_corr
+                                best_lag = lag
+                                
+                        # Prepare result
+                        result = {
+                            'correlation': float(correlation),
+                            'returns_correlation': float(best_correlation),
+                            'reaction_strength': float(reaction_strength),
+                            'is_strongly_correlated': is_strongly_correlated,
+                            'is_reacting': is_reacting,
+                            'reaction': 'STRONG' if is_strongly_correlated else 'MODERATE' if is_reacting else 'WEAK',
+                            'data_points': len(alt_df),
+                            'btc_std': float(btc_std),
+                            'alt_std': float(alt_std),
+                            'lag': best_lag,
+                            'trend_alignment': float(trend_alignment),
+                            'btc_trend': btc_trend,
+                            'alt_trend': alt_trend
+                        }
+                        
+                        # Cache the result
+                        self._correlation_cache[cache_key] = (result, current_time)
+                        
+                        return result
+                        
+                    except asyncio.TimeoutError:
+                        logger.warning(f"Timeout while fetching historical data for correlation between {symbol} and BTCUSDT (attempt {attempt + 1}/{self._max_correlation_retries})")
+                        if attempt < self._max_correlation_retries - 1:
+                            await asyncio.sleep(1)  # Wait before retry
+                        continue
+                        
+                    except Exception as e:
+                        logger.error(f"Error calculating correlation for {symbol}: {str(e)}")
+                        if attempt < self._max_correlation_retries - 1:
+                            await asyncio.sleep(1)
+                        continue
+                        
+                # If all retries failed, return default correlation
+                logger.warning(f"All correlation calculation attempts failed for {symbol}")
+                return self._get_default_correlation()
                 
-                self._cache[cache_key] = (analysis, current_time)
-                self._last_update[cache_key] = current_time
-            return analysis
-            
         except Exception as e:
-            logger.error(f"Error analyzing altcoin correlation for {symbol}: {str(e)}")
-            return None
+            logger.error(f"Error in analyze_altcoin_correlation for {symbol}: {str(e)}")
+            return self._get_default_correlation()
             
+    def _get_default_correlation(self) -> Dict:
+        """Get default correlation values when calculation fails."""
+        return {
+            'correlation': 0.0,
+            'returns_correlation': 0.0,
+            'reaction_strength': 0.0,
+            'is_strongly_correlated': False,
+            'is_reacting': False,
+            'reaction': 'WEAK',
+            'data_points': 0,
+            'btc_std': 0.0,
+            'alt_std': 0.0,
+            'lag': 0,
+            'trend_alignment': 0.0,
+            'btc_trend': 'NEUTRAL',
+            'alt_trend': 'NEUTRAL'
+        }
+
     def clear_cache(self):
         """Clear the strategy cache."""
         self._cache.clear()
         self._last_update.clear()
+        self._correlation_cache.clear()  # Clear correlation cache as well
         
     def calculate_trailing_stop(self, symbol: str, current_price: float, atr: float, position_type: str, 
                               market_conditions: Dict = None) -> float:
@@ -2060,7 +2255,7 @@ class EnhancedTradingStrategy:
             position_type = 'LONG' if is_trending_up(self.get_trend(df)) else 'SHORT'
             
             # Lấy trọng số động
-            weights = await self._get_dynamic_weights(position_type)
+            weights = await self._get_dynamic_weights(symbol, position_type)
             
             # Tính điểm cho từng yếu tố
             scores = {
@@ -2393,19 +2588,7 @@ class EnhancedTradingStrategy:
         except Exception as e:
             logging.error(f"Error calculating correlation for {symbol}: {str(e)}")
             return self._get_default_correlation()
-            
-    def _get_default_correlation(self) -> Dict:
-        """Return default correlation values when calculation fails."""
-        return {
-            'correlation': 0.0,
-            'returns_correlation': 0.0,
-            'reaction_strength': 0.0,
-            'is_strongly_correlated': False,
-            'is_reacting': False,
-            'reaction': 'WEAK',
-            'data_points': 0
-        }
-
+    
     async def _handle_dca(self, symbol: str, position: Dict) -> Optional[Dict]:
         """Handle DCA for a position.
         
@@ -2579,7 +2762,7 @@ class EnhancedTradingStrategy:
             # Get current market conditions
             volatility = market_conditions.get('volatility', 0)
             trend = market_conditions.get('btc_trend', 'NEUTRAL')
-            volume = market_conditions.get('volume', 0)
+            # volume = market_conditions.get('volume', 0)
             
             # Check if market conditions are favorable
             if volatility > 0.05:  # High volatility
@@ -2700,10 +2883,10 @@ class EnhancedTradingStrategy:
                 sentiment = 0.0
                 
             # Get market liquidity
-            liquidity = await self._calculate_market_liquidity()
+            liquidity = await self._calculate_market_liquidity(symbol)
             
             # Get risk environment
-            risk_on = await self._is_risk_on_environment()
+            risk_on = await self._is_risk_on_environment(symbol)
             
             return {
                 'btc_trend': trend,
@@ -3647,7 +3830,7 @@ class EnhancedTradingStrategy:
                 
             # Calculate volume metrics
             volume_ma = df["volume"].rolling(window=20).mean()
-            volume_std = df["volume"].rolling(window=20).std()
+            # volume_std = df["volume"].rolling(window=20).std()
             volume_ratio = df["volume"].iloc[-1] / volume_ma.iloc[-1]
             
             # Calculate volume trend (3-period)
@@ -4030,7 +4213,7 @@ class EnhancedTradingStrategy:
                 
             bid_depth = order_book.get('bid_depth', 0)
             ask_depth = order_book.get('ask_depth', 0)
-            spread = order_book.get('spread', 0)
+            # spread = order_book.get('spread', 0)
             
             if bid_depth == 0 or ask_depth == 0:
                 return 0.0
@@ -4230,13 +4413,13 @@ class EnhancedTradingStrategy:
             logger.error(f"Error calculating dynamic threshold: {str(e)}")
             return self.base_thresholds.get(threshold_type, 0.0)
 
-    async def _get_dynamic_weights(self, position_type: str) -> Dict[str, float]:
+    async def _get_dynamic_weights(self, symbol: str, position_type: str) -> Dict[str, float]:
         """Calculate dynamic weights based on market conditions."""
         try:
             weights = self.base_weights.copy()
             
             # Lấy market conditions
-            market_conditions = await self._get_market_conditions()
+            market_conditions = await self._get_market_conditions(symbol)
             
             # Điều chỉnh theo volatility
             if market_conditions.get('volatility', 0) > self.adjustment_factors['volatility_threshold']:
@@ -4463,46 +4646,115 @@ class EnhancedTradingStrategy:
         except Exception as e:
             logger.error(f"Error sending alert: {str(e)}")
 
-    async def _calculate_market_liquidity(self) -> float:
-        """Calculate current market liquidity score."""
+    async def _calculate_market_liquidity(self, symbol: str, position_type: str = None) -> Dict:
+        """Analyze market liquidity using order book and volume data."""
         try:
-            # Lấy dữ liệu order book cho BTC
-            btc_order_book = await self.binance_service.get_order_book("BTCUSDT", limit=100)
-            if not btc_order_book:
-                return 0.0
+            # Get order book data
+            order_book = await self.binance_service.get_order_book(symbol)
+            if not order_book:
+                return {'liquidity': 'UNKNOWN', 'score': 0}
                 
-            # Tính toán spread
-            best_bid = float(btc_order_book['bids'][0][0])
-            best_ask = float(btc_order_book['asks'][0][0])
+            # Calculate bid-ask spread
+            best_bid = float(order_book['bids'][0][0])
+            best_ask = float(order_book['asks'][0][0])
             spread = (best_ask - best_bid) / best_bid
             
-            # Tính toán depth
-            bid_depth = sum(float(bid[1]) for bid in btc_order_book['bids'])
-            ask_depth = sum(float(ask[1]) for ask in btc_order_book['asks'])
-            avg_depth = (bid_depth + ask_depth) / 2
+            # Calculate order book depth and imbalance
+            bid_depth = sum(float(bid[1]) for bid in order_book['bids'][:10])
+            ask_depth = sum(float(ask[1]) for ask in order_book['asks'][:10])
+            total_depth = bid_depth + ask_depth
+            depth_imbalance = (bid_depth - ask_depth) / total_depth if total_depth > 0 else 0
             
-            # Tính toán volume 24h
-            ticker = await self.binance_service.get_ticker("BTCUSDT")
-            volume_24h = float(ticker.get('volume', 0))
+            # Calculate volume profile
+            df = await self.indicator_service.calculate_indicators(symbol)
+            if df is None or df.empty:
+                return {'liquidity': 'UNKNOWN', 'score': 0}
+                
+            avg_volume = df['volume'].mean()
+            current_volume = df['volume'].iloc[-1]
+            volume_ratio = current_volume / avg_volume
             
-            # Tính điểm thanh khoản (0-1)
-            spread_score = max(0, 1 - spread * 100)  # Spread càng nhỏ điểm càng cao
-            depth_score = min(1, avg_depth / 100)    # Depth càng lớn điểm càng cao
-            volume_score = min(1, volume_24h / 10000) # Volume càng lớn điểm càng cao
+            # Calculate liquidity score
+            liquidity_score = 0
             
-            # Tính điểm tổng hợp
-            liquidity_score = (spread_score * 0.4 + depth_score * 0.3 + volume_score * 0.3)
+            # Spread component (0-40 points)
+            if spread < 0.001:
+                liquidity_score += 40
+            elif spread < 0.002:
+                liquidity_score += 30
+            elif spread < 0.003:
+                liquidity_score += 20
+            else:
+                liquidity_score += 10
+                
+            # Depth component (0-40 points)
+            if total_depth > avg_volume * 2:
+                liquidity_score += 40
+            elif total_depth > avg_volume:
+                liquidity_score += 30
+            elif total_depth > avg_volume * 0.5:
+                liquidity_score += 20
+            else:
+                liquidity_score += 10
+                
+            # Volume component (0-20 points)
+            if volume_ratio > 1.5:
+                liquidity_score += 20
+            elif volume_ratio > 1.2:
+                liquidity_score += 15
+            elif volume_ratio > 1:
+                liquidity_score += 10
+            else:
+                liquidity_score += 5
+                
+            # Adjust score based on position type and order book imbalance
+            if position_type:
+                if is_long_side(position_type):
+                    # Favor higher bid depth for longs
+                    if depth_imbalance > 0.2:  # Strong buying pressure
+                        liquidity_score += 20
+                    elif depth_imbalance > 0.1:  # Moderate buying pressure
+                        liquidity_score += 10
+                    elif depth_imbalance < -0.2:  # Strong selling pressure
+                        liquidity_score -= 20
+                    elif depth_imbalance < -0.1:  # Moderate selling pressure
+                        liquidity_score -= 10
+                else:  # SHORT
+                    # Favor higher ask depth for shorts
+                    if depth_imbalance < -0.2:  # Strong selling pressure
+                        liquidity_score += 20
+                    elif depth_imbalance < -0.1:  # Moderate selling pressure
+                        liquidity_score += 10
+                    elif depth_imbalance > 0.2:  # Strong buying pressure
+                        liquidity_score -= 20
+                    elif depth_imbalance > 0.1:  # Moderate buying pressure
+                        liquidity_score -= 10
+                        
+            # Normalize score to 0-100 range
+            final_score = min(max(liquidity_score, 0), 100)
             
-            # Lưu vào cache
-            self.binance_service._set_cached_data("market_liquidity", liquidity_score)
-            
-            return liquidity_score
+            # Determine liquidity
+            if final_score > 80:
+                liquidity = 'HIGH'
+            elif final_score > 60:
+                liquidity = 'MEDIUM'
+            else:
+                liquidity = 'LOW'
+                
+            return {
+                'liquidity': liquidity,
+                'spread': spread,
+                'depth': total_depth,
+                'depth_imbalance': depth_imbalance,
+                'volume_ratio': volume_ratio,
+                'score': final_score
+            }
             
         except Exception as e:
-            logger.error(f"Error calculating market liquidity: {str(e)}")
-            return 0.0
+            logger.error(f"Error in _analyze_market_liquidity: {str(e)}")
+            return {'liquidity': 'UNKNOWN', 'score': 0}
 
-    async def _is_risk_on_environment(self) -> bool:
+    async def _is_risk_on_environment(self, symbol: str) -> bool:
         """Check if current market environment is risk-on."""
         try:
             # Lấy dữ liệu BTC
@@ -4532,8 +4784,8 @@ class EnhancedTradingStrategy:
                 return False
                 
             # Kiểm tra thanh khoản
-            liquidity = await self._calculate_market_liquidity()
-            if liquidity < 0.5:  # Ngưỡng thanh khoản tối thiểu
+            liquidity = await self._calculate_market_liquidity(symbol)
+            if liquidity['score'] < 50:  # Ngưỡng thanh khoản tối thiểu (50/100)
                 return False
                 
             # Kiểm tra volatility
@@ -4697,7 +4949,7 @@ class EnhancedTradingStrategy:
             # Get position information
             position_age = (datetime.now() - position.get('updateTime', datetime.now())).total_seconds() / 3600  # hours
             position_type = position.get('info', {}).get('positionSide', 'LONG')
-            unrealized_pnl = position.get('unrealizedPnl', 0)
+            # unrealized_pnl = position.get('unrealizedPnl', 0)
             entry_price = position.get('entryPrice', current_price)
             
             # Calculate price change percentage
@@ -4835,4 +5087,393 @@ class EnhancedTradingStrategy:
         except Exception as e:
             logger.error(f"Error checking DCA limits for {symbol}: {str(e)}")
             return False
+
+    async def _analyze_market_regime(self, symbol: str, position_type: str = None) -> Dict:
+        """Analyze market regime based on volatility, trend, and correlation."""
+        try:
+            # Get market data
+            df = await self.indicator_service.calculate_indicators(symbol)
+            if df is None or df.empty:
+                return {'regime': 'UNKNOWN', 'score': 0}
+                
+            # Calculate volatility regime
+            volatility = df['ATR'].iloc[-1] / df['close'].iloc[-1]
+            if volatility > 0.02:
+                volatility_regime = 'HIGH_VOLATILITY'
+            elif volatility > 0.01:
+                volatility_regime = 'MEDIUM_VOLATILITY'
+            else:
+                volatility_regime = 'LOW_VOLATILITY'
+                
+            # Calculate trend regime
+            adx = df['ADX'].iloc[-1]
+            trend = self.get_trend(df)
+            
+            if adx > 25:
+                trend_regime = 'TRENDING'
+            elif adx > 15:
+                trend_regime = 'WEAK_TREND'
+            else:
+                trend_regime = 'RANGING'
+                
+            # Calculate correlation regime
+            btc_correlation = await self._calculate_correlation(symbol, 'BTCUSDT')
+            if abs(btc_correlation) > 0.7:
+                correlation_regime = 'HIGH_CORRELATION'
+            elif abs(btc_correlation) > 0.5:
+                correlation_regime = 'MEDIUM_CORRELATION'
+            else:
+                correlation_regime = 'LOW_CORRELATION'
+                
+            # Determine overall regime and score based on position type
+            if position_type:
+                if is_long_side(position_type):
+                    if trend == 'UPTREND' and volatility_regime == 'HIGH_VOLATILITY':
+                        regime = 'BULLISH_ACCELERATION'
+                        score = 100
+                    elif trend == 'UPTREND' and volatility_regime == 'LOW_VOLATILITY':
+                        regime = 'BULLISH_DECELERATION'
+                        score = 80
+                    elif trend == 'RANGE' and volatility_regime == 'LOW_VOLATILITY':
+                        regime = 'BULLISH_CONSOLIDATION'
+                        score = 60
+                    elif trend == 'RANGE' and volatility_regime == 'HIGH_VOLATILITY':
+                        regime = 'BULLISH_VOLATILE_RANGE'
+                        score = 40
+                    else:
+                        regime = 'BULLISH_MIXED'
+                        score = 50
+                else:  # SHORT
+                    if trend == 'DOWNTREND' and volatility_regime == 'HIGH_VOLATILITY':
+                        regime = 'BEARISH_ACCELERATION'
+                        score = 100
+                    elif trend == 'DOWNTREND' and volatility_regime == 'LOW_VOLATILITY':
+                        regime = 'BEARISH_DECELERATION'
+                        score = 80
+                    elif trend == 'RANGE' and volatility_regime == 'LOW_VOLATILITY':
+                        regime = 'BEARISH_CONSOLIDATION'
+                        score = 60
+                    elif trend == 'RANGE' and volatility_regime == 'HIGH_VOLATILITY':
+                        regime = 'BEARISH_VOLATILE_RANGE'
+                        score = 40
+                    else:
+                        regime = 'BEARISH_MIXED'
+                        score = 50
+            else:
+                # Default scoring without position type
+                if trend_regime == 'TRENDING' and volatility_regime == 'HIGH_VOLATILITY':
+                    regime = 'TREND_ACCELERATION'
+                    score = 100
+                elif trend_regime == 'TRENDING' and volatility_regime == 'LOW_VOLATILITY':
+                    regime = 'TREND_DECELERATION'
+                    score = 80
+                elif trend_regime == 'RANGING' and volatility_regime == 'LOW_VOLATILITY':
+                    regime = 'CONSOLIDATION'
+                    score = 60
+                elif trend_regime == 'RANGING' and volatility_regime == 'HIGH_VOLATILITY':
+                    regime = 'VOLATILE_RANGE'
+                    score = 40
+                else:
+                    regime = 'MIXED'
+                    score = 50
+                    
+            return {
+                'regime': regime,
+                'volatility_regime': volatility_regime,
+                'trend_regime': trend_regime,
+                'correlation_regime': correlation_regime,
+                'score': score
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in _analyze_market_regime: {str(e)}")
+            return {'regime': 'UNKNOWN', 'score': 0}
+            
+    async def _analyze_market_breadth(self, symbol: str, position_type: str = None) -> Dict:
+        """Analyze market breadth using multiple indicators."""
+        try:
+            df = await self.indicator_service.calculate_indicators(symbol)
+            if df is None or df.empty:
+                return {'breadth': 'UNKNOWN', 'score': 0}
+                
+            # Calculate RSI breadth
+            rsi = df['RSI'].iloc[-1]
+            rsi_breadth = 'BULLISH' if rsi > 60 else 'BEARISH' if rsi < 40 else 'NEUTRAL'
+            rsi_strength = abs(rsi - 50) / 50  # Normalized strength
+            
+            # Calculate MACD breadth
+            macd = df['MACD'].iloc[-1]
+            macd_signal = df['MACD_SIGNAL'].iloc[-1]
+            macd_breadth = 'BULLISH' if macd > macd_signal else 'BEARISH'
+            macd_strength = abs(macd - macd_signal) / abs(macd_signal) if macd_signal != 0 else 0
+            
+            # Calculate OBV breadth
+            obv = df['OBV'].iloc[-1]
+            obv_prev = df['OBV'].iloc[-2]
+            obv_breadth = 'BULLISH' if obv > obv_prev else 'BEARISH'
+            obv_strength = abs(obv - obv_prev) / abs(obv_prev) if obv_prev != 0 else 0
+            
+            # Calculate overall breadth
+            bullish_count = sum(1 for x in [rsi_breadth, macd_breadth, obv_breadth] if x == 'BULLISH')
+            bearish_count = sum(1 for x in [rsi_breadth, macd_breadth, obv_breadth] if x == 'BEARISH')
+            
+            # Calculate weighted strength
+            weights = {'rsi': 0.4, 'macd': 0.4, 'obv': 0.2}
+            strength = (
+                rsi_strength * weights['rsi'] +
+                macd_strength * weights['macd'] +
+                obv_strength * weights['obv']
+            )
+            
+            if position_type:
+                if is_long_side(position_type):
+                    if bullish_count >= 2:
+                        breadth = 'BULLISH'
+                        score = int(50 + strength * 50)  # 50-100 range
+                    elif bearish_count >= 2:
+                        breadth = 'BEARISH'
+                        score = int(50 - strength * 50)  # 0-50 range
+                    else:
+                        breadth = 'NEUTRAL'
+                        score = 50
+                else:  # SHORT
+                    if bearish_count >= 2:
+                        breadth = 'BEARISH'
+                        score = int(50 + strength * 50)  # 50-100 range
+                    elif bullish_count >= 2:
+                        breadth = 'BULLISH'
+                        score = int(50 - strength * 50)  # 0-50 range
+                    else:
+                        breadth = 'NEUTRAL'
+                        score = 50
+            else:
+                if bullish_count >= 2:
+                    breadth = 'BULLISH'
+                    score = int(50 + strength * 50)
+                elif bearish_count >= 2:
+                    breadth = 'BEARISH'
+                    score = int(50 - strength * 50)
+                else:
+                    breadth = 'NEUTRAL'
+                    score = 50
+                    
+            return {
+                'breadth': breadth,
+                'rsi_breadth': rsi_breadth,
+                'macd_breadth': macd_breadth,
+                'obv_breadth': obv_breadth,
+                'strength': strength,
+                'score': score
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in _analyze_market_breadth: {str(e)}")
+            return {'breadth': 'UNKNOWN', 'score': 0}
+            
+    async def _analyze_market_momentum(self, symbol: str, position_type: str = None) -> Dict:
+        """Analyze market momentum using multiple timeframes."""
+        try:
+            timeframes = ['5m', '15m', '1h', '4h']
+            momentum_scores = []
+            momentum_strengths = []
+            
+            for tf in timeframes:
+                df = await self.indicator_service.calculate_indicators(symbol, timeframe=tf)
+                if df is None or df.empty:
+                    continue
+                    
+                # Calculate momentum indicators
+                rsi = df['RSI'].iloc[-1]
+                macd = df['MACD'].iloc[-1]
+                macd_signal = df['MACD_SIGNAL'].iloc[-1]
+                adx = df['ADX'].iloc[-1]
+                
+                # Calculate momentum score
+                momentum_score = 0
+                if rsi > 60:
+                    momentum_score += 25
+                elif rsi < 40:
+                    momentum_score -= 25
+                    
+                if macd > macd_signal:
+                    momentum_score += 25
+                else:
+                    momentum_score -= 25
+                    
+                if adx > 25:
+                    momentum_score += 25
+                else:
+                    momentum_score -= 25
+                    
+                # Calculate momentum strength
+                rsi_strength = abs(rsi - 50) / 50
+                macd_strength = abs(macd - macd_signal) / abs(macd_signal) if macd_signal != 0 else 0
+                adx_strength = min(adx / 50, 1)  # Normalize ADX
+                
+                momentum_strength = (rsi_strength + macd_strength + adx_strength) / 3
+                
+                momentum_scores.append(momentum_score)
+                momentum_strengths.append(momentum_strength)
+                
+            if not momentum_scores:
+                return {'momentum': 'UNKNOWN', 'score': 0}
+                
+            # Calculate weighted average momentum score and strength
+            weights = [0.1, 0.2, 0.3, 0.4]  # Weights for 5m, 15m, 1h, 4h
+            weighted_score = sum(score * weight for score, weight in zip(momentum_scores, weights))
+            weighted_strength = sum(strength * weight for strength, weight in zip(momentum_strengths, weights))
+            
+            # Determine momentum based on position type
+            if position_type:
+                if is_long_side(position_type):
+                    if weighted_score > 50:
+                        momentum = 'BULLISH'
+                        score = int(50 + weighted_strength * 50)  # 50-100 range
+                    elif weighted_score < -50:
+                        momentum = 'BEARISH'
+                        score = int(50 - weighted_strength * 50)  # 0-50 range
+                    else:
+                        momentum = 'NEUTRAL'
+                        score = 50
+                else:  # SHORT
+                    if weighted_score < -50:
+                        momentum = 'BEARISH'
+                        score = int(50 + weighted_strength * 50)  # 50-100 range
+                    elif weighted_score > 50:
+                        momentum = 'BULLISH'
+                        score = int(50 - weighted_strength * 50)  # 0-50 range
+                    else:
+                        momentum = 'NEUTRAL'
+                        score = 50
+            else:
+                if weighted_score > 50:
+                    momentum = 'BULLISH'
+                    score = int(50 + weighted_strength * 50)
+                elif weighted_score < -50:
+                    momentum = 'BEARISH'
+                    score = int(50 - weighted_strength * 50)
+                else:
+                    momentum = 'NEUTRAL'
+                    score = 50
+                    
+            return {
+                'momentum': momentum,
+                'weighted_score': weighted_score,
+                'weighted_strength': weighted_strength,
+                'timeframe_scores': dict(zip(timeframes, momentum_scores)),
+                'timeframe_strengths': dict(zip(timeframes, momentum_strengths)),
+                'score': score
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in _analyze_market_momentum: {str(e)}")
+            return {'momentum': 'UNKNOWN', 'score': 0}
+            
+    async def _analyze_market_liquidity(self, symbol: str, position_type: str = None) -> Dict:
+        """Analyze market liquidity using order book and volume data."""
+        try:
+            # Get order book data
+            order_book = await self.binance_service.get_order_book(symbol)
+            if not order_book:
+                return {'liquidity': 'UNKNOWN', 'score': 0}
+                
+            # Calculate bid-ask spread
+            best_bid = float(order_book['bids'][0][0])
+            best_ask = float(order_book['asks'][0][0])
+            spread = (best_ask - best_bid) / best_bid
+            
+            # Calculate order book depth and imbalance
+            bid_depth = sum(float(bid[1]) for bid in order_book['bids'][:10])
+            ask_depth = sum(float(ask[1]) for ask in order_book['asks'][:10])
+            total_depth = bid_depth + ask_depth
+            depth_imbalance = (bid_depth - ask_depth) / total_depth if total_depth > 0 else 0
+            
+            # Calculate volume profile
+            df = await self.indicator_service.calculate_indicators(symbol)
+            if df is None or df.empty:
+                return {'liquidity': 'UNKNOWN', 'score': 0}
+                
+            avg_volume = df['volume'].mean()
+            current_volume = df['volume'].iloc[-1]
+            volume_ratio = current_volume / avg_volume
+            
+            # Calculate liquidity score
+            liquidity_score = 0
+            
+            # Spread component (0-40 points)
+            if spread < 0.001:
+                liquidity_score += 40
+            elif spread < 0.002:
+                liquidity_score += 30
+            elif spread < 0.003:
+                liquidity_score += 20
+            else:
+                liquidity_score += 10
+                
+            # Depth component (0-40 points)
+            if total_depth > avg_volume * 2:
+                liquidity_score += 40
+            elif total_depth > avg_volume:
+                liquidity_score += 30
+            elif total_depth > avg_volume * 0.5:
+                liquidity_score += 20
+            else:
+                liquidity_score += 10
+                
+            # Volume component (0-20 points)
+            if volume_ratio > 1.5:
+                liquidity_score += 20
+            elif volume_ratio > 1.2:
+                liquidity_score += 15
+            elif volume_ratio > 1:
+                liquidity_score += 10
+            else:
+                liquidity_score += 5
+                
+            # Adjust score based on position type and order book imbalance
+            if position_type:
+                if is_long_side(position_type):
+                    # Favor higher bid depth for longs
+                    if depth_imbalance > 0.2:  # Strong buying pressure
+                        liquidity_score += 20
+                    elif depth_imbalance > 0.1:  # Moderate buying pressure
+                        liquidity_score += 10
+                    elif depth_imbalance < -0.2:  # Strong selling pressure
+                        liquidity_score -= 20
+                    elif depth_imbalance < -0.1:  # Moderate selling pressure
+                        liquidity_score -= 10
+                else:  # SHORT
+                    # Favor higher ask depth for shorts
+                    if depth_imbalance < -0.2:  # Strong selling pressure
+                        liquidity_score += 20
+                    elif depth_imbalance < -0.1:  # Moderate selling pressure
+                        liquidity_score += 10
+                    elif depth_imbalance > 0.2:  # Strong buying pressure
+                        liquidity_score -= 20
+                    elif depth_imbalance > 0.1:  # Moderate buying pressure
+                        liquidity_score -= 10
+                        
+            # Normalize score to 0-100 range
+            final_score = min(max(liquidity_score, 0), 100)
+            
+            # Determine liquidity
+            if final_score > 80:
+                liquidity = 'HIGH'
+            elif final_score > 60:
+                liquidity = 'MEDIUM'
+            else:
+                liquidity = 'LOW'
+                
+            return {
+                'liquidity': liquidity,
+                'spread': spread,
+                'depth': total_depth,
+                'depth_imbalance': depth_imbalance,
+                'volume_ratio': volume_ratio,
+                'score': final_score
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in _analyze_market_liquidity: {str(e)}")
+            return {'liquidity': 'UNKNOWN', 'score': 0}
 
