@@ -64,7 +64,6 @@ class OrderCleanup:
                     
                 # Check if order is SL or TP
                 order_type = order.get('type', '').lower()
-                print(f"order: {order}")
                 if order_type.lower() in ['stop_market', 'take_profit_market']:
                     # Cancel the order
                     success = await self.binance_service.cancel_order(
@@ -79,8 +78,7 @@ class OrderCleanup:
                         # Send notification
                         await self.telegram_service.send_message(
                             f"🧹 Cleaned up {order_type} order for {symbol}\n"
-                            f"Order ID: {order['id']}\n"
-                            f"Price: {order.get('price', 'N/A')}"
+                            f"Position Type: {order['info']['positionSide']}"
                         )
                     else:
                         logger.error(f"Failed to cancel order {order['id']} for {symbol}")
