@@ -49,9 +49,9 @@ class IndicatorService:
         self._max_retry_delay = 32
         self._request_count = 0
         self._last_request_time = 0
-        self._rate_limit = 2000  # Reduced from 2400 to be safe
+        self._rate_limit = 1000  # Reduced from 2000 to avoid throttle queue issues
         self._rate_limit_window = 60  # 60 seconds
-        self._rate_limit_queue = asyncio.Queue()
+        self._rate_limit_queue = asyncio.Queue(maxsize=500)  # Limit queue size
         self._rate_limit_task = None
         self._ws_connections = {}
         self._ws_subscriptions = {}
@@ -60,6 +60,8 @@ class IndicatorService:
         self._error_count = 0
         self._max_errors = 5
         self._error_window = 300  # 5 minutes
+        self._throttle_backoff = 1  # Initial backoff time in seconds
+        self._max_throttle_backoff = 32  # Maximum backoff time in seconds
         
     async def initialize(self) -> bool:
         """Initialize the indicator service.
@@ -286,6 +288,7 @@ class IndicatorService:
         """Make a request with rate limiting and retry mechanism."""
         retries = 0
         last_error = None
+        throttle_backoff = self._throttle_backoff
 
         while retries < self._max_retries:
             try:
@@ -296,13 +299,18 @@ class IndicatorService:
                     self._last_request_time = current_time
                     
                 if self._request_count >= self._rate_limit:
-                    # Queue request if rate limit exceeded
-                    await self._rate_limit_queue.put(func(*args, **kwargs))
-                    return await self._rate_limit_queue.get()
+                    # Wait until rate limit window resets
+                    wait_time = self._rate_limit_window - (current_time - self._last_request_time)
+                    if wait_time > 0:
+                        await asyncio.sleep(wait_time)
+                    self._request_count = 0
+                    self._last_request_time = current_time
                     
                 # Make request
                 self._request_count += 1
                 result = await func(*args, **kwargs)
+                # Reset throttle backoff on successful request
+                throttle_backoff = self._throttle_backoff
                 return result
                 
             except Exception as e:
@@ -313,6 +321,14 @@ class IndicatorService:
                     logger.warning(f"Timestamp error detected: {str(e)}. Forcing time sync...")
                     self._last_sync_time = 0
                     await self._sync_time()
+                    continue
+                    
+                if 'throttle queue is over maxCapacity' in str(e):
+                    # Exponential backoff for throttle errors
+                    wait_time = min(throttle_backoff, self._max_throttle_backoff)
+                    logger.warning(f"Throttle queue full, waiting {wait_time}s before retry (attempt {retries}/{self._max_retries})")
+                    await asyncio.sleep(wait_time)
+                    throttle_backoff *= 2  # Double the backoff time
                     continue
                     
                 if retries < self._max_retries:
@@ -393,25 +409,33 @@ class IndicatorService:
                     return cached_data
             
             # Fetch new data if cache is invalid or missing
-            ohlcv = await self.exchange.fetch_ohlcv(symbol, timeframe, limit)
-            if not ohlcv:
-                logger.error(f"Failed to fetch OHLCV data for {symbol}")
-                return None
+            try:
+                ohlcv = await self._make_request(self.exchange.fetch_ohlcv, symbol, timeframe, limit)
+                if not ohlcv:
+                    logger.error(f"Failed to fetch OHLCV data for {symbol}")
+                    return None
+                    
+                # Convert to DataFrame
+                df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                df.set_index('timestamp', inplace=True)
                 
-            # Convert to DataFrame
-            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            df.set_index('timestamp', inplace=True)
-            
-            # Calculate indicators
-            df = await self._calculate_technical_indicators(df)
-            
-            # Cache the result
-            self._cache[cache_key] = (df, current_time)
-            self._last_update[cache_key] = current_time
-            
-            return df
-            
+                # Calculate indicators
+                df = await self._calculate_technical_indicators(df)
+                
+                # Cache the result
+                self._cache[cache_key] = (df, current_time)
+                self._last_update[cache_key] = current_time
+                
+                return df
+                
+            except Exception as e:
+                if 'throttle queue is over maxCapacity' in str(e):
+                    logger.warning(f"Throttle queue full for {symbol}, using cached data if available")
+                    if cache_key in self._cache:
+                        return self._cache[cache_key][0]
+                raise e
+                
         except Exception as e:
             logger.error(f"Error calculating indicators: {str(e)}")
             return None
