@@ -1,287 +1,194 @@
 """
-Service for handling notifications and alerts.
+Notification service for managing different notification channels.
 """
+
 import logging
-from typing import Dict
-import asyncio
+from typing import Dict, Any, Optional
 from datetime import datetime
+
 from src.services.telegram_service import TelegramService
+from src.services.discord_service import DiscordService
 
 logger = logging.getLogger(__name__)
 
 class NotificationService:
-    """Service for handling notifications and alerts."""
-    
-    def __init__(self, config: Dict, telegram_service: TelegramService):
-        """Initialize the notification service.
+    def __init__(self, config: Dict[str, Any], telegram_service: Optional[TelegramService] = None, discord_service: Optional[DiscordService] = None):
+        """
+        Initialize notification service.
         
         Args:
-            config: Configuration dictionary
+            config (Dict[str, Any]): Configuration dictionary
+            telegram_service (Optional[TelegramService]): Telegram service instance
+            discord_service (Optional[DiscordService]): Discord service instance
         """
         self.config = config
-        self._is_initialized = False
-        self._is_closed = False
-        self._notification_queue = asyncio.Queue()
-        self._processing_task = None
-        self._last_notification = {}
-        self._notification_cooldown = 60  # Minimum 60 seconds between notifications
-        self._max_notifications_per_hour = 10  # Maximum 10 notifications per hour
         self.telegram_service = telegram_service
+        self.discord_service = discord_service
+        self._is_initialized = False
         
+        # Get service enabled status from config
+        self.telegram_enabled = config.get('api', {}).get('telegram', {}).get('enabled', True)
+        self.discord_enabled = config.get('api', {}).get('discord', {}).get('enabled', True)
+
     async def initialize(self) -> bool:
-        """Initialize the notification service.
-        
-        Returns:
-            bool: True if initialization successful, False otherwise
-        """
+        """Initialize the notification service."""
         try:
-            if self._is_initialized:
-                logger.warning("Notification service already initialized")
-                return True
+            if self.telegram_enabled and self.telegram_service:
+                await self.telegram_service.initialize()
                 
-            # Start notification processing task
-            self._processing_task = asyncio.create_task(self._process_notifications())
-            
+            if self.discord_enabled and self.discord_service:
+                await self.discord_service.initialize()
+                
             self._is_initialized = True
-            logger.info("Notification service initialized successfully")
             return True
-            
         except Exception as e:
             logger.error(f"Error initializing notification service: {str(e)}")
             return False
-            
-    async def _process_notifications(self) -> None:
-        """Process notifications from the queue."""
-        try:
-            while not self._is_closed:
-                try:
-                    # Get notification from queue
-                    notification = await self._notification_queue.get()
-                    
-                    # Check notification cooldown
-                    if not await self._check_notification_cooldown(notification['type']):
-                        logger.warning(f"Notification cooldown active for {notification['type']}")
-                        continue
-                        
-                    # Process notification based on type
-                    if notification['type'] == 'error':
-                        await self._handle_error_notification(notification)
-                    elif notification['type'] == 'trade':
-                        await self._handle_trade_notification(notification)
-                    elif notification['type'] == 'status':
-                        await self._handle_status_notification(notification)
-                    else:
-                        logger.warning(f"Unknown notification type: {notification['type']}")
-                        
-                    # Mark task as done
-                    self._notification_queue.task_done()
-                    
-                except asyncio.CancelledError:
-                    logger.info("Notification processing task cancelled")
-                    break
-                except Exception as e:
-                    logger.error(f"Error processing notification: {str(e)}")
-                    await asyncio.sleep(1)  # Wait before retrying
-                    
-        except Exception as e:
-            logger.error(f"Error in notification processing task: {str(e)}")
-            
-    async def _check_notification_cooldown(self, notification_type: str) -> bool:
-        """Check if notification can be sent based on cooldown.
-        
-        Args:
-            notification_type: Type of notification
-            
-        Returns:
-            bool: True if notification can be sent
-        """
-        try:
-            current_time = datetime.now()
-            
-            # Initialize notification history if not exists
-            if notification_type not in self._last_notification:
-                self._last_notification[notification_type] = []
-                
-            # Remove notifications older than 1 hour
-            self._last_notification[notification_type] = [
-                time for time in self._last_notification[notification_type]
-                if (current_time - time).total_seconds() < 3600
-            ]
-            
-            # Check if we have reached max notifications per hour
-            if len(self._last_notification[notification_type]) >= self._max_notifications_per_hour:
-                logger.warning(f"Maximum notifications per hour reached for {notification_type}")
-                return False
-                
-            # Check minimum interval since last notification
-            if self._last_notification[notification_type]:
-                last_notification = self._last_notification[notification_type][-1]
-                if (current_time - last_notification).total_seconds() < self._notification_cooldown:
-                    logger.warning(f"Notification cooldown not met for {notification_type}")
-                    return False
-                    
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error checking notification cooldown: {str(e)}")
-            return False
-            
-    async def _handle_error_notification(self, notification: Dict) -> None:
-        """Handle error notification.
-        
-        Args:
-            notification: Notification details
-        """
-        try:
-            error_message = notification.get('message', 'Unknown error')
-            error_details = notification.get('details', {})
-            
-            # Log error
-            logger.error(f"Error notification: {error_message}")
-            if error_details:
-                logger.error(f"Error details: {error_details}")
-                
-            # Update notification history
-            self._last_notification['error'].append(datetime.now())
-            
-        except Exception as e:
-            logger.error(f"Error handling error notification: {str(e)}")
-            
-    async def _handle_trade_notification(self, notification: Dict) -> None:
-        """Handle trade notification.
-        
-        Args:
-            notification: Notification details
-        """
-        try:
-            symbol = notification.get('symbol')
-            side = notification.get('side')
-            amount = notification.get('amount')
-            price = notification.get('price')
-            
-            # Log trade
-            logger.info(f"Trade notification: {symbol} {side} {amount} @ {price}")
-            
-            # Update notification history
-            self._last_notification['trade'].append(datetime.now())
-            
-        except Exception as e:
-            logger.error(f"Error handling trade notification: {str(e)}")
-            
-    async def _handle_status_notification(self, notification: Dict) -> None:
-        """Handle status notification.
-        
-        Args:
-            notification: Notification details
-        """
-        try:
-            status = notification.get('status')
-            details = notification.get('details', {})
-            
-            # Log status
-            logger.info(f"Status notification: {status}")
-            if details:
-                logger.info(f"Status details: {details}")
-                
-            # Update notification history
-            self._last_notification['status'].append(datetime.now())
-            
-        except Exception as e:
-            logger.error(f"Error handling status notification: {str(e)}")
-            
-    async def send_notification(self, notification_type: str, message: str, details: Dict = None) -> bool:
-        """Send a notification.
-        
-        Args:
-            notification_type: Type of notification
-            message: Notification message
-            details: Additional notification details
-            
-        Returns:
-            bool: True if notification sent successfully
-        """
-        try:
-            if not self._is_initialized:
-                logger.error("Notification service not initialized")
-                return False
-                
-            # Create notification
-            notification = {
-                'type': notification_type,
-                'message': message,
-                'details': details or {},
-                'timestamp': datetime.now()
-            }
-            
-            # Add to queue
-            await self._notification_queue.put(notification)
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error sending notification: {str(e)}")
-            return False
-            
-    def set_telegram_service(self, telegram_service):
-        """Set the Telegram service for sending messages.
-        
-        Args:
-            telegram_service: Telegram service instance
-        """
-        self.telegram_service = telegram_service
-        
-    async def send_message(self, message: str) -> bool:
-        """Send a message through the configured notification channels.
-        
-        Args:
-            message: Message to send
-            
-        Returns:
-            bool: True if message sent successfully, False otherwise
-        """
-        try:
-            if not self._is_initialized:
-                logger.error("Notification service not initialized")
-                return False
-                
-            if self._is_closed:
-                logger.error("Notification service is closed")
-                return False
-                
-            # Send through Telegram if available
-            if self.telegram_service:
-                try:
-                    await self.telegram_service.send_message(message)
-                except Exception as e:
-                    logger.error(f"Error sending Telegram message: {str(e)}")
-                    
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error sending message: {str(e)}")
-            return False
-            
+
     async def close(self) -> None:
         """Close the notification service."""
         try:
-            if not self._is_initialized:
-                return
-                
-            self._is_closed = True
-            
-            # Cancel processing task
-            if self._processing_task and not self._processing_task.done():
-                self._processing_task.cancel()
-                try:
-                    await self._processing_task
-                except asyncio.CancelledError:
-                    pass
-                    
-            # Clear notification history
-            self._last_notification.clear()
-            
-            self._is_initialized = False
-            logger.info("Notification service closed successfully")
-            
+            if self.telegram_service:
+                await self.telegram_service.close()
+            if self.discord_service:
+                await self.discord_service.close()
         except Exception as e:
             logger.error(f"Error closing notification service: {str(e)}")
-            raise 
+
+    def is_initialized(self) -> bool:
+        """Check if the service is initialized."""
+        return self._is_initialized
+
+    async def send_message(self, message: str, embed: Optional[Dict[str, Any]] = None) -> None:
+        """
+        Send a message through all enabled notification channels.
+        
+        Args:
+            message (str): Message to send
+            embed (Optional[Dict[str, Any]]): Optional embed data for rich messages
+        """
+        if not self._is_initialized:
+            logger.warning("Notification service not initialized")
+            return
+
+        try:
+            if self.telegram_enabled and self.telegram_service:
+                await self.telegram_service.send_message(message)
+                
+            if self.discord_enabled and self.discord_service:
+                await self.discord_service.send_message(message, embed)
+        except Exception as e:
+            logger.error(f"Error sending notification: {str(e)}")
+
+    async def send_trade_notification(self, 
+                                    symbol: str, 
+                                    action: str, 
+                                    price: float, 
+                                    quantity: float,
+                                    reason: Optional[str] = None) -> None:
+        """
+        Send a trade notification through all enabled channels.
+        
+        Args:
+            symbol (str): Trading pair symbol
+            action (str): Trade action (BUY/SELL)
+            price (float): Trade price
+            quantity (float): Trade quantity
+            reason (Optional[str]): Optional reason for the trade
+        """
+        if not self._is_initialized:
+            logger.warning("Notification service not initialized")
+            return
+
+        try:
+            if self.telegram_enabled and self.telegram_service:
+                await self.telegram_service.send_trade_notification(
+                    symbol=symbol,
+                    action=action,
+                    price=price,
+                    quantity=quantity,
+                    reason=reason
+                )
+                
+            if self.discord_enabled and self.discord_service:
+                await self.discord_service.send_trade_notification(
+                    symbol=symbol,
+                    action=action,
+                    price=price,
+                    quantity=quantity,
+                    reason=reason
+                )
+        except Exception as e:
+            logger.error(f"Error sending trade notification: {str(e)}")
+
+    async def send_error_notification(self, error_message: str) -> None:
+        """
+        Send an error notification through all enabled channels.
+        
+        Args:
+            error_message (str): Error message to send
+        """
+        if not self._is_initialized:
+            logger.warning("Notification service not initialized")
+            return
+
+        try:
+            if self.telegram_enabled and self.telegram_service:
+                await self.telegram_service.send_error_notification(error_message)
+                
+            if self.discord_enabled and self.discord_service:
+                await self.discord_service.send_error_notification(error_message)
+        except Exception as e:
+            logger.error(f"Error sending error notification: {str(e)}")
+
+    async def send_health_status(self, status: Dict[str, Any]) -> None:
+        """
+        Send health status through all enabled channels.
+        
+        Args:
+            status (Dict[str, Any]): Health status information
+        """
+        if not self._is_initialized:
+            logger.warning("Notification service not initialized")
+            return
+
+        try:
+            if self.telegram_enabled and self.telegram_service:
+                await self.telegram_service.send_health_status(status)
+                
+            if self.discord_enabled and self.discord_service:
+                await self.discord_service.send_health_status(status)
+        except Exception as e:
+            logger.error(f"Error sending health status: {str(e)}")
+
+    def toggle_telegram(self, enabled: bool) -> None:
+        """
+        Toggle Telegram notifications on/off.
+        
+        Args:
+            enabled (bool): Whether to enable or disable Telegram notifications
+        """
+        self.telegram_enabled = enabled
+        logger.info(f"Telegram notifications {'enabled' if enabled else 'disabled'}")
+
+    def toggle_discord(self, enabled: bool) -> None:
+        """
+        Toggle Discord notifications on/off.
+        
+        Args:
+            enabled (bool): Whether to enable or disable Discord notifications
+        """
+        self.discord_enabled = enabled
+        logger.info(f"Discord notifications {'enabled' if enabled else 'disabled'}")
+
+    def get_status(self) -> Dict[str, bool]:
+        """
+        Get the current status of notification services.
+        
+        Returns:
+            Dict[str, bool]: Dictionary containing enabled status for each service
+        """
+        return {
+            'telegram': self.telegram_enabled,
+            'discord': self.discord_enabled
+        } 
