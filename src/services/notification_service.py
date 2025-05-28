@@ -76,7 +76,8 @@ class NotificationService:
                 await self.telegram_service.send_message(message)
                 
             if self.discord_enabled and self.discord_service:
-                await self.discord_service.send_message(message, embed)
+                cleaned_message = message.replace('<b>', '**').replace('</b>', '**')
+                await self.discord_service.send_message(cleaned_message, embed)
         except Exception as e:
             logger.error(f"Error sending notification: {str(e)}")
 
@@ -191,4 +192,193 @@ class NotificationService:
         return {
             'telegram': self.telegram_enabled,
             'discord': self.discord_enabled
-        } 
+        }
+        
+    
+    def is_trading_paused(self) -> bool:
+        """Check if trading is paused."""
+        if not self._is_initialized:
+            logger.warning("Notification service not initialized")
+            return
+
+        try:
+            if self.telegram_enabled and self.telegram_service:
+                self.telegram_service.is_trading_paused()
+                
+            if self.discord_enabled and self.discord_service:
+                self.discord_service.is_trading_paused()
+        except Exception as e:
+            logger.error(f"Error is_trading_paused: {str(e)}")
+    
+    async def send_dca_notification(self, dca_details: Dict) -> bool:
+        """Send DCA execution notification.
+        
+        Args:
+            dca_details: Dictionary containing DCA execution details
+            
+        Returns:
+            bool: True if notification sent successfully, False otherwise
+        """
+        try:
+            if not self._is_initialized:
+                logger.error("Notification service not initialized or closed")
+                return False
+                
+            message = (
+                f"💰 <b>DCA Executed</b>\n\n"
+                f"Symbol: {dca_details['symbol']}\n"
+                f"Amount: {dca_details['dca_amount']:.8f}\n"
+                f"New Entry: {dca_details['new_entry_price']:.8f}\n"
+                f"Price Drop: {dca_details['price_drop']:.2f}%\n"
+                f"Order ID: {dca_details['order_id']}"
+            )
+            
+            return await self.send_message(message)
+            
+        except Exception as e:
+            logger.error(f"Error sending DCA notification: {str(e)}")
+            return False
+            
+    async def send_trailing_stop_notification(self, symbol: str, new_stop: float, position_side: str) -> bool:
+        """Send trailing stop update notification.
+        
+        Args:
+            symbol: Trading pair symbol
+            new_stop: New stop loss price
+            position_side: Position side (LONG/SHORT)
+            
+        Returns:
+            bool: True if notification sent successfully, False otherwise
+        """
+        try:
+            if not self._is_initialized:
+                logger.error("Notification service not initialized or closed")
+                return False
+                
+            message = (
+                f"🛑 <b>Trailing Stop Updated</b>\n\n"
+                f"Symbol: {symbol}\n"
+                f"Position: {position_side}\n"
+                f"New Stop: {new_stop:.8f}"
+            )
+            
+            return await self.send_message(message)
+            
+        except Exception as e:
+            logger.error(f"Error sending trailing stop notification: {str(e)}")
+            return False
+
+    async def send_stop_loss_notification(self, symbol: str, position_side: str, 
+                                        position_size: float, entry_price: float, 
+                                        stop_price: float, pnl_usd: float) -> bool:
+        """Send a stop loss notification.
+        
+        Args:
+            symbol: Trading pair symbol
+            position_side: Position side (LONG/SHORT)
+            position_size: Position size
+            entry_price: Position entry price
+            stop_price: Stop loss price
+            pnl_usd: USDT of profit/loss
+            
+        Returns:
+            bool: True if notification sent successfully, False otherwise
+        """
+        try:
+            if not self._is_initialized:
+                logger.error("Notification service not initialized or closed")
+                return False
+                
+            message = (
+                f"🛑 <b>Stop Loss Triggered</b>\n\n"
+                f"Symbol: {symbol}\n"
+                f"Position: {position_side}\n"
+                f"Size: {position_size}\n"
+                f"Entry Price: {entry_price:.8f}\n"
+                f"Stop Price: {stop_price:.8f}\n"
+                f"PnL: {pnl_usd:.2f} USDT"
+            )
+            
+            return await self.send_message(message)
+            
+        except Exception as e:
+            logger.error(f"Error sending stop loss notification: {str(e)}")
+            return False
+            
+    async def send_take_profit_notification(self, symbol: str, position_side: str,
+                                        position_size: float, entry_price: float,
+                                          tp_price: float, pnl_usd: float) -> bool:
+        """Send a take profit notification.
+        
+        Args:
+            symbol: Trading pair symbol
+            position_side: Position side (LONG/SHORT)
+            position_size: Position size
+            entry_price: Position entry price
+            tp_price: Take profit price
+            pnl_usd: USDT of profit/loss
+            
+        Returns:
+            bool: True if notification sent successfully, False otherwise
+        """
+        try:
+            if not self._is_initialized:
+                logger.error("Notification service not initialized or closed")
+                return False
+                
+            message = (
+                f"🎯 <b>Take Profit Triggered</b>\n\n"
+                f"Symbol: {symbol}\n"
+                f"Position: {position_side}\n"
+                f"Size: {position_size}\n"
+                f"Entry Price: {entry_price:.8f}\n"
+                f"TP Price: {tp_price:.8f}\n"
+                f"PnL: {pnl_usd:.2f} USDT"
+            )
+            
+            return await self.send_message(message)
+            
+        except Exception as e:
+            logger.error(f"Error sending take profit notification: {str(e)}")
+            return False
+
+    async def send_order_notification(self, order: Dict) -> bool:
+        """Send an order notification.
+        
+        Args:
+            order: Order details
+            signals: Trading signals containing SL/TP information
+            
+        Returns:
+            bool: True if notification sent successfully, False otherwise
+        """
+        try:
+            if not self._is_initialized:
+                logger.error("Notification service not initialized or closed")
+                return False
+          
+            message = (
+                f"📊 <b>New Order</b>\n\n"
+                f"Symbol: {order['symbol']}\n"
+                f"Side: {order['side']}\n"
+                f"Size: {order['amount']}\n"
+                f"Price: {order['price']}\n"
+                f"Type: {order['type']}"
+            )
+            
+            # Add SL/TP information from order parameters
+            if 'stop_loss' in order:
+                sl_price = float(order['stop_loss'])
+                sl_percent = abs((sl_price - float(order['price'])) / float(order['price']) * 100)
+                message += f"\nStop Loss: {sl_price:.8f} ({sl_percent:.2f}%)"
+                
+            if 'take_profit' in order:
+                tp_price = float(order['take_profit'])
+                tp_percent = abs((tp_price - float(order['price'])) / float(order['price']) * 100)
+                message += f"\nTake Profit: {tp_price:.8f} ({tp_percent:.2f}%)"
+                
+            return await self.send_message(message)
+            
+        except Exception as e:
+            logger.error(f"Error sending order notification: {str(e)}")
+            return False

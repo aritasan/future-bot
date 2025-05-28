@@ -13,6 +13,7 @@ from src.services.binance_service import BinanceService
 from src.services.indicator_service import IndicatorService
 from src.services.notification_service import NotificationService
 from src.services.telegram_service import TelegramService
+from src.services.discord_service import DiscordService
 from src.core.config import load_config
 
 # Configure logging
@@ -36,22 +37,21 @@ async def test_handle_dca(symbol: str, position: Dict):
         binance_service = BinanceService(config)
         indicator_service = IndicatorService(config)
         telegram_service = TelegramService(config)
-        notification_service = NotificationService(config, telegram_service)
+        discord_service = DiscordService(config['api']['discord']['webhook_url'])
+        notification_service = NotificationService(config, telegram_service, discord_service)
         
         # Initialize strategy
         strategy = EnhancedTradingStrategy(
             config=config,
             binance_service=binance_service,
             indicator_service=indicator_service,
-            notification_service=notification_service,
-            telegram_service=telegram_service
+            notification_service=notification_service
         )
         
         # Initialize services
         await binance_service.initialize()
         await indicator_service.initialize()
         await notification_service.initialize()
-        await telegram_service.initialize()
         await strategy.initialize()
         
         logger.info(f"Testing DCA for {symbol}")
@@ -70,7 +70,6 @@ async def test_handle_dca(symbol: str, position: Dict):
         await binance_service.close()
         await indicator_service.close()
         await notification_service.close()
-        await telegram_service.close()
         
     except Exception as e:
         logger.error(f"Error testing DCA: {str(e)}")
@@ -79,14 +78,13 @@ async def test_handle_dca(symbol: str, position: Dict):
 async def main():
     """Main function to run the DCA test."""
     # Example position for testing
-    symbol = "CGPTUSDT"
+    symbol = "SYNUSDT"
     position = {
         'info': {
-            'positionAmt': '128.0',
-            'entryPrice': '0.13',
+            'positionAmt': '100.0',
             'side': 'LONG'
         },
-        'entryPrice': 0.13,
+        'entryPrice': 0.2165,
     }
     
     try:

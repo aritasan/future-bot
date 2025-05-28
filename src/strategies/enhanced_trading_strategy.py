@@ -15,7 +15,6 @@ import os
 from src.services.indicator_service import IndicatorService
 from src.services.sentiment_service import SentimentService
 from src.services.binance_service import BinanceService
-from src.services.telegram_service import TelegramService
 from src.services.notification_service import NotificationService
 from src.utils.helpers import is_long_side, is_short_side, is_trending_down,\
     is_trending_up
@@ -26,7 +25,7 @@ class EnhancedTradingStrategy:
     """Enhanced trading strategy with multiple indicators and risk management."""
     
     def __init__(self, config: Dict, binance_service: BinanceService, indicator_service: IndicatorService,
-                 notification_service: NotificationService, telegram_service: TelegramService):
+                 notification_service: NotificationService):
         """Initialize the strategy.
         
         Args:
@@ -34,13 +33,11 @@ class EnhancedTradingStrategy:
             binance_service: Binance service instance
             indicator_service: Indicator service instance
             notification_service: Notification service instance
-            telegram_service: Telegram service instance
         """
         self.config = config
         self.binance_service = binance_service
         self.indicator_service = indicator_service
         self.notification_service = notification_service
-        self.telegram_service = telegram_service
         self._is_running = False
         self._monitoring_tasks = []
         self._last_dca_time = {}
@@ -1481,7 +1478,7 @@ class EnhancedTradingStrategy:
             # Check momentum-based exit
             if self._should_exit_by_momentum(df, position):
                 logger.info(f"Closing position for {symbol} {position_side.upper()} due to momentum signal")
-                await self.telegram_service.send_message(
+                await self.notification_service.send_message(
                     f"Closing position for {symbol} {position_side.upper()} due to momentum signal\n"
                     f"Current price: {df['close'].iloc[-1]}\n"
                     f"Position size: {position_amt}\n"
@@ -1505,7 +1502,7 @@ class EnhancedTradingStrategy:
                 if (position_amt > 0 and current_price <= stop_loss) or \
                    (position_amt < 0 and current_price >= stop_loss):
                     logger.info(f"Stop loss triggered for {symbol} at {current_price}")
-                    await self.telegram_service.send_message(
+                    await self.notification_service.send_message(
                         f"Stop loss triggered for {symbol} at {current_price}\n"
                         f"Current price: {current_price}\n"
                         f"Price change: {price_change:.2%}\n" 
@@ -1519,7 +1516,7 @@ class EnhancedTradingStrategy:
                 if (position_amt > 0 and current_price >= take_profit) or \
                    (position_amt < 0 and current_price <= take_profit):
                     logger.info(f"Take profit triggered for {symbol} at {current_price}")
-                    await self.telegram_service.send_message(
+                    await self.notification_service.send_message(
                         f"Take profit triggered for {symbol} at {current_price}\n"
                         f"Current price: {current_price}\n"
                         f"Price change: {price_change:.2%}\n" 
@@ -1530,7 +1527,7 @@ class EnhancedTradingStrategy:
             # Check if unrealized PnL is below -400% margin (emergency stop)
             if unrealized_pnl < -4*margin:
                 logger.info(f"Emergency stop triggered for {symbol} {position_side.upper()} - PnL below -400% margin")
-                await self.telegram_service.send_message(
+                await self.notification_service.send_message(
                     f"Emergency stop triggered for {symbol} {position_side.upper()} - PnL below -400% margin\n"
                     f"Current price: {current_price}\n"
                     f"Price change: {price_change:.2%}\n" 
@@ -1545,7 +1542,7 @@ class EnhancedTradingStrategy:
                 # Check if market volatility is too high
                 if market_conditions.get('volatility') > 0.05 and abs(price_change) > 0.1:  # 10% move
                     logger.info(f"Closing position for {symbol} {position_side.upper()} due to high volatility")
-                    await self.telegram_service.send_message(
+                    await self.notification_service.send_message(
                         f"Closing position for {symbol} {position_side.upper()} due to high volatility\n"
                         f"Current price: {current_price}\n"
                         f"Price change: {price_change:.2%}\n" 
@@ -1588,7 +1585,7 @@ class EnhancedTradingStrategy:
                                     ((correlation > CORRELATION_THRESHOLD and trend_alignment < 0) or  # Strong negative correlation
                                      (trend_strength > TREND_STRENGTH_THRESHOLD and is_trending_down(btc_trend) and is_trending_down(alt_trend)))):  # Strong trend alignment
                                     logger.info(f"Closing LONG position for {symbol} due to BTC trend reversal and correlation")
-                                    await self.telegram_service.send_message(
+                                    await self.notification_service.send_message(
                                         f"Closing LONG position for {symbol} due to BTC trend reversal and correlation\n"
                                         f"Current price: {current_price}\n"
                                         f"Price change: {price_change:.2%}\n"
@@ -1607,7 +1604,7 @@ class EnhancedTradingStrategy:
                                     ((correlation > CORRELATION_THRESHOLD and trend_alignment > 0) or  # Strong positive correlation
                                      (trend_strength > TREND_STRENGTH_THRESHOLD and is_trending_up(btc_trend) and is_trending_up(alt_trend)))):  # Strong trend alignment
                                     logger.info(f"Closing SHORT position for {symbol} due to BTC trend reversal and correlation")
-                                    await self.telegram_service.send_message(
+                                    await self.notification_service.send_message(
                                         f"Closing SHORT position for {symbol} due to BTC trend reversal and correlation\n"
                                         f"Current price: {current_price}\n"
                                         f"Price change: {price_change:.2%}\n"
@@ -1627,7 +1624,7 @@ class EnhancedTradingStrategy:
                                     correlation > CORRELATION_THRESHOLD and 
                                     trend_strength > TREND_STRENGTH_THRESHOLD):
                                     logger.info(f"Closing LONG position for {symbol} due to trend divergence")
-                                    await self.telegram_service.send_message(
+                                    await self.notification_service.send_message(
                                         f"Closing LONG position for {symbol} due to trend divergence\n"
                                         f"Current price: {current_price}\n"
                                         f"Price change: {price_change:.2%}\n"
@@ -1644,7 +1641,7 @@ class EnhancedTradingStrategy:
                                     correlation > CORRELATION_THRESHOLD and 
                                     trend_strength > TREND_STRENGTH_THRESHOLD):
                                     logger.info(f"Closing SHORT position for {symbol} due to trend divergence")
-                                    await self.telegram_service.send_message(
+                                    await self.notification_service.send_message(
                                         f"Closing SHORT position for {symbol} due to trend divergence\n"
                                         f"Current price: {current_price}\n"
                                         f"Price change: {price_change:.2%}\n"
@@ -1699,7 +1696,7 @@ class EnhancedTradingStrategy:
                             if position_amt > 0:  # LONG position
                                 if all(score < -sentiment_threshold for score in historical_sentiments):
                                     logger.info(f"Closing LONG position for {symbol} due to strong bearish sentiment")
-                                    await self.telegram_service.send_message(
+                                    await self.notification_service.send_message(
                                         f"Closing LONG position for {symbol} due to strong bearish sentiment\n"
                                         f"Current price: {current_price}\n"
                                         f"Price change: {price_change:.2%}\n"
@@ -1714,7 +1711,7 @@ class EnhancedTradingStrategy:
                             elif position_amt < 0:  # SHORT position
                                 if all(score > sentiment_threshold for score in historical_sentiments):
                                     logger.info(f"Closing SHORT position for {symbol} due to strong bullish sentiment")
-                                    await self.telegram_service.send_message(
+                                    await self.notification_service.send_message(
                                         f"Closing SHORT position for {symbol} due to strong bullish sentiment\n"
                                         f"Current price: {current_price}\n"
                                         f"Price change: {price_change:.2%}\n"
@@ -1732,7 +1729,7 @@ class EnhancedTradingStrategy:
                         if (rsi_sentiment == 'bearish' and mfi_sentiment == 'bearish' and 
                             obv_sentiment == 'bearish' and trend_strength == 'strong'):
                             logger.info(f"Closing LONG position for {symbol} due to extreme bearish sentiment")
-                            await self.telegram_service.send_message(
+                            await self.notification_service.send_message(
                                 f"Closing LONG position for {symbol} due to extreme bearish sentiment\n"
                                 f"Current price: {current_price}\n"
                                 f"Price change: {price_change:.2%}\n"
@@ -1747,7 +1744,7 @@ class EnhancedTradingStrategy:
                         if (rsi_sentiment == 'bullish' and mfi_sentiment == 'bullish' and 
                             obv_sentiment == 'bullish' and trend_strength == 'strong'):
                             logger.info(f"Closing SHORT position for {symbol} due to extreme bullish sentiment")
-                            await self.telegram_service.send_message(
+                            await self.notification_service.send_message(
                                 f"Closing SHORT position for {symbol} due to extreme bullish sentiment\n"
                                 f"Current price: {current_price}\n"
                                 f"Price change: {price_change:.2%}\n"
@@ -2687,7 +2684,7 @@ class EnhancedTradingStrategy:
                     # Send notification
                     logger.info(f"_handle_dca: Sending DCA notification for {symbol}")
                     try:
-                        await self.telegram_service.send_dca_notification({
+                        await self.notification_service.send_dca_notification({
                             'symbol': symbol,
                             'dca_amount': dca_size,
                             'new_entry_price': current_price,
@@ -3123,7 +3120,7 @@ class EnhancedTradingStrategy:
             
             if success:
                 logger.info(f"Updated stop loss for {symbol} {position_side} from {current_stop_loss} to {new_stop_loss}")
-                await self.telegram_service.send_stop_loss_notification(
+                await self.notification_service.send_stop_loss_notification(
                     symbol=symbol,
                     position_side=position_side,
                     position_size=float(position.get('info', {}).get('positionAmt', 0)),
@@ -3182,7 +3179,7 @@ class EnhancedTradingStrategy:
             
             if success:
                 logger.info(f"Updated take profit for {symbol} {position_side} from {current_take_profit} to {new_take_profit}")
-                await self.telegram_service.send_take_profit_notification(
+                await self.notification_service.send_take_profit_notification(
                     symbol=symbol,
                     position_side=position_side,
                     entry_price=float(position.get('entryPrice', 0)),
@@ -3255,7 +3252,7 @@ class EnhancedTradingStrategy:
                 await self._manage_existing_position(symbol, position)
             else:
                 # No existing position, check if we should open a new one
-                if not self.telegram_service.is_trading_paused():
+                if not self.notification_service.is_trading_paused():
                     await self._execute_trade(signals)
                 else:
                     logger.info(f"Trading paused - Skipping new trade for {symbol}")
@@ -3358,7 +3355,7 @@ class EnhancedTradingStrategy:
             # Send notification
             order['stop_loss'] = stop_loss
             order['take_profit'] = take_profit
-            await self.telegram_service.send_order_notification(order)
+            await self.notification_service.send_order_notification(order)
 
             # Update tracking variables
             self._last_trade_time[symbol] = time.time()
@@ -3414,7 +3411,7 @@ class EnhancedTradingStrategy:
                             logger.info(f"_monitor_positions: Closing position for {symbol} with side {position['info']['positionSide']}")
                             if await self.binance_service.close_position(symbol, position['info']['positionSide']):
                                 logger.info(f"_monitor_positions: Position closed for {symbol}")
-                                await self.telegram_service.send_message(
+                                await self.notification_service.send_message(
                                     f"Position closed for {symbol} {position['info']['positionSide']}\n"
                                     f"Amount: {position['info']['positionAmt']}\n"
                                     f"PnL: {position['unrealizedPnl']}")
@@ -3768,7 +3765,7 @@ class EnhancedTradingStrategy:
                 # Close the position
                 if await self.binance_service.close_position(symbol, position['info']['positionSide']):
                     logger.info(f"_manage_existing_position: Position closed for {symbol}")
-                    await self.telegram_service.send_message(
+                    await self.notification_service.send_message(
                         f"Position closed for {symbol} {position['info']['positionSide']}\n"
                         f"Amount: {position['info']['positionAmt']}\n"
                         f"PnL: {position['unrealizedPnl']}")
