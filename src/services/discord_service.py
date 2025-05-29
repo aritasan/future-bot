@@ -12,33 +12,36 @@ from datetime import datetime
 from aiohttp import ClientTimeout, TCPConnector
 from aiohttp.resolver import AsyncResolver
 import ssl
+from discord.ext import commands
+from src.services.base_notification_service import BaseNotificationService
 
 logger = logging.getLogger(__name__)
 
-class DiscordService:
-    def __init__(self, bot_token: str, channel_id: int, max_retries: int = 3, retry_delay: float = 1.0):
-        """
-        Initialize Discord service with bot token.
+class DiscordService(BaseNotificationService):
+    """Service for handling Discord bot operations."""
+    
+    def __init__(self, config: Dict):
+        """Initialize the service."""
+        super().__init__(config)
+        self._is_ready = False
+        self._ready_event = asyncio.Event()
+        self._is_closed = False
+        self._is_running = False
+        self._shutdown_event = asyncio.Event()
+        self._event_loop = None
+        self._subscribed_users = set()
+        self._trading_paused = False
+        self.max_retries = 3
+        self.retry_delay = 1.0
         
-        Args:
-            bot_token (str): Discord bot token
-            channel_id (int): Channel ID to send messages to
-            max_retries (int): Maximum number of retry attempts for failed requests
-            retry_delay (float): Delay between retry attempts in seconds
-        """
-        self.bot_token = bot_token
-        self.channel_id = channel_id
-        # Configure intents to allow access to channels and messages
+        # Configure intents
         intents = discord.Intents.default()
         intents.message_content = True
         intents.guilds = True
         intents.messages = True
-        self.client = discord.Client(intents=intents)
-        self._trading_paused = False
-        self.max_retries = max_retries
-        self.retry_delay = retry_delay
-        self._is_ready = False
-        self._ready_event = asyncio.Event()
+        
+        # Create bot instance
+        self.bot = commands.Bot(command_prefix='/', intents=intents)
         
         # Command handlers
         self._command_handlers: Dict[str, Callable] = {
@@ -53,20 +56,20 @@ class DiscordService:
         }
         
         # Set up event handlers
-        @self.client.event
+        @self.bot.event
         async def on_ready():
-            logger.info(f'Bot logged in as {self.client.user}')
+            logger.info(f'Bot logged in as {self.bot.user}')
             # Log available channels for debugging
-            for guild in self.client.guilds:
+            for guild in self.bot.guilds:
                 logger.info(f"Bot is in guild: {guild.name} (ID: {guild.id})")
                 for channel in guild.channels:
                     logger.info(f"Channel: {channel.name} (ID: {channel.id})")
             self._is_ready = True
             self._ready_event.set()
             
-        @self.client.event
+        @self.bot.event
         async def on_message(message):
-            if message.author == self.client.user:
+            if message.author == self.bot.user:
                 return
                 
             if message.content.startswith('/'):
@@ -83,8 +86,11 @@ class DiscordService:
     async def initialize(self) -> None:
         """Initialize the Discord service."""
         try:
+            # Initialize base service first
+            await super().initialize()
+            
             # Start the bot in the background
-            asyncio.create_task(self.client.start(self.bot_token))
+            asyncio.create_task(self.bot.start(self.config['api']['discord']['bot_token']))
             
             # Wait for the bot to be ready
             try:
@@ -101,9 +107,10 @@ class DiscordService:
     async def close(self) -> None:
         """Close the Discord service."""
         try:
-            await self.client.close()
+            await self.bot.close()
             self._is_ready = False
             self._ready_event.clear()
+            self._is_closed = True
         except Exception as e:
             logger.error(f"Error closing Discord bot: {str(e)}")
 
@@ -143,22 +150,11 @@ class DiscordService:
 
     async def _handle_help(self, args: List[str] = None) -> str:
         """Handle /help command."""
-        help_text = (
-            "Available commands:\n"
-            "/start - Start the bot and subscribe to updates\n"
-            "/help - Show this help message\n"
-            "/status - Show current bot status\n"
-            "/pause - Pause the bot\n"
-            "/unpause - Unpause the bot\n"
-            "/balance - Show current balance\n"
-            "/cleanup - Clean up orders\n"
-            "/report - Show detailed report"
-        )
-        return help_text
+        return self.help_content()
 
     async def _handle_status(self, args: List[str] = None) -> str:
         """Handle /status command."""
-        status = "Active" if not self._trading_paused else "Paused"
+        status = await self._get_status_message()
         return f"Bot status: {status}"
 
     async def _handle_pause(self, args: List[str] = None) -> str:
@@ -171,20 +167,60 @@ class DiscordService:
         self._trading_paused = False
         return "Bot unpaused."
 
-    async def _handle_balance(self, args: List[str] = None) -> str:
-        """Handle /balance command."""
-        # This should be implemented to show actual balance
-        return "Balance information not available."
+    async def _handle_balance(self, ctx: commands.Context) -> str:
+        """Handle the /balance command."""
+        try:
+            if not self._is_ready:
+                return "Bot is not initialized. Please try again later."
+            
+            if not self.binance_service:
+                return "Binance service not available"
+            
+            # Get balance report from base class
+            return await self.generate_balance_report()
+            
+        except Exception as e:
+            logger.error(f"Error handling balance command: {str(e)}")
+            return "An error occurred while generating the balance."
 
     async def _handle_cleanup(self, args: List[str] = None) -> str:
         """Handle /cleanup command."""
-        # This should be implemented to clean up orders
-        return "Cleanup command received."
+        try:
+            if not self._is_ready:
+                return "Bot is not initialized. Please try again later."
+            
+            if not self.binance_service:
+                return "Binance service not available"
+            
+            # Get cleanup message from base class
+            return await self.cleanup_orders()
+            
+        except Exception as e:
+            logger.error(f"Error handling cleanup command: {str(e)}")
+            return "An error occurred while cleaning up orders."
 
     async def _handle_report(self, args: List[str] = None) -> str:
         """Handle /report command."""
-        # This should be implemented to show detailed report
-        return "Detailed report not available."
+        try:
+            if not self._is_ready:
+                return "Bot is not initialized. Please try again later."
+            
+            if not self.binance_service:
+                return "Binance service not available"
+            
+            # Get report chunks from base class
+            report_chunks = await self.generate_report()
+            
+            # Send each chunk
+            for chunk in report_chunks:
+                await self.send_message(chunk)
+                await asyncio.sleep(0.5)  # Small delay between messages
+            
+            return "Report sent successfully."
+            
+        except Exception as e:
+            logger.error(f"Error handling report command: {str(e)}")
+            return "An error occurred while generating the report."
 
     async def send_message(self, content: str, embed: Optional[Dict[str, Any]] = None) -> bool:
         """
@@ -203,12 +239,13 @@ class DiscordService:
             
         try:
             # First try to get channel from cache
-            channel = self.client.get_channel(self.channel_id)
+            channel_id = self.config['api']['discord']['channel_id']
+            channel = self.bot.get_channel(channel_id)
             if not channel:
-                logger.info(f"Channel {self.channel_id} not found in cache, fetching from Discord API...")
+                logger.info(f"Channel {channel_id} not found in cache, fetching from Discord API...")
                 # Try to fetch channel directly from Discord API
                 try:
-                    channel = await self.client.fetch_channel(self.channel_id)
+                    channel = await self.bot.fetch_channel(channel_id)
                     if channel:
                         logger.info(f"Successfully fetched channel: {channel.name} (ID: {channel.id})")
                 except Exception as e:
@@ -224,7 +261,7 @@ class DiscordService:
                     await channel.send(content=content)
                 return True
             else:
-                logger.error(f"Could not find or fetch Discord channel with ID {self.channel_id}")
+                logger.error(f"Could not find or fetch Discord channel with ID {channel_id}")
                 return False
         except Exception as e:
             logger.error(f"Error sending Discord message: {str(e)}")

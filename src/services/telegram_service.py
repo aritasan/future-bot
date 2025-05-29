@@ -9,15 +9,16 @@ from telegram.constants import ParseMode
 import asyncio
 from datetime import datetime, timedelta
 import telegram.error
+from src.services.base_notification_service import BaseNotificationService
 
 logger = logging.getLogger(__name__)
 
-class TelegramService:
+class TelegramService(BaseNotificationService):
     """Service for handling Telegram bot operations."""
     
     def __init__(self, config: Dict):
         """Initialize the service."""
-        self.config = config
+        super().__init__(config)
         self.bot = None
         self.application = None
         self._is_initialized = False
@@ -39,6 +40,9 @@ class TelegramService:
     async def initialize(self) -> None:
         """Initialize the Telegram service."""
         try:
+            # Initialize base service first
+            await super().initialize()
+            
             # Create bot and application
             self.bot = Bot(token=self.config['api']['telegram']['bot_token'])
             self.application = Application.builder().token(self.config['api']['telegram']['bot_token']).build()
@@ -58,7 +62,6 @@ class TelegramService:
             await self.application.start()
             await self.application.updater.start_polling()
             
-            self._is_initialized = True
             logger.info("Telegram service initialized successfully")
         except Exception as e:
             logger.error(f"Error initializing Telegram service: {str(e)}")
@@ -161,17 +164,7 @@ class TelegramService:
     async def _handle_help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle the /help command."""
         try:
-            help_text = (
-                "🤖 <b>Available Commands</b>\n\n"
-                "/start - Start the bot and subscribe to updates\n"
-                "/help - Show this help message\n"
-                "/status - Show current bot status\n"
-                "/pause - Pause the bot\n"
-                "/unpause - Unpause the bot\n"
-                "/balance - Show current balance\n"
-                "/cleanup - Clean up orders\n"
-                "/report - Show detailed report"
-            )
+            help_text = self.help_content()
             await update.message.reply_text(help_text, parse_mode='HTML')
         except Exception as e:
             logger.error(f"Error handling help command: {str(e)}")
@@ -238,80 +231,15 @@ class TelegramService:
                 await update.message.reply_text("Binance service not available")
                 return
             
-            # Get account balance
-            balance = await self.binance_service.get_account_balance()
-            if not balance:
-                await update.message.reply_text("Failed to get account balance")
-                return
+            # Get report chunks from base class
+            report_chunks = await self.generate_report()
             
-            # Get position statistics
-            position_stats = await self.binance_service.get_position_statistics()
-            if position_stats is None:
-                await update.message.reply_text("Failed to get position statistics")
-                return
-            
-            # Format header message
-            header_message = (
-                "📊 <b>Detailed Report</b>\n\n"
-                f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                f"Paused: {'Yes' if self._is_paused else 'No'}\n\n"
-                "💰 <b>Balance</b>\n"
-            )
-            
-            # Add balance information
-            for asset, data in balance.items():
-                if isinstance(data, dict):
-                    amount = data.get('total')
-                else:
-                    amount = data
-                    
-                if amount is not None:
-                    try:
-                        amount_float = float(amount)
-                        if amount_float > 0:
-                            header_message += f"{asset}: {amount_float}\n"
-                    except (ValueError, TypeError):
-                        logger.warning(f"Invalid balance amount for {asset}: {amount}")
-                        continue
-            
-            # Add positions summary
-            header_message += f"\n📈 Active Positions: {position_stats['active_positions']}\n"
-            header_message += f"💵 Total Unrealized PnL: {position_stats['total_pnl']:.2f} USDT\n"
-            
-            # Send header message
-            await update.message.reply_text(header_message, parse_mode='HTML')
-            
-            # Send position details in chunks if there are any
-            if position_stats['position_details']:
-                position_chunks = []
-                current_chunk = "📋 <b>Position Details</b>\n"
-                
-                for pos in position_stats['position_details']:
-                    position_info = (
-                        f"Symbol: {pos['symbol']}\n"
-                        f"Size: {pos['size']}\n"
-                        f"PnL: {pos['pnl']:.2f} USDT\n"
-                        f"Entry Price: {pos['entry_price']}\n"
-                        f"Mark Price: {pos['mark_price']}\n"
-                        f"Leverage: {pos['leverage']}x\n"
-                        f"Side: {pos['side']}\n\n"
-                    )
-                    
-                    # If adding this position would make the chunk too long, start a new chunk
-                    if len(current_chunk) + len(position_info) > 4000:
-                        position_chunks.append(current_chunk)
-                        current_chunk = "📋 <b>Position Details (continued)</b>\n" + position_info
-                    else:
-                        current_chunk += position_info
-                
-                # Add the last chunk if it's not empty
-                if current_chunk:
-                    position_chunks.append(current_chunk)
-                
-                # Send each chunk
-                for chunk in position_chunks:
-                    await update.message.reply_text(chunk, parse_mode='HTML')
-                    await asyncio.sleep(0.5)  # Small delay between messages
+            # Send each chunk
+            for chunk in report_chunks:
+                # Convert markdown to HTML for Telegram
+                chunk = chunk.replace('**', '<b>').replace('</b>', '</b>')
+                await update.message.reply_text(chunk, parse_mode='HTML')
+                await asyncio.sleep(0.5)  # Small delay between messages
             
         except Exception as e:
             logger.error(f"Error handling report command: {str(e)}")
@@ -328,48 +256,14 @@ class TelegramService:
                 await update.message.reply_text("Binance service not available")
                 return
             
-            # Get account balance
-            balance = await self.binance_service.get_account_balance()
-            if not balance:
-                await update.message.reply_text("Failed to get account balance")
-                return
+            # Get balance report from base class
+            message = await self.generate_balance_report()
             
-            # Get position statistics
-            position_stats = await self.binance_service.get_position_statistics()
-            if position_stats is None:
-                await update.message.reply_text("Failed to get position statistics")
-                return
+            # Convert markdown to HTML for Telegram
+            message = message.replace('**', '<b>').replace('</b>', '</b>')
             
-            # Format header message
-            header_message = (
-                "📊 <b>Detailed Report</b>\n\n"
-                f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                f"Paused: {'Yes' if self._is_paused else 'No'}\n\n"
-                "💰 <b>Balance</b>\n"
-            )
-            
-            # Add balance information
-            for asset, data in balance.items():
-                if isinstance(data, dict):
-                    amount = data.get('total')
-                else:
-                    amount = data
-                    
-                if amount is not None:
-                    try:
-                        amount_float = float(amount)
-                        if amount_float > 0:
-                            header_message += f"{asset}: {amount_float}\n"
-                    except (ValueError, TypeError):
-                        logger.warning(f"Invalid balance amount for {asset}: {amount}")
-                        continue
-            
-            # Add positions summary
-            header_message += f"\n📈 Active Positions: {position_stats['active_positions']}\n"
-            header_message += f"💵 Total Unrealized PnL: {position_stats['total_pnl']:.2f} USDT\n"
-            
-            # Send header message
-            await update.message.reply_text(header_message, parse_mode='HTML')
+            # Send message
+            await update.message.reply_text(message, parse_mode='HTML')
             
         except Exception as e:
             logger.error(f"Error handling balance command: {str(e)}")
@@ -381,15 +275,8 @@ class TelegramService:
             if not self._is_initialized:
                 await update.message.reply_text("Bot is not initialized. Please try again later.")  
 
-            deleted_orders = await self.binance_service.cleanup_orders()
-            if deleted_orders:
-                message = "🧹 <b>Order Cleanup</b>\n\n"
-                for symbol, count in deleted_orders.items():
-                    message += f"✅ Cleaned up {count} orders for {symbol}\n"
-                await update.message.reply_text(message, parse_mode='HTML')
-            else:
-                await update.message.reply_text("No orders to clean up.")
-
+            message = await self.cleanup_orders()
+            await update.message.reply_text(message, parse_mode='HTML')
         except Exception as e:
             logger.error(f"Error handling cleanup command: {str(e)}")
             await update.message.reply_text("An error occurred while cleaning up orders.")
@@ -430,23 +317,6 @@ class TelegramService:
             await update.message.reply_text(
                 "An error occurred while processing your command. Please try again later."
             )
-
-    async def _get_status_message(self) -> str:
-        """Get the current bot status message."""
-        try:
-            status = "🟢 Running" if not self._is_paused else "🔴 Stopped"
-            uptime = str(datetime.now() - self._start_time).split('.')[0] if self._start_time else "N/A"
-            
-            message = (
-                f"🤖 <b>Bot Status</b>\n\n"
-                f"Status: {status}\n"
-                f"Uptime: {uptime}\n"
-                f"Last Update: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-            )
-            return message
-        except Exception as e:
-            logger.error(f"Error getting status message: {str(e)}")
-            return "Error getting status information."
 
     async def periodic_balance_check(self) -> None:
         """Periodically check and send balance updates."""

@@ -30,7 +30,7 @@ class OrderCleanup:
         
         # Initialize notification services based on config
         self.telegram_service = TelegramService(self.config) if self.config.get('api', {}).get('telegram', {}).get('enabled', True) else None
-        self.discord_service = DiscordService(self.config['api']['discord']['webhook_url']) if self.config.get('api', {}).get('discord', {}).get('enabled', True) else None
+        self.discord_service = DiscordService(self.config) if self.config.get('api', {}).get('discord', {}).get('enabled', True) else None
         
         # Create notification service
         self.notification_service = NotificationService(

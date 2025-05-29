@@ -266,7 +266,7 @@ async def main():
         # Create service instances
         binance_service = BinanceService(config)
         telegram_service = TelegramService(config) if config.get('api', {}).get('telegram', {}).get('enabled', True) else None
-        discord_service = DiscordService(config['api']['discord']['bot_token'], config['api']['discord']['channel_id']) if config.get('api', {}).get('discord', {}).get('enabled', True) else None
+        discord_service = DiscordService(config) if config.get('api', {}).get('discord', {}).get('enabled', True) else None
         health_monitor = HealthMonitor(config)
         indicator_service = IndicatorService(config)
         notification_service = NotificationService(

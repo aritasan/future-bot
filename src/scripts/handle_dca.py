@@ -37,7 +37,7 @@ async def test_handle_dca(symbol: str, position: Dict):
         binance_service = BinanceService(config)
         indicator_service = IndicatorService(config)
         telegram_service = TelegramService(config)
-        discord_service = DiscordService(config['api']['discord']['webhook_url'])
+        discord_service = DiscordService(config)
         notification_service = NotificationService(config, telegram_service, discord_service)
         
         # Initialize strategy
