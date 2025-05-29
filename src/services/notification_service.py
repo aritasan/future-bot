@@ -29,15 +29,23 @@ class NotificationService:
         # Get service enabled status from config
         self.telegram_enabled = config.get('api', {}).get('telegram', {}).get('enabled', True)
         self.discord_enabled = config.get('api', {}).get('discord', {}).get('enabled', True)
+        
+        # Track service health
+        self._service_health = {
+            'telegram': True,
+            'discord': True
+        }
 
     async def initialize(self) -> bool:
         """Initialize the notification service."""
         try:
             if self.telegram_enabled and self.telegram_service:
                 await self.telegram_service.initialize()
+                self._service_health['telegram'] = True
                 
             if self.discord_enabled and self.discord_service:
                 await self.discord_service.initialize()
+                self._service_health['discord'] = True
                 
             self._is_initialized = True
             return True
@@ -59,34 +67,52 @@ class NotificationService:
         """Check if the service is initialized."""
         return self._is_initialized
 
-    async def send_message(self, message: str, embed: Optional[Dict[str, Any]] = None) -> None:
+    async def send_message(self, message: str, embed: Optional[Dict[str, Any]] = None) -> bool:
         """
         Send a message through all enabled notification channels.
         
         Args:
             message (str): Message to send
             embed (Optional[Dict[str, Any]]): Optional embed data for rich messages
+            
+        Returns:
+            bool: True if message was sent successfully through at least one channel
         """
         if not self._is_initialized:
             logger.warning("Notification service not initialized")
-            return
+            return False
 
+        success = False
         try:
-            if self.telegram_enabled and self.telegram_service:
-                await self.telegram_service.send_message(message)
+            if self.telegram_enabled and self.telegram_service and self._service_health['telegram']:
+                try:
+                    await self.telegram_service.send_message(message)
+                    success = True
+                except Exception as e:
+                    logger.error(f"Error sending Telegram message: {str(e)}")
+                    self._service_health['telegram'] = False
                 
-            if self.discord_enabled and self.discord_service:
-                cleaned_message = message.replace('<b>', '**').replace('</b>', '**')
-                await self.discord_service.send_message(cleaned_message, embed)
+            logger.info(f"Discord: {self._service_health} {self.discord_enabled} {self.discord_service} {self.discord_service is not None}")
+            if self.discord_enabled and self.discord_service and self._service_health['discord']:
+                try:
+                    cleaned_message = message.replace('<b>', '**').replace('</b>', '**')
+                    if await self.discord_service.send_message(cleaned_message, embed):
+                        success = True
+                except Exception as e:
+                    logger.error(f"Error sending Discord message: {str(e)}")
+                    self._service_health['discord'] = False
+                    
+            return success
         except Exception as e:
-            logger.error(f"Error sending notification: {str(e)}")
+            logger.error(f"Error in notification service: {str(e)}")
+            return False
 
     async def send_trade_notification(self, 
                                     symbol: str, 
                                     action: str, 
                                     price: float, 
                                     quantity: float,
-                                    reason: Optional[str] = None) -> None:
+                                    reason: Optional[str] = None) -> bool:
         """
         Send a trade notification through all enabled channels.
         
@@ -96,31 +122,48 @@ class NotificationService:
             price (float): Trade price
             quantity (float): Trade quantity
             reason (Optional[str]): Optional reason for the trade
+            
+        Returns:
+            bool: True if notification was sent successfully through at least one channel
         """
         if not self._is_initialized:
             logger.warning("Notification service not initialized")
-            return
+            return False
 
+        success = False
         try:
-            if self.telegram_enabled and self.telegram_service:
-                await self.telegram_service.send_trade_notification(
-                    symbol=symbol,
-                    action=action,
-                    price=price,
-                    quantity=quantity,
-                    reason=reason
-                )
+            if self.telegram_enabled and self.telegram_service and self._service_health['telegram']:
+                try:
+                    await self.telegram_service.send_trade_notification(
+                        symbol=symbol,
+                        action=action,
+                        price=price,
+                        quantity=quantity,
+                        reason=reason
+                    )
+                    success = True
+                except Exception as e:
+                    logger.error(f"Error sending Telegram trade notification: {str(e)}")
+                    self._service_health['telegram'] = False
                 
-            if self.discord_enabled and self.discord_service:
-                await self.discord_service.send_trade_notification(
-                    symbol=symbol,
-                    action=action,
-                    price=price,
-                    quantity=quantity,
-                    reason=reason
-                )
+            if self.discord_enabled and self.discord_service and self._service_health['discord']:
+                try:
+                    if await self.discord_service.send_trade_notification(
+                        symbol=symbol,
+                        action=action,
+                        price=price,
+                        quantity=quantity,
+                        reason=reason
+                    ):
+                        success = True
+                except Exception as e:
+                    logger.error(f"Error sending Discord trade notification: {str(e)}")
+                    self._service_health['discord'] = False
+                    
+            return success
         except Exception as e:
-            logger.error(f"Error sending trade notification: {str(e)}")
+            logger.error(f"Error in notification service: {str(e)}")
+            return False
 
     async def send_error_notification(self, error_message: str) -> None:
         """

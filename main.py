@@ -87,7 +87,8 @@ async def process_symbol(
         while is_running:
             try:
                 # Check if trading is paused
-                if telegram_service.is_trading_paused() or discord_service.is_trading_paused():
+                if (telegram_service is not None and telegram_service.is_trading_paused()) \
+                    or (discord_service is not None and discord_service.is_trading_paused()):
                     await telegram_service.wait_for_trading_resume()
                     continue
 
@@ -130,7 +131,7 @@ async def process_symbol(
                 logger.error(f"Error closing Binance service for {symbol}: {str(e)}")
                 
             try:
-                if 'telegram' not in closed_services:
+                if telegram_service is not None and 'telegram' not in closed_services:
                     # Wait for any pending messages to be sent
                     await asyncio.sleep(2)
                     await telegram_service.close()
@@ -265,7 +266,7 @@ async def main():
         # Create service instances
         binance_service = BinanceService(config)
         telegram_service = TelegramService(config) if config.get('api', {}).get('telegram', {}).get('enabled', True) else None
-        discord_service = DiscordService(config['api']['discord']['webhook_url']) if config.get('api', {}).get('discord', {}).get('enabled', True) else None
+        discord_service = DiscordService(config['api']['discord']['bot_token'], config['api']['discord']['channel_id']) if config.get('api', {}).get('discord', {}).get('enabled', True) else None
         health_monitor = HealthMonitor(config)
         indicator_service = IndicatorService(config)
         notification_service = NotificationService(

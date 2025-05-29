@@ -102,6 +102,7 @@ def load_config() -> Dict[str, Any]:
     try:
         # Load environment variables
         config = {
+            'is_telegram_enabled': os.getenv('IS_TELEGRAM_ENABLED', 'false').lower() == 'true',
             'api': {
                 'binance': {
                     'use_testnet': os.getenv('USE_TESTNET', 'false').lower() == 'true',
@@ -116,7 +117,14 @@ def load_config() -> Dict[str, Any]:
                 },
                 'telegram': {
                     'bot_token': os.getenv('TELEGRAM_BOT_TOKEN'),
-                    'chat_id': os.getenv('TELEGRAM_CHAT_ID')
+                    'chat_id': os.getenv('TELEGRAM_CHAT_ID'),
+                    'enabled': os.getenv('TELEGRAM_ENABLED', 'false').lower() == 'true'
+                },
+                'discord': {
+                    'webhook_url': os.getenv('DISCORD_WEBHOOK_URL'),
+                    'bot_token': os.getenv('DISCORD_BOT_TOKEN'),
+                    'channel_id': os.getenv('DISCORD_CHANNEL_ID'),
+                    'enabled': os.getenv('DISCORD_ENABLED', 'true').lower() == 'true'
                 },
                 'twitter': {
                     'api_key': TWITTER_API_KEY,
@@ -142,7 +150,7 @@ def load_config() -> Dict[str, Any]:
                 'leverage': DEFAULT_LEVERAGE,
                 "signal_thresholds": {
                     "long_entry": 0.25,  # Increased from 0.25 for stricter entry conditions
-                    "short_entry": -0.78,  # Decreased from -0.25 for stricter entry conditions
+                    "short_entry": -0.878,  # Decreased from -0.25 for stricter entry conditions
                     "exit": 0.0,  # Neutral threshold for exit signals
                     "trend_strength": 0.5,  # Minimum trend strength required
                     "volume_ratio": 1.2,  # Minimum volume ratio required
