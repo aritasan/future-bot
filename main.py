@@ -87,9 +87,12 @@ async def process_symbol(
         while is_running:
             try:
                 # Check if trading is paused
-                if (telegram_service is not None and telegram_service.is_trading_paused()) \
-                    or (discord_service is not None and discord_service.is_trading_paused()):
+                if (telegram_service is not None and telegram_service.is_trading_paused()):
                     await telegram_service.wait_for_trading_resume()
+                    continue
+                
+                if (discord_service is not None and discord_service.is_trading_paused()):
+                    await discord_service.wait_for_trading_resume()
                     continue
 
                 # Check health

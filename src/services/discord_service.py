@@ -122,6 +122,48 @@ class DiscordService(BaseNotificationService):
         """Check if trading is paused."""
         return self._trading_paused
 
+    async def wait_for_trading_resume(self) -> None:
+        """Wait for trading to be resumed.
+        
+        This method will block until trading is resumed or the service is closed.
+        """
+        if not self._trading_paused:
+            return
+        
+        try:
+            # Create an event to wait for unpause
+            unpause_event = asyncio.Event()
+            
+            # Set up a task to check trading status periodically
+            async def check_trading_status():
+                while self._trading_paused and not self._is_closed:
+                    if not self._trading_paused:
+                        unpause_event.set()
+                        break
+                    await asyncio.sleep(1)
+            
+            # Start the checking task
+            check_task = asyncio.create_task(check_trading_status())
+            
+            # Wait for either unpause or service closure
+            try:
+                await asyncio.wait_for(unpause_event.wait(), timeout=None)
+            except asyncio.CancelledError:
+                logger.info("Wait for trading resume cancelled")
+                raise
+            finally:
+                # Clean up the check task
+                if not check_task.done():
+                    check_task.cancel()
+                    try:
+                        await check_task
+                    except asyncio.CancelledError:
+                        pass
+                        
+        except Exception as e:
+            logger.error(f"Error waiting for trading resume: {str(e)}")
+            raise
+
     async def handle_command(self, command: str, args: List[str] = None) -> str:
         """
         Handle Discord commands.
@@ -246,8 +288,6 @@ class DiscordService(BaseNotificationService):
                 # Try to fetch channel directly from Discord API
                 try:
                     channel = await self.bot.fetch_channel(channel_id)
-                    if channel:
-                        logger.info(f"Successfully fetched channel: {channel.name} (ID: {channel.id})")
                 except Exception as e:
                     logger.error(f"Failed to fetch channel from Discord API: {str(e)}")
                     return False
@@ -257,7 +297,6 @@ class DiscordService(BaseNotificationService):
                     discord_embed = discord.Embed.from_dict(embed)
                     await channel.send(content=content, embed=discord_embed)
                 else:
-                    logger.info(f"Sending message to Discord channel {channel.name}: {content}")
                     await channel.send(content=content)
                 return True
             else:
