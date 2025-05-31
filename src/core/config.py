@@ -150,7 +150,7 @@ def load_config() -> Dict[str, Any]:
                 'leverage': DEFAULT_LEVERAGE,
                 "signal_thresholds": {
                     "long_entry": 0.25,  # Increased from 0.25 for stricter entry conditions
-                    "short_entry": -0.878,  # Decreased from -0.25 for stricter entry conditions
+                    "short_entry": -0.4,  # Decreased from -0.25 for stricter entry conditions
                     "exit": 0.0,  # Neutral threshold for exit signals
                     "trend_strength": 0.5,  # Minimum trend strength required
                     "volume_ratio": 1.2,  # Minimum volume ratio required
@@ -164,14 +164,14 @@ def load_config() -> Dict[str, Any]:
                 'max_risk_per_position': 0.05,  # 5% of account balance
                 'min_stop_distance': 0.1,  # 10% minimum stop distance
                 'min_tp_distance': 0.1,  # 10% minimum take profit distance
-                'take_profit_multiplier': 7.0,  # R:R ratio
+                'take_profit_multiplier': 4.0,  # R:R ratio
                 
                 # Stop loss calculation parameters
                 'atr_multiplier': 1.5,  # ATR multiplier for stop loss calculation
                 'volatility_multiplier': 1.5,  # Volatility adjustment factor
                 'trend_multiplier': 1.2,  # Trend strength adjustment factor
                 'base_stop_distance': 0.02,  # Base stop distance (2%)
-                'stop_loss_atr_multiplier': 7.0,  # ATR multiplier for stop loss calculation
+                'stop_loss_atr_multiplier': 4.0,  # ATR multiplier for stop loss calculation
                 
                 # DCA parameters
                 'dca': {

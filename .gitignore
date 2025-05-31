@@ -16,3 +16,6 @@ logs/
 *.pyz
 *.pywz
 *.pyzw
+.venv/
+venv/
+*.bak

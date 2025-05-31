@@ -95,6 +95,15 @@ async def process_symbol(
                     await discord_service.wait_for_trading_resume()
                     continue
 
+                # Check profit target
+                if await strategy.check_profit_target():
+                    # Pause trading through both services
+                    if telegram_service is not None:
+                        telegram_service.pause_trading()
+                    if discord_service is not None:
+                        discord_service.pause_trading()
+                    continue
+
                 # Check health
                 health_status = await health_monitor.check_health()
                 if not health_status:

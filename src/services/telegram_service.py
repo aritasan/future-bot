@@ -216,9 +216,13 @@ class TelegramService(BaseNotificationService):
             self._pause_event.clear()  # Clear the pause event
             await update.message.reply_text("▶️ Bot trading resumed successfully")
             logger.info("Bot trading resumed via Telegram command")
+
+            # Reset profit target tracking
+            if hasattr(self.strategy, 'reset_profit_target'):
+                await self.strategy.reset_profit_target()
         except Exception as e:
             logger.error(f"Error handling unpause command: {str(e)}")
-            await update.message.reply_text("An error occurred while unpausing the bot.")
+            await update.message.reply_text("Error resuming trading. Please try again.")
 
     async def _handle_report_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle the /report command."""

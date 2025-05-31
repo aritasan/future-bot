@@ -30,7 +30,6 @@ class DiscordService(BaseNotificationService):
         self._shutdown_event = asyncio.Event()
         self._event_loop = None
         self._subscribed_users = set()
-        self._trading_paused = False
         self.max_retries = 3
         self.retry_delay = 1.0
         
@@ -120,49 +119,11 @@ class DiscordService(BaseNotificationService):
 
     def is_trading_paused(self) -> bool:
         """Check if trading is paused."""
-        return self._trading_paused
+        return super().is_trading_paused()
 
     async def wait_for_trading_resume(self) -> None:
-        """Wait for trading to be resumed.
-        
-        This method will block until trading is resumed or the service is closed.
-        """
-        if not self._trading_paused:
-            return
-        
-        try:
-            # Create an event to wait for unpause
-            unpause_event = asyncio.Event()
-            
-            # Set up a task to check trading status periodically
-            async def check_trading_status():
-                while self._trading_paused and not self._is_closed:
-                    if not self._trading_paused:
-                        unpause_event.set()
-                        break
-                    await asyncio.sleep(1)
-            
-            # Start the checking task
-            check_task = asyncio.create_task(check_trading_status())
-            
-            # Wait for either unpause or service closure
-            try:
-                await asyncio.wait_for(unpause_event.wait(), timeout=None)
-            except asyncio.CancelledError:
-                logger.info("Wait for trading resume cancelled")
-                raise
-            finally:
-                # Clean up the check task
-                if not check_task.done():
-                    check_task.cancel()
-                    try:
-                        await check_task
-                    except asyncio.CancelledError:
-                        pass
-                        
-        except Exception as e:
-            logger.error(f"Error waiting for trading resume: {str(e)}")
-            raise
+        """Wait for trading to be resumed."""
+        await super().wait_for_trading_resume()
 
     async def handle_command(self, command: str, args: List[str] = None) -> str:
         """
@@ -187,7 +148,7 @@ class DiscordService(BaseNotificationService):
 
     async def _handle_start(self, args: List[str] = None) -> str:
         """Handle /start command."""
-        self._trading_paused = False
+        self.unpause_trading()
         return "Bot started and subscribed to updates."
 
     async def _handle_help(self, args: List[str] = None) -> str:
@@ -201,13 +162,30 @@ class DiscordService(BaseNotificationService):
 
     async def _handle_pause(self, args: List[str] = None) -> str:
         """Handle /pause command."""
-        self._trading_paused = True
-        return "Bot paused."
+        if not self._is_ready:
+            return "Bot is not initialized. Please try again later."
+        
+        if self.is_trading_paused():
+            return "Bot is already paused"
+        
+        self.pause_trading()
+        return "⏸ Bot trading paused successfully\n⚠️ Note: Only new trades are paused. Trailing stops and position management will continue to work."
 
     async def _handle_unpause(self, args: List[str] = None) -> str:
         """Handle /unpause command."""
-        self._trading_paused = False
-        return "Bot unpaused."
+        if not self._is_ready:
+            return "Bot is not initialized. Please try again later."
+        
+        if not self.is_trading_paused():
+            return "Bot is not paused"
+        
+        self.unpause_trading()
+        
+        # Reset profit target tracking if strategy exists
+        if hasattr(self.strategy, 'reset_profit_target'):
+            await self.strategy.reset_profit_target()
+            
+        return "▶️ Bot trading resumed successfully"
 
     async def _handle_balance(self, ctx: commands.Context) -> str:
         """Handle the /balance command."""

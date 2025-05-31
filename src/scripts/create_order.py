@@ -6,6 +6,7 @@ import logging
 import sys
 import os
 from typing import Optional
+from src.services import telegram_service
 
 # Set event loop policy for Windows
 if sys.platform == 'win32':
@@ -16,7 +17,10 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')
 
 from src.core.config import load_config
 from src.services.binance_service import BinanceService
+from src.services.notification_service import NotificationService
 from src.services.telegram_service import TelegramService
+from src.services.discord_service import DiscordService
+
 
 # Configure logging
 logging.basicConfig(
@@ -49,7 +53,10 @@ async def test_place_order(
         
         # Initialize services
         binance_service = BinanceService(config)
-        telegram_service = TelegramService(config)
+        # Initialize notification services based on config
+        telegram_service = TelegramService(config) if config.get('api', {}).get('telegram', {}).get('enabled', True) else None
+        discord_service = DiscordService(config) if config.get('api', {}).get('discord', {}).get('enabled', True) else None
+        notification_service = NotificationService(config, telegram_service, discord_service)
         
         
         # Initialize Binance service
@@ -57,9 +64,6 @@ async def test_place_order(
             logger.error("Failed to initialize Binance service")
             return
             
-        # Set up Telegram service
-        telegram_service.set_binance_service(binance_service)
-        await telegram_service.initialize()
         
         # Prepare order parameters
         order_params = {
@@ -81,7 +85,7 @@ async def test_place_order(
         
         if result:
             logger.info(f"Order placed successfully: {result}")
-            await telegram_service.send_order_notification(result)
+            await notification_service.send_order_notification(result)
         else:
             logger.error("Failed to place order")
             
@@ -90,7 +94,7 @@ async def test_place_order(
     finally:
         # Cleanup
         await binance_service.close()
-        await telegram_service.close()
+        await notification_service.close()
 
 async def main():
     """Main function to run the test."""

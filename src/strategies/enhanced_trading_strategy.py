@@ -45,6 +45,11 @@ class EnhancedTradingStrategy:
         self._last_trailing_stop_update = {}  # Track last trailing stop update time per symbol
         self._trailing_stop_debounce = 60  # Debounce time in seconds
         
+        # Profit target tracking
+        self.initial_balance = None
+        self.profit_target_percentage = 15.0  # 15% profit target
+        self.is_profit_target_reached = False
+        
         # Trading parameters
         self.min_volume_ratio = 1.2  # Tỷ lệ volume tối thiểu so với trung bình
         self.max_volatility_ratio = 2.0  # Tỷ lệ biến động tối đa so với trung bình
@@ -143,6 +148,13 @@ class EnhancedTradingStrategy:
             if not await self.sentiment_service.initialize():
                 logger.error("Failed to initialize sentiment service")
                 return False
+
+            # Get initial balance when bot starts
+            # Get USDT balance
+            account_balance = await self.binance_service.get_account_balance()
+            usdt_balance = account_balance.get('USDT', {}).get('total', 0)
+            self.initial_balance = float(usdt_balance)
+            logger.info(f"Initial balance set to: {self.initial_balance}")
                 
             self._is_initialized = True
             logger.info("Strategy initialized successfully")
@@ -151,7 +163,67 @@ class EnhancedTradingStrategy:
         except Exception as e:
             logger.error(f"Failed to initialize strategy: {str(e)}")
             return False
-            
+
+    async def check_profit_target(self) -> bool:
+        """Check if profit target has been reached.
+        
+        Returns:
+            bool: True if profit target reached, False otherwise
+        """
+        try:
+            if self.initial_balance is None:
+                return False
+
+            # Get USDT balance
+            account_balance = await self.binance_service.get_account_balance()
+            usdt_balance = account_balance.get('USDT', {}).get('total', 0)
+            if not usdt_balance:
+                return False
+
+            current_balance = float(usdt_balance)
+            profit_percentage = ((current_balance - self.initial_balance) / self.initial_balance) * 100
+
+            if profit_percentage >= self.profit_target_percentage and not self.is_profit_target_reached:
+                self.is_profit_target_reached = True
+                logger.info(f"Profit target reached! Current profit: {profit_percentage:.2f}%")
+                
+                # Close all positions
+                positions = await self._get_current_positions()
+                for position in positions:
+                    try:
+                        symbol = position['symbol']
+                        position_type = position['positionSide']
+                        await self.binance_service.close_position(symbol, position_type)
+                        logger.info(f"Closed position for {symbol} {position_type}")
+                    except Exception as e:
+                        logger.error(f"Error closing position for {symbol}: {str(e)}")
+
+                # Send notification
+                await self.notification_service.send_message(
+                    f"🎯 Profit target reached!\n"
+                    f"Initial balance: {self.initial_balance:.2f}\n"
+                    f"Current balance: {current_balance:.2f}\n"
+                    f"Profit: {profit_percentage:.2f}%\n"
+                    f"All positions have been closed. Trading is paused."
+                )
+                return True
+
+            return False
+        except Exception as e:
+            logger.error(f"Error checking profit target: {str(e)}")
+            return False
+
+    async def reset_profit_target(self) -> None:
+        """Reset profit target tracking."""
+        try:
+            account_info = await self.binance_service.get_account_info()
+            if account_info and 'totalWalletBalance' in account_info:
+                self.initial_balance = float(account_info['totalWalletBalance'])
+                self.is_profit_target_reached = False
+                logger.info(f"Profit target tracking reset. New initial balance: {self.initial_balance}")
+        except Exception as e:
+            logger.error(f"Error resetting profit target: {str(e)}")
+
     async def _calculate_position_size(self, symbol: str, risk_per_trade: float, current_price: float) -> Optional[float]:
         """Calculate position size based on risk management."""
         try:
@@ -1374,7 +1446,7 @@ class EnhancedTradingStrategy:
                 if stop_loss <= 0:
                     stop_loss = float(current_price) * 0.02  # Set to 2% of current price as minimum
             else:
-                stop_loss = float(current_price) + (float(atr) * stop_loss_multiplier)
+                stop_loss = float(current_price) + (float(atr) * stop_loss_multiplier/2)
             
             # Get market conditions
             market_conditions = await self._get_market_conditions(symbol)
@@ -1394,7 +1466,7 @@ class EnhancedTradingStrategy:
                     if stop_loss <= 0:
                         stop_loss = float(current_price) * 0.01  # Set to 1% of current price as minimum
                 else:
-                    stop_loss = float(current_price) + (float(atr) * stop_loss_multiplier * 1.5)
+                    stop_loss = float(current_price) + (float(atr) * stop_loss_multiplier * 1.5/2)
             
 
             # Ensure minimum distance from current price
@@ -1426,7 +1498,7 @@ class EnhancedTradingStrategy:
             if is_long_side(position_type):
                 take_profit = current_price + (price_diff * risk_reward_ratio)
             else:
-                take_profit = current_price - (price_diff * risk_reward_ratio/4)
+                take_profit = current_price - (price_diff * risk_reward_ratio/8)
             
             # Ensure minimum distance from current price
             min_distance = float(self.config['risk_management']['min_tp_distance'])
@@ -1435,7 +1507,7 @@ class EnhancedTradingStrategy:
                 take_profit = max(take_profit, current_price * (1 + min_distance))
             else:
                 # For SHORT positions, ensure take profit is below current price
-                take_profit = min(take_profit, current_price * (1 - min_distance))
+                take_profit = min(take_profit, current_price * (1.03 - min_distance))
                 
                 # Additional validation for SHORT positions
                 if take_profit <= 0:
@@ -1443,7 +1515,7 @@ class EnhancedTradingStrategy:
                     take_profit = current_price * 0.5  # 50% below current price
                 elif take_profit >= current_price:
                     # If take profit is above current price, set it to a reasonable percentage below
-                    take_profit = current_price * 0.8  # 20% below current price
+                    take_profit = current_price * 0.9  # 10% below current price
             
             logger.info(f"Calculated take profit for {symbol} {position_type.lower()}: {take_profit} (current price: {current_price})")
             return take_profit
