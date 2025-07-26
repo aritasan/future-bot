@@ -9,19 +9,22 @@ from datetime import datetime
 import time
 import asyncio
 from src.utils.helpers import is_same_symbol, is_same_side, is_long_side
+from src.services.ip_monitor_service import IPMonitorService
 
 logger = logging.getLogger(__name__)
 
 class BinanceService:
     """Service for interacting with Binance exchange."""
     
-    def __init__(self, config: Dict):
+    def __init__(self, config: Dict, notification_callback: Optional[Callable] = None):
         """Initialize the service.
         
         Args:
             config: Configuration dictionary
+            notification_callback: Optional callback for sending notifications
         """
         self.config = config
+        self.notification_callback = notification_callback
         self.exchange = None
         self._is_initialized = False
         self._is_closed = False
@@ -52,6 +55,12 @@ class BinanceService:
         self._ws_data = {}
         self._ws_callbacks = {}
         
+        # IP monitoring
+        self._ip_monitor = None
+        self._ip_monitor_enabled = config.get('ip_monitor', {}).get('enabled', True)
+        self._last_ip_error_time = 0
+        self._ip_error_cooldown = 300  # 5 minutes cooldown between IP error notifications
+        
     async def initialize(self) -> bool:
         """Initialize the Binance service.
         
@@ -61,6 +70,13 @@ class BinanceService:
         try:
             if self._is_initialized:
                 return True
+                
+            # Initialize IP monitor if enabled
+            if self._ip_monitor_enabled:
+                self._ip_monitor = IPMonitorService(self.config, self.notification_callback)
+                await self._ip_monitor.initialize()
+                await self._ip_monitor.start_monitoring()
+                logger.info("IP monitoring initialized and started")
                 
             # Get API credentials based on mode
             use_testnet = self.config['api']['binance']['use_testnet']
@@ -631,6 +647,10 @@ class BinanceService:
     async def close(self):
         """Close the Binance service."""
         try:
+            # Stop IP monitoring
+            if self._ip_monitor:
+                await self._ip_monitor.close()
+                
             # Close all WebSocket connections
             for symbol in list(self._ws_connections.keys()):
                 for channel in list(self._ws_connections[symbol].keys()):
@@ -1002,6 +1022,12 @@ class BinanceService:
             except Exception as e:
                 last_error = e
                 retries += 1
+                
+                # Check for IP-related errors
+                if await self._is_ip_error(e):
+                    await self._handle_ip_error(e)
+                    # Don't retry for IP errors, just return None
+                    return None
                 
                 if '-1021' in str(e):  # Timestamp error
                     logger.warning(f"Timestamp error detected: {str(e)}. Forcing time sync...")
@@ -1483,6 +1509,122 @@ class BinanceService:
         except Exception as e:
             logger.error(f"Error closing position for {symbol} {position_side}: {str(e)}")
             return False
+
+    async def _is_ip_error(self, error: Exception) -> bool:
+        """Check if the error is related to IP whitelist issues.
+        
+        Args:
+            error: Exception to check
+            
+        Returns:
+            bool: True if it's an IP-related error, False otherwise
+        """
+        error_str = str(error).lower()
+        
+        # Common Binance IP-related error codes and messages
+        ip_error_indicators = [
+            '-2015',  # Invalid API-key, IP, or permissions for action
+            '-2014',  # API-key format invalid
+            'ip', 'whitelist', 'unauthorized', 'forbidden',
+            'access denied', 'invalid api', 'permissions'
+        ]
+        
+        return any(indicator in error_str for indicator in ip_error_indicators)
+        
+    async def _handle_ip_error(self, error: Exception) -> None:
+        """Handle IP-related errors by sending notifications and checking IP.
+        
+        Args:
+            error: The IP-related error
+        """
+        try:
+            current_time = time.time()
+            
+            # Check if we should send notification (avoid spam)
+            if current_time - self._last_ip_error_time < self._ip_error_cooldown:
+                logger.warning(f"IP error detected but notification cooldown active: {str(error)}")
+                return
+                
+            self._last_ip_error_time = current_time
+            
+            logger.error(f"IP-related error detected: {str(error)}")
+            
+            # Get current IP
+            current_ip = None
+            if self._ip_monitor:
+                current_ip = await self._ip_monitor.get_current_ip()
+            else:
+                # Fallback: create temporary IP monitor to get current IP
+                temp_monitor = IPMonitorService(self.config)
+                await temp_monitor.initialize()
+                current_ip = await temp_monitor.get_current_ip()
+                await temp_monitor.close()
+                
+            if current_ip:
+                await self._send_ip_error_notification(error, current_ip)
+            else:
+                logger.error("Failed to get current IP address for notification")
+                
+        except Exception as e:
+            logger.error(f"Error handling IP error: {str(e)}")
+            
+    async def _send_ip_error_notification(self, error: Exception, current_ip: str) -> None:
+        """Send IP error notification.
+        
+        Args:
+            error: The IP-related error
+            current_ip: Current IP address
+        """
+        try:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            message = f"""
+🚨 **BINANCE API IP ERROR DETECTED** 🚨
+
+**Time:** {timestamp}
+**Error:** {str(error)}
+**Current IP:** {current_ip}
+
+⚠️ **Action Required:**
+1. Log into your Binance account
+2. Go to API Management
+3. Add this IP address to whitelist: **{current_ip}**
+4. Ensure API key has proper permissions
+
+🔗 **Quick Links:**
+• Binance API Management: https://www.binance.com/en/my/settings/api-management
+• IP Check: https://whatismyipaddress.com/
+
+The bot will resume trading once the IP is whitelisted.
+"""
+            
+            if self.notification_callback:
+                await self.notification_callback(message)
+            else:
+                logger.warning(f"IP error detected but no notification callback available: {message}")
+                
+        except Exception as e:
+            logger.error(f"Error sending IP error notification: {str(e)}")
+            
+    async def get_current_ip(self) -> Optional[str]:
+        """Get current IP address.
+        
+        Returns:
+            Optional[str]: Current IP address or None if not available
+        """
+        if self._ip_monitor:
+            return await self._ip_monitor.get_current_ip()
+        return None
+        
+    async def force_ip_check(self) -> Optional[str]:
+        """Force an IP check and return current IP.
+        
+        Returns:
+            Optional[str]: Current IP address or None if not available
+        """
+        if self._ip_monitor:
+            return await self._ip_monitor.force_ip_check()
+        return None
 
     async def get_all_future_symbols(self) -> Optional[List[str]]:
         """Get all available future trading pairs from Binance.

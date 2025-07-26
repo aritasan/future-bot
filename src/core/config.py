@@ -166,6 +166,19 @@ def load_config() -> Dict[str, Any]:
                 'min_tp_distance': 0.1,  # 10% minimum take profit distance
                 'take_profit_multiplier': 4.0,  # R:R ratio
                 
+                # IP monitoring configuration
+                'ip_monitor': {
+                    'enabled': os.getenv('IP_MONITOR_ENABLED', 'true').lower() == 'true',
+                    'check_interval': int(os.getenv('IP_MONITOR_CHECK_INTERVAL', '300')),  # 5 minutes
+                    'notification_cooldown': int(os.getenv('IP_MONITOR_NOTIFICATION_COOLDOWN', '300')),  # 5 minutes
+                    'ip_services': [
+                        'https://api.ipify.org',
+                        'https://httpbin.org/ip',
+                        'https://ipinfo.io/ip',
+                        'https://icanhazip.com'
+                    ]
+                },
+                
                 # Stop loss calculation parameters
                 'atr_multiplier': 1.5,  # ATR multiplier for stop loss calculation
                 'volatility_multiplier': 1.5,  # Volatility adjustment factor

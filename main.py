@@ -276,16 +276,23 @@ async def main():
         signal.signal(signal.SIGTERM, signal_handler)
 
         # Create service instances
-        binance_service = BinanceService(config)
-        telegram_service = TelegramService(config) if config.get('api', {}).get('telegram', {}).get('enabled', True) else None
-        discord_service = DiscordService(config) if config.get('api', {}).get('discord', {}).get('enabled', True) else None
-        health_monitor = HealthMonitor(config)
-        indicator_service = IndicatorService(config)
         notification_service = NotificationService(
             config=config,
-            telegram_service=telegram_service,
-            discord_service=discord_service
+            telegram_service=None,  # Will be set after creation
+            discord_service=None    # Will be set after creation
         )
+        
+        telegram_service = TelegramService(config) if config.get('api', {}).get('telegram', {}).get('enabled', True) else None
+        discord_service = DiscordService(config) if config.get('api', {}).get('discord', {}).get('enabled', True) else None
+        
+        # Update notification service with actual service instances
+        notification_service.telegram_service = telegram_service
+        notification_service.discord_service = discord_service
+        
+        # Create binance service with notification callback
+        binance_service = BinanceService(config, notification_service.send_message)
+        health_monitor = HealthMonitor(config)
+        indicator_service = IndicatorService(config)
         strategy = EnhancedTradingStrategy(
             config=config,
             binance_service=binance_service,
