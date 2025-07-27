@@ -35,6 +35,11 @@ class IPMonitorService:
         self._is_running = False
         self._monitor_task = None
         
+        # Track IP change notifications to avoid spam
+        self._last_notified_ip = None
+        self._last_notification_time = 0
+        self._notification_cooldown = config.get('ip_monitor', {}).get('notification_cooldown', 300)  # 5 minutes
+        
     async def initialize(self) -> bool:
         """Initialize the IP monitor service."""
         try:
@@ -98,9 +103,19 @@ class IPMonitorService:
                 
             self._last_check_time = current_time
             
+            # Only send notification if IP actually changed and we haven't notified for this IP recently
             if self._current_ip and new_ip != self._current_ip:
                 logger.warning(f"IP address changed from {self._current_ip} to {new_ip}")
-                await self._handle_ip_change(self._current_ip, new_ip)
+                
+                # Check if we should send notification (avoid spam)
+                should_notify = await self._should_send_notification(new_ip, current_time)
+                
+                if should_notify:
+                    await self._handle_ip_change(self._current_ip, new_ip)
+                    self._last_notified_ip = new_ip
+                    self._last_notification_time = current_time
+                else:
+                    logger.info(f"IP changed to {new_ip} but notification skipped (already notified or cooldown active)")
                 
             self._current_ip = new_ip
             
@@ -139,6 +154,31 @@ class IPMonitorService:
         except:
             return False
             
+    async def _should_send_notification(self, new_ip: str, current_time: float) -> bool:
+        """Check if we should send notification for this IP change.
+        
+        Args:
+            new_ip: The new IP address
+            current_time: Current timestamp
+            
+        Returns:
+            bool: True if notification should be sent, False otherwise
+        """
+        # If this is the first time we're seeing this IP, always notify
+        if self._last_notified_ip is None:
+            return True
+            
+        # If this is a different IP than the last one we notified about, notify
+        if new_ip != self._last_notified_ip:
+            return True
+            
+        # If it's the same IP but enough time has passed since last notification, notify
+        if current_time - self._last_notification_time > self._notification_cooldown:
+            return True
+            
+        # Otherwise, don't notify (avoid spam)
+        return False
+        
     async def _handle_ip_change(self, old_ip: str, new_ip: str) -> None:
         """Handle IP address change."""
         try:

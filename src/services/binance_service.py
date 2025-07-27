@@ -60,6 +60,7 @@ class BinanceService:
         self._ip_monitor_enabled = config.get('ip_monitor', {}).get('enabled', True)
         self._last_ip_error_time = 0
         self._ip_error_cooldown = 300  # 5 minutes cooldown between IP error notifications
+        self._last_notified_ip_error = None  # Track last IP that caused error notification
         
     async def initialize(self) -> bool:
         """Initialize the Binance service.
@@ -1540,16 +1541,7 @@ class BinanceService:
         try:
             current_time = time.time()
             
-            # Check if we should send notification (avoid spam)
-            if current_time - self._last_ip_error_time < self._ip_error_cooldown:
-                logger.warning(f"IP error detected but notification cooldown active: {str(error)}")
-                return
-                
-            self._last_ip_error_time = current_time
-            
-            logger.error(f"IP-related error detected: {str(error)}")
-            
-            # Get current IP
+            # Get current IP first
             current_ip = None
             if self._ip_monitor:
                 current_ip = await self._ip_monitor.get_current_ip()
@@ -1560,14 +1552,49 @@ class BinanceService:
                 current_ip = await temp_monitor.get_current_ip()
                 await temp_monitor.close()
                 
-            if current_ip:
-                await self._send_ip_error_notification(error, current_ip)
-            else:
+            if not current_ip:
                 logger.error("Failed to get current IP address for notification")
+                return
+                
+            # Check if we should send notification (avoid spam)
+            should_notify = await self._should_send_ip_error_notification(current_ip, current_time)
+            
+            if should_notify:
+                logger.error(f"IP-related error detected: {str(error)}")
+                await self._send_ip_error_notification(error, current_ip)
+                self._last_notified_ip_error = current_ip
+                self._last_ip_error_time = current_time
+            else:
+                logger.warning(f"IP error detected but notification skipped (already notified for IP {current_ip} or cooldown active): {str(error)}")
                 
         except Exception as e:
             logger.error(f"Error handling IP error: {str(e)}")
             
+    async def _should_send_ip_error_notification(self, current_ip: str, current_time: float) -> bool:
+        """Check if we should send IP error notification.
+        
+        Args:
+            current_ip: Current IP address
+            current_time: Current timestamp
+            
+        Returns:
+            bool: True if notification should be sent, False otherwise
+        """
+        # If this is the first time we're seeing this IP error, always notify
+        if self._last_notified_ip_error is None:
+            return True
+            
+        # If this is a different IP than the last one we notified about, notify
+        if current_ip != self._last_notified_ip_error:
+            return True
+            
+        # If it's the same IP but enough time has passed since last notification, notify
+        if current_time - self._last_ip_error_time > self._ip_error_cooldown:
+            return True
+            
+        # Otherwise, don't notify (avoid spam)
+        return False
+        
     async def _send_ip_error_notification(self, error: Exception, current_ip: str) -> None:
         """Send IP error notification.
         
