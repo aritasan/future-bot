@@ -14,7 +14,7 @@ ATR_PERIOD = int(os.getenv("ATR_PERIOD", "14"))
 MAX_ORDERS_PER_SYMBOL = int(os.getenv("MAX_ORDERS_PER_SYMBOL", "3"))
 
 # Position sizing parameters
-RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", "0.02"))  # 2% risk per trade
+RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", "0.005"))  # 2% risk per trade
 
 # Technical analysis parameters
 MIN_VOLUME_RATIO = float(os.getenv("MIN_VOLUME_RATIO", "1.2"))
@@ -150,7 +150,7 @@ def load_config() -> Dict[str, Any]:
                 'leverage': DEFAULT_LEVERAGE,
                 "signal_thresholds": {
                     "long_entry": 0.25,  # Increased from 0.25 for stricter entry conditions
-                    "short_entry": -0.4,  # Decreased from -0.25 for stricter entry conditions
+                    "short_entry": -0.55,  # Decreased from -0.25 for stricter entry conditions
                     "exit": 0.0,  # Neutral threshold for exit signals
                     "trend_strength": 0.5,  # Minimum trend strength required
                     "volume_ratio": 1.2,  # Minimum volume ratio required
