@@ -1237,45 +1237,6 @@ class EnhancedTradingStrategy:
             elif regime_analysis.get('correlation_regime') == 'LOW_CORRELATION':
                 market_adjustment += 5  # Higher threshold in low correlation
             
-            # Adjust threshold based on market regime
-            if regime_analysis['regime'] == 'TREND_ACCELERATION':
-                if is_long_side(position_type) and regime_analysis.get('trend_regime') == 'BULLISH':
-                    market_adjustment -= 15  # Strong bullish trend for longs
-                elif is_short_side(position_type) and regime_analysis.get('trend_regime') == 'BEARISH':
-                    market_adjustment -= 15  # Strong bearish trend for shorts
-            elif regime_analysis['regime'] == 'TREND_DECELERATION':
-                market_adjustment += 10  # Higher threshold in decelerating trend
-                
-            # Adjust threshold based on market breadth
-            if breadth_analysis['breadth'] == 'BULLISH' and is_long_side(position_type):
-                market_adjustment -= (5 + breadth_strength * 0.1)  # Adjust based on breadth strength
-            elif breadth_analysis['breadth'] == 'BEARISH' and is_short_side(position_type):
-                market_adjustment -= (5 + breadth_strength * 0.1)  # Adjust based on breadth strength
-                
-            # Adjust threshold based on market momentum
-            if momentum_analysis['momentum'] == 'BULLISH' and is_long_side(position_type):
-                market_adjustment -= (5 + momentum_strength * 0.15)  # Adjust based on momentum strength
-            elif momentum_analysis['momentum'] == 'BEARISH' and is_short_side(position_type):
-                market_adjustment -= (5 + momentum_strength * 0.15)  # Adjust based on momentum strength
-                
-            # Adjust threshold based on market liquidity
-            if liquidity_analysis['liquidity'] == 'LOW':
-                market_adjustment += 15  # Higher threshold in low liquidity
-            elif liquidity_analysis['liquidity'] == 'HIGH':
-                market_adjustment -= 5  # Lower threshold in high liquidity
-                
-            # Additional adjustment based on volatility regime
-            if regime_analysis.get('volatility_regime') == 'HIGH_VOLATILITY':
-                market_adjustment += 10  # Higher threshold in high volatility
-            elif regime_analysis.get('volatility_regime') == 'LOW_VOLATILITY':
-                market_adjustment -= 5  # Lower threshold in low volatility
-                
-            # Additional adjustment based on correlation regime
-            if regime_analysis.get('correlation_regime') == 'HIGH_CORRELATION':
-                market_adjustment -= 5  # Lower threshold in high correlation
-            elif regime_analysis.get('correlation_regime') == 'LOW_CORRELATION':
-                market_adjustment += 5  # Higher threshold in low correlation
-            
             # Adjust threshold based on BTC trend
             btc_trend = await self._get_market_trend('BTCUSDT')
             if is_trending_up(btc_trend) and is_long_side(position_type):
@@ -2042,7 +2003,6 @@ class EnhancedTradingStrategy:
                     mfi_sentiment = sentiment_analysis.get('mfi_sentiment', 'neutral')
                     obv_sentiment = sentiment_analysis.get('obv_sentiment', 'neutral')
                     trend_strength = sentiment_analysis.get('trend_strength', 'weak')
-                    # overall_sentiment = sentiment_analysis.get('overall_sentiment', 'neutral')
                     
                     # Calculate sentiment score
                     sentiment_score = self._calculate_sentiment_score(sentiment_analysis, position_side)
@@ -2425,15 +2385,17 @@ class EnhancedTradingStrategy:
             current_time = time.time()
             cache_key = "btc_volatility"
             
-            if cache_key in self._cache:
-                cached_data, timestamp = self._cache[cache_key]
-                if current_time - timestamp < self._cache_ttl:
-                    return cached_data
+            # Get cached data using LRU cache get method
+            cached_data = self._cache.get(cache_key)
+            if cached_data is not None:
+                data, timestamp = cached_data
+                if current_time - timestamp < self._cache_ttl.get('btc_volatility', 600):
+                    return data
             
             # Calculate fresh analysis
             analysis = await self._calculate_btc_volatility()
             if analysis:
-                self._cache[cache_key] = (analysis, current_time)
+                self._cache.put(cache_key, (analysis, current_time))
                 self._last_update[cache_key] = current_time
             return analysis
             
@@ -2966,163 +2928,6 @@ class EnhancedTradingStrategy:
         except Exception as e:
             logging.error(f"Error calculating correlation for {symbol}: {str(e)}")
             return self._get_default_correlation()
-    
-    async def _handle_dca(self, symbol: str, position: Dict) -> Optional[Dict]:
-        """Handle DCA for a position.
-        
-        Args:
-            symbol: Trading pair symbol
-            position: Position details
-            
-        Returns:
-            Optional[Dict]: DCA details if successful, None otherwise
-        """
-        try:
-            logger.info(f"_handle_dca: Starting DCA process for {symbol}")
-            
-            # Get current price and position details
-            current_price = await self.binance_service.get_current_price(symbol)
-            if not current_price:
-                logger.error(f"_handle_dca: Failed to get current price for {symbol}")
-                return None
-                
-            position_type = position.get('side', 'LONG')
-            entry_price = float(position.get('entryPrice', 0))
-            
-            # Calculate price drop
-            price_drop = (current_price - entry_price) / entry_price * 100
-                
-            # Get market conditions
-            market_conditions = await self._get_market_conditions(symbol)
-            if not market_conditions:
-                logger.error(f"_handle_dca: Failed to get market conditions for {symbol}")
-                return None
-                
-            # Check DCA limits
-            if not self._check_dca_limits(symbol, position_type):
-                logger.info(f"_handle_dca: DCA limits reached for {symbol}")
-                return None
-                
-            # Check if DCA is favorable
-            if not self._is_dca_favorable(symbol, price_drop, market_conditions, position_type):
-                logger.info(f"_handle_dca: DCA conditions not favorable for {symbol} {position_type}")
-                return None
-                
-            # Calculate DCA size
-            current_size = abs(float(position.get('info', {}).get('positionAmt', 0)))
-            dca_size = await self._calculate_dca_size(symbol, current_size, price_drop, position_type)
-            if not dca_size:
-                logger.error(f"_handle_dca: Failed to calculate DCA size for {symbol}")
-                return None
-                
-            logger.info(f"_handle_dca: Calculated DCA size {dca_size} for {symbol}")
-            
-            # Prepare order parameters
-            order_params = {
-                'symbol': symbol,
-                'side': 'BUY' if is_long_side(position_type) else 'SELL',
-                'type': 'MARKET',
-                'amount': dca_size
-            }
-            
-            # Place DCA order
-            max_retries = 3
-            for attempt in range(max_retries):
-                try:
-                    logger.info(f"_handle_dca: Attempting to place DCA order for {symbol} (attempt {attempt + 1})")
-                    order = await self.binance_service.place_order(order_params)
-                    if not order:
-                        logger.error(f"_handle_dca: Failed to place DCA order for {symbol} - no order returned")
-                        continue
-                        
-                    logger.info(f"_handle_dca: DCA order placed successfully for {symbol}: {order.get('id')}")
-                    
-                    # Calculate new stop loss and take profit
-                    logger.info(f"_handle_dca: Calculating new stop loss and take profit for {symbol}")
-                    atr = await self.indicator_service.calculate_atr(symbol)
-                    if not atr:
-                        logger.error(f"_handle_dca: Failed to calculate ATR for {symbol}")
-                        
-                    new_stop_loss = await self._calculate_stop_loss(symbol, position_type, current_price, atr)
-                    new_take_profit = await self._calculate_take_profit(symbol, position_type, current_price, new_stop_loss)
-                        
-                    logger.info(f"_handle_dca: New stop loss: {new_stop_loss}, take profit: {new_take_profit} for {symbol}")
-                    
-                    # Update stop loss
-                    logger.info(f"_handle_dca: Updating stop loss for {symbol} to {new_stop_loss}")
-                    if await self._update_stop_loss(symbol, new_stop_loss, position_type, True):
-                        logger.info(f"_handle_dca: Stop loss updated successfully for {symbol}")
-                    else:
-                        logger.error(f"_handle_dca: Failed to update stop loss for {symbol}")
-                        
-                    # Update take profit
-                    logger.info(f"_handle_dca: Updating take profit for {symbol} to {new_take_profit}")
-                    if await self._update_take_profit(symbol, new_take_profit, position_type, True):
-                        logger.info(f"_handle_dca: Take profit updated successfully for {symbol}")
-                    else:
-                        logger.error(f"_handle_dca: Failed to update take profit for {symbol}")
-                    
-                    # Send notification
-                    logger.info(f"_handle_dca: Sending DCA notification for {symbol}")
-                    try:
-                        await self.notification_service.send_dca_notification({
-                            'symbol': symbol,
-                            'dca_amount': dca_size,
-                            'new_entry_price': current_price,
-                            'price_drop': price_drop,
-                            'order_id': order.get('id', 'N/A'),
-                            'position_type': position_type
-                        })
-                        logger.info(f"_handle_dca: DCA notification sent successfully for {symbol}")
-                    except Exception as e:
-                        logger.error(f"_handle_dca: Failed to send DCA notification for {symbol}: {str(e)}")
-                    
-                    # Create DCA history entry
-                    dca_history_entry = {
-                        'timestamp': datetime.now().isoformat(),
-                        'order_id': order.get('id'),
-                        'dca_amount': dca_size,
-                        'entry_price': current_price,
-                        'price_drop': price_drop,
-                        'position_type': position_type,
-                        'stop_loss': new_stop_loss,
-                        'take_profit': new_take_profit,
-                        'market_conditions': {
-                            'volatility': market_conditions.get('volatility', 0),
-                            'trend': market_conditions.get('btc_trend', 'NEUTRAL'),
-                            'volume': market_conditions.get('volume', 0)
-                        }
-                    }
-                    
-                    # Update DCA history
-                    if symbol not in self._dca_history:
-                        self._dca_history[symbol] = []
-                    self._dca_history[symbol].append(dca_history_entry)
-                    
-                    return {
-                        'order_id': order.get('id'),
-                        'dca_amount': dca_size,
-                        'new_entry_price': current_price,
-                        'price_drop': price_drop,
-                        'position_type': position_type,
-                        'dca_history': self._dca_history[symbol]
-                    }
-                    
-                except Exception as e:
-                    logger.error(f"_handle_dca: Error in DCA process for {symbol} (attempt {attempt + 1}): {str(e)}")
-                    if attempt < max_retries - 1:
-                        await asyncio.sleep(1)
-                    else:
-                        logger.error(f"_handle_dca: All DCA attempts failed for {symbol}")
-                        return None
-                        
-            return None
-            
-        except Exception as e:
-            import traceback
-            logger.error(f"Traceback:\n{traceback.format_exc()}")
-            logger.error(f"_handle_dca: Unexpected error in DCA process for {symbol}: {str(e)}")
-            return None
 
     def _is_dca_favorable(self, symbol: str, price_change: float, market_conditions: Dict, position_type: str) -> bool:
         """Check if DCA conditions are favorable.
@@ -3758,7 +3563,6 @@ class EnhancedTradingStrategy:
             self._is_running = True
             self._monitoring_tasks = [
                 asyncio.create_task(self._monitor_positions()),
-                asyncio.create_task(self._monitor_dca()),
                 asyncio.create_task(self._monitor_trailing_stops())
             ]
             logger.info("Monitoring tasks started successfully")
@@ -3820,28 +3624,6 @@ class EnhancedTradingStrategy:
                                     
         except Exception as e:
             logger.error(f"Error monitoring positions: {str(e)}")
-            
-    async def _monitor_dca(self) -> None:
-        """Monitor positions for DCA opportunities."""
-        try:
-            positions = await self.binance_service.get_positions()
-            if not positions:
-                return
-                
-            for position in positions:
-                if position and float(position.get('contracts', 0)) > 0:
-                    symbol = position.get('symbol')
-                    if symbol:
-                        # Check if the position is in loss (for DCA, we want to DCA when in loss)
-                        unrealized_pnl = float(position.get('unrealizedPnl', 0))
-                        if unrealized_pnl > 0:
-                            continue  # Skip this position but continue with others
-                            
-                        await self._handle_dca(symbol, position)
-                        
-                        
-        except Exception as e:
-            logger.error(f"Error monitoring DCA: {str(e)}")
             
     async def _monitor_trailing_stops(self) -> None:
         """Monitor and update trailing stops for all positions."""
@@ -4186,13 +3968,6 @@ class EnhancedTradingStrategy:
                         logger.error(f"_manage_existing_position: Failed to update take profit for {symbol} {position['info']['positionSide']}")
                     
                     
-            # Check for DCA opportunity
-            dca_result = await self._handle_dca(symbol, position)
-            if dca_result:
-                # DCA was executed, update position tracking
-                self._last_dca_time[symbol] = time.time()
-                self._dca_history[symbol] = dca_result.get('dca_history', [])
-                
             # Update trailing stop if needed
             if await self._update_trailing_stop(symbol, position['info']['positionSide']):
                 # Trailing stop was updated, no need for further action
@@ -4204,7 +3979,7 @@ class EnhancedTradingStrategy:
     def _calculate_volume_score(self, df: pd.DataFrame, position_type: str) -> float:
         """Calculate volume score based on volume conditions and position type."""
         try:
-            if df is None or df.empty:
+            if df is None or not hasattr(df, 'empty') or df.empty:
                 logger.warning("Empty DataFrame provided for volume score calculation")
                 return 0.0
                 
@@ -4275,7 +4050,7 @@ class EnhancedTradingStrategy:
             float: Volatility score between -1 and 1
         """
         try:
-            if not btc_volatility:
+            if not btc_volatility or not isinstance(btc_volatility, dict):
                 return 0.0
                 
             # Get base volatility score
@@ -4365,7 +4140,7 @@ class EnhancedTradingStrategy:
             float: Sentiment score between -1 and 1
         """
         try:
-            if not sentiment:
+            if not sentiment or not isinstance(sentiment, dict):
                 return 0.0
                 
             # Get individual sentiment indicators
@@ -4441,7 +4216,7 @@ class EnhancedTradingStrategy:
     def _calculate_structure_score(self, market_structure: Dict, position_type: str) -> float:
         """Calculate structure score based on market structure and position type."""
         try:
-            if not market_structure:
+            if not market_structure or not isinstance(market_structure, dict):
                 return 0.0
                 
             # Get the main timeframe (5m) structure
@@ -4539,7 +4314,7 @@ class EnhancedTradingStrategy:
     def _calculate_funding_rate_score(self, funding_rate: float, position_type: str) -> float:
         """Calculate funding rate score based on funding rate and position type."""
         try:
-            if funding_rate == 0:
+            if not isinstance(funding_rate, (float, int)):
                 return 0.0
                 
             if is_long_side(position_type):
@@ -4566,7 +4341,7 @@ class EnhancedTradingStrategy:
     def _calculate_open_interest_score(self, open_interest: float, position_type: str) -> float:
         """Calculate open interest score based on OI value and position type."""
         try:
-            if open_interest == 0:
+            if not isinstance(open_interest, (float, int)):
                 return 0.0
                 
             # Normalize open interest to a score between -1 and 1
@@ -4588,7 +4363,7 @@ class EnhancedTradingStrategy:
     def _calculate_order_book_score(self, order_book: Dict, position_type: str) -> float:
         """Calculate order book score based on order book depth and position type."""
         try:
-            if not isinstance(order_book, dict) or not order_book:
+            if not order_book or not isinstance(order_book, dict):
                 return 0.0
                 
             bid_depth = order_book.get('bid_depth', 0)
@@ -5182,7 +4957,7 @@ class EnhancedTradingStrategy:
     def _calculate_timeframe_score(self, timeframe_data: Dict, position_type: str) -> float:
         """Calculate timeframe score based on trend and strength."""
         try:
-            if not timeframe_data:
+            if not timeframe_data or not isinstance(timeframe_data, dict):
                 return 0.0
                 
             # Get trend and strength from timeframes
@@ -6314,4 +6089,3 @@ class EnhancedTradingStrategy:
                 
         except Exception as e:
             logger.error(f"Error in adaptive rate limiting: {str(e)}")
-
