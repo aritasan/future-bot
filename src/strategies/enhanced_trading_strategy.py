@@ -3,7 +3,7 @@ Enhanced trading strategy implementation.
 """
 
 import logging
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Any
 import pandas as pd
 import numpy as np
 import time
@@ -11,7 +11,16 @@ import asyncio
 from datetime import datetime
 import json
 import os
+import sys
+import psutil
+import gc
+from collections import OrderedDict
 
+# Set event loop policy for Windows
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+from src.core.config import load_config
 from src.services.indicator_service import IndicatorService
 from src.services.sentiment_service import SentimentService
 from src.services.binance_service import BinanceService
@@ -20,6 +29,255 @@ from src.utils.helpers import is_long_side, is_short_side, is_trending_down,\
     is_trending_up
 
 logger = logging.getLogger(__name__)
+
+class LRUCache:
+    """LRU Cache implementation for memory optimization."""
+    
+    def __init__(self, maxsize: int = 1000):
+        self.maxsize = maxsize
+        self.cache = OrderedDict()
+        self._access_count = {}
+        self._last_access = {}
+        
+    def get(self, key: str) -> Optional[Any]:
+        """Get item from cache with access tracking."""
+        if key in self.cache:
+            # Move to end (most recently used)
+            self.cache.move_to_end(key)
+            self._access_count[key] = self._access_count.get(key, 0) + 1
+            self._last_access[key] = time.time()
+            return self.cache[key]
+        return None
+        
+    def put(self, key: str, value: Any) -> None:
+        """Put item in cache with size management."""
+        if key in self.cache:
+            # Update existing item
+            self.cache.move_to_end(key)
+        else:
+            # Check if cache is full
+            if len(self.cache) >= self.maxsize:
+                # Remove least recently used item
+                lru_key = next(iter(self.cache))
+                del self.cache[lru_key]
+                if lru_key in self._access_count:
+                    del self._access_count[lru_key]
+                if lru_key in self._last_access:
+                    del self._last_access[lru_key]
+        
+        self.cache[key] = value
+        self._access_count[key] = 1
+        self._last_access[key] = time.time()
+        
+    def clear_expired(self, ttl: int) -> int:
+        """Clear expired items based on TTL."""
+        current_time = time.time()
+        expired_keys = []
+        
+        for key, access_time in self._last_access.items():
+            if current_time - access_time > ttl:
+                expired_keys.append(key)
+        
+        for key in expired_keys:
+            del self.cache[key]
+            del self._access_count[key]
+            del self._last_access[key]
+            
+        return len(expired_keys)
+        
+    def get_stats(self) -> Dict:
+        """Get cache statistics."""
+        return {
+            'size': len(self.cache),
+            'maxsize': self.maxsize,
+            'usage_percent': (len(self.cache) / self.maxsize) * 100,
+            'avg_access_count': sum(self._access_count.values()) / len(self._access_count) if self._access_count else 0
+        }
+    
+    def clear(self) -> None:
+        """Clear all cache entries."""
+        self.cache.clear()
+        self._access_count.clear()
+        self._last_access.clear()
+
+class MemoryMonitor:
+    """Monitor memory usage and provide optimization suggestions."""
+    
+    def __init__(self):
+        self.memory_history = []
+        self.peak_memory = 0
+        self.last_cleanup = time.time()
+        
+    def get_memory_usage(self) -> Dict:
+        """Get current memory usage statistics."""
+        try:
+            process = psutil.Process()
+            memory_info = process.memory_info()
+            
+            current_memory = memory_info.rss / 1024 / 1024  # MB
+            self.memory_history.append({
+                'timestamp': time.time(),
+                'memory_mb': current_memory,
+                'memory_percent': process.memory_percent()
+            })
+            
+            # Keep only last 100 entries
+            if len(self.memory_history) > 100:
+                self.memory_history = self.memory_history[-100:]
+                
+            self.peak_memory = max(self.peak_memory, current_memory)
+            
+            return {
+                'current_mb': current_memory,
+                'peak_mb': self.peak_memory,
+                'percent': process.memory_percent(),
+                'available_mb': psutil.virtual_memory().available / 1024 / 1024
+            }
+        except Exception as e:
+            logger.error(f"Error getting memory usage: {str(e)}")
+            return {
+                'current_mb': 0,
+                'peak_mb': 0,
+                'percent': 0,
+                'available_mb': 0
+            }
+        
+    def should_cleanup(self) -> bool:
+        """Determine if memory cleanup is needed."""
+        memory_usage = self.get_memory_usage()
+        time_since_cleanup = time.time() - self.last_cleanup
+        
+        # Cleanup if memory usage is high or it's been a while
+        return (memory_usage['percent'] > 80 or 
+                memory_usage['current_mb'] > 1000 or 
+                time_since_cleanup > 300)  # 5 minutes
+        
+    def suggest_optimizations(self) -> List[str]:
+        """Suggest memory optimizations based on usage patterns."""
+        suggestions = []
+        memory_usage = self.get_memory_usage()
+        
+        if memory_usage['percent'] > 80:
+            suggestions.append("High memory usage detected - consider reducing cache size")
+        if memory_usage['current_mb'] > 1000:
+            suggestions.append("Memory usage over 1GB - enable aggressive cleanup")
+        if len(self.memory_history) > 50:
+            # Check for memory leaks
+            recent_avg = sum(entry['memory_mb'] for entry in self.memory_history[-10:]) / 10
+            older_avg = sum(entry['memory_mb'] for entry in self.memory_history[-50:-40]) / 10
+            if recent_avg > older_avg * 1.2:
+                suggestions.append("Potential memory leak detected - check for circular references")
+                
+        return suggestions
+
+class PerformanceAlert:
+    """Alert system for performance monitoring."""
+    
+    def __init__(self, notification_service: NotificationService):
+        self.notification_service = notification_service
+        self.alert_thresholds = {
+            'processing_time': 2.0,  # seconds
+            'memory_usage': 80,      # percent
+            'cache_hit_rate': 30,    # percent
+            'api_error_rate': 10     # percent
+        }
+        self.alert_history = []
+        
+    async def check_performance_alerts(self, metrics: Dict) -> List[str]:
+        """Check for performance alerts and send notifications."""
+        alerts = []
+        
+        # Check processing time
+        if metrics.get('avg_processing_time', 0) > self.alert_thresholds['processing_time']:
+            alert_msg = f"High processing time: {metrics['avg_processing_time']:.2f}s"
+            alerts.append(alert_msg)
+            await self._send_alert(alert_msg)
+            
+        # Check memory usage
+        if metrics.get('memory_percent', 0) > self.alert_thresholds['memory_usage']:
+            alert_msg = f"High memory usage: {metrics['memory_percent']:.1f}%"
+            alerts.append(alert_msg)
+            await self._send_alert(alert_msg)
+            
+        # Check cache hit rate
+        if metrics.get('cache_hit_rate', 0) < self.alert_thresholds['cache_hit_rate']:
+            alert_msg = f"Low cache hit rate: {metrics['cache_hit_rate']:.1f}%"
+            alerts.append(alert_msg)
+            await self._send_alert(alert_msg)
+            
+        # Check API error rate
+        total_calls = metrics.get('api_calls', 0) + metrics.get('api_errors', 0)
+        if total_calls > 0:
+            error_rate = (metrics.get('api_errors', 0) / total_calls) * 100
+            if error_rate > self.alert_thresholds['api_error_rate']:
+                alert_msg = f"High API error rate: {error_rate:.1f}%"
+                alerts.append(alert_msg)
+                await self._send_alert(alert_msg)
+                
+        return alerts
+        
+    async def _send_alert(self, message: str) -> None:
+        """Send performance alert."""
+        try:
+            await self.notification_service.send_notification(
+                f"🚨 PERFORMANCE ALERT: {message}",
+                priority="high"
+            )
+        except Exception as e:
+            logger.error(f"Failed to send performance alert: {str(e)}")
+
+class AdaptiveCacheOptimizer:
+    """Adaptive cache optimization based on usage patterns."""
+    
+    def __init__(self):
+        self.usage_patterns = {}
+        self.optimization_history = []
+        
+    def analyze_usage_pattern(self, cache_key: str, access_count: int, ttl: int) -> Dict:
+        """Analyze cache usage pattern and suggest optimizations."""
+        pattern = self.usage_patterns.get(cache_key, {
+            'access_count': 0,
+            'avg_ttl': ttl,
+            'last_optimization': time.time()
+        })
+        
+        # Update pattern
+        pattern['access_count'] = access_count
+        pattern['last_access'] = time.time()
+        
+        # Calculate optimal TTL based on access frequency
+        if access_count > 10:  # High usage
+            optimal_ttl = min(ttl * 1.5, 1800)  # Increase TTL, max 30 minutes
+        elif access_count < 3:  # Low usage
+            optimal_ttl = max(ttl * 0.7, 60)    # Decrease TTL, min 1 minute
+        else:
+            optimal_ttl = ttl  # Keep current TTL
+            
+        self.usage_patterns[cache_key] = pattern
+        
+        return {
+            'current_ttl': ttl,
+            'optimal_ttl': optimal_ttl,
+            'suggested_change': optimal_ttl - ttl,
+            'reason': 'high_usage' if access_count > 10 else 'low_usage' if access_count < 3 else 'balanced'
+        }
+        
+    def get_optimization_suggestions(self) -> List[Dict]:
+        """Get cache optimization suggestions."""
+        suggestions = []
+        
+        for cache_key, pattern in self.usage_patterns.items():
+            if time.time() - pattern.get('last_optimization', 0) > 3600:  # 1 hour
+                analysis = self.analyze_usage_pattern(cache_key, pattern['access_count'], pattern['avg_ttl'])
+                if abs(analysis['suggested_change']) > 60:  # Significant change
+                    suggestions.append({
+                        'cache_key': cache_key,
+                        'current_ttl': analysis['current_ttl'],
+                        'suggested_ttl': analysis['optimal_ttl'],
+                        'reason': analysis['reason']
+                    })
+                    
+        return suggestions
 
 class EnhancedTradingStrategy:
     """Enhanced trading strategy with multiple indicators and risk management."""
@@ -80,10 +338,42 @@ class EnhancedTradingStrategy:
         
         self._is_initialized = False
         self._is_closed = False
-        self._cache = {}
-        self._cache_ttl = 300  # 5 minutes
+        
+        # Enhanced caching system with LRU cache
+        self._cache = LRUCache(maxsize=2000)  # Increased cache size
+        self._cache_ttl = {
+            'timeframe_data': 120,     # 2 minutes for timeframe data (increased)
+            'market_structure': 600,    # 10 minutes for market structure (increased)
+            'volume_profile': 1200,     # 20 minutes for volume profile (increased)
+            'funding_rate': 600,        # 10 minutes for funding rate (increased)
+            'open_interest': 600,       # 10 minutes for open interest (increased)
+            'order_book': 60,           # 1 minute for order book (increased)
+            'btc_volatility': 600,      # 10 minutes for BTC volatility (increased)
+            'altcoin_correlation': 1200, # 20 minutes for correlation (increased)
+            'sentiment': 600,           # 10 minutes for sentiment (increased)
+            'signal_score': 120,        # 2 minutes for signal scores (increased)
+            'market_conditions': 300    # 5 minutes for market conditions (increased)
+        }
         self._last_update = {}
         
+        # Memory monitoring and optimization
+        self._memory_monitor = MemoryMonitor()
+        self._performance_alert = PerformanceAlert(notification_service)
+        self._adaptive_cache_optimizer = AdaptiveCacheOptimizer()
+        
+        # Error tracking
+        self._error_count = 0
+        self._error_history = []
+        self._last_error_time = 0
+        self._error_threshold = 10  # Max errors before alert
+        
+        # Performance tracking
+        self._performance_metrics = {
+            'api_calls': 0,
+            'cache_hits': 0,
+            'cache_misses': 0,
+            'processing_times': {}
+        }
         
         # Trade tracking variables
         self._last_trade_time = {}
@@ -288,60 +578,79 @@ class EnhancedTradingStrategy:
             return None
 
     async def generate_signals(self, symbol: str, indicator_service: IndicatorService) -> Optional[Dict]:
-        """Generate trading signals for a symbol."""
+        """Generate trading signals for a symbol with optimized performance."""
         try:
-            # Get data for multiple timeframes
+            start_time = time.time()
+            
+            # Clear expired cache periodically
+            cache_stats = self._cache.get_stats()
+            if cache_stats['size'] > 100:  # Clear when cache gets too large
+                await self._clear_expired_cache()
+            
+            # Get data for multiple timeframes with caching
             timeframes = ['5m', '15m', '1h', '4h']
             timeframe_data = {}
+            
+            # Fetch timeframe data in parallel
+            timeframe_tasks = []
             for tf in timeframes:
-                df = await indicator_service.calculate_indicators(symbol, timeframe=tf)
-                if df is not None and not df.empty:
-                    timeframe_data[tf] = df
+                cache_key = f"timeframe_{symbol}_{tf}"
+                cached_data = await self._get_cached_data(cache_key, 'timeframe_data')
+                if cached_data is not None:
+                    timeframe_data[tf] = cached_data
+                else:
+                    timeframe_tasks.append((tf, indicator_service.calculate_indicators(symbol, timeframe=tf)))
+            
+            # Execute remaining timeframe tasks in parallel
+            if timeframe_tasks:
+                tf_names, tf_tasks = zip(*timeframe_tasks)
+                tf_results = await asyncio.gather(*tf_tasks, return_exceptions=True)
+                
+                for tf_name, result in zip(tf_names, tf_results):
+                    if isinstance(result, Exception):
+                        logger.warning(f"Error fetching {tf_name} data for {symbol}: {str(result)}")
+                    elif result is not None and not result.empty:
+                        timeframe_data[tf_name] = result
+                        # Cache the result
+                        cache_key = f"timeframe_{symbol}_{tf_name}"
+                        self._set_cached_data(cache_key, result, 'timeframe_data')
 
             if not timeframe_data:
                 logger.warning(f"Failed to get data for any timeframe for {symbol}")
                 return None
 
-            # Analyze market structure
-            market_structure = self._analyze_market_structure(timeframe_data)
+            # Analyze market structure (cached)
+            market_structure_cache_key = f"market_structure_{symbol}"
+            market_structure = await self._get_cached_data(market_structure_cache_key, 'market_structure')
+            if market_structure is None:
+                market_structure = self._analyze_market_structure(timeframe_data)
+                self._set_cached_data(market_structure_cache_key, market_structure, 'market_structure')
             
-            # Analyze volume profile
-            volume_profile = await self._analyze_volume_profile(symbol, timeframe='1h')
+            # Fetch all market data in parallel
+            market_data = await self._parallel_fetch_market_data(symbol)
             
-            # Get funding rate
-            funding_rate = await self.binance_service.get_funding_rate(symbol)
-            
-            # Get open interest
-            open_interest = await self.binance_service.get_open_interest(symbol)
-            
-            # Analyze order book
-            order_book = await self.binance_service.get_order_book(symbol)
+            # Extract results from parallel fetch
+            funding_rate = market_data.get('data_0')
+            open_interest = market_data.get('data_1')
+            order_book = market_data.get('data_2')
+            volume_profile = market_data.get('data_3')
+            btc_volatility = market_data.get('data_4')
+            altcoin_correlation = market_data.get('data_5')
+            sentiment = market_data.get('data_6')
             
             # Calculate indicators for main timeframe
             df = timeframe_data['5m']
             
-            # Analyze multiple timeframes
-            timeframe_analysis = await self.analyze_multiple_timeframes(symbol)
+            # Analyze multiple timeframes (cached)
+            timeframe_analysis_cache_key = f"timeframe_analysis_{symbol}"
+            timeframe_analysis = await self._get_cached_data(timeframe_analysis_cache_key, 'market_conditions')
+            if timeframe_analysis is None:
+                timeframe_analysis = await self.analyze_multiple_timeframes(symbol)
+                if timeframe_analysis:
+                    self._set_cached_data(timeframe_analysis_cache_key, timeframe_analysis, 'market_conditions')
+            
             if not timeframe_analysis:
                 logger.warning(f"Failed to analyze timeframes for {symbol}")
-                return None
-                
-            # Analyze BTC volatility
-            btc_volatility = await self.analyze_btc_volatility()
-            if not btc_volatility:
-                logger.warning("Failed to analyze BTC volatility")
-                return None
-                
-            # Analyze altcoin correlation
-            altcoin_correlation = await self.analyze_altcoin_correlation(symbol)
-            if not altcoin_correlation:
-                logger.warning(f"Failed to analyze correlation for {symbol}")
-                return None
-                
-            # Analyze market sentiment
-            sentiment = await self.analyze_market_sentiment(symbol)
-            if not sentiment:
-                logger.warning(f"Failed to analyze sentiment for {symbol}")
                 return None
 
             # Check for trend following and breakout signals
@@ -5547,4 +5856,462 @@ class EnhancedTradingStrategy:
         except Exception as e:
             logger.error(f"Error in _analyze_market_liquidity: {str(e)}")
             return {'liquidity': 'UNKNOWN', 'score': 0}
+
+    async def _get_cached_data(self, cache_key: str, cache_type: str = 'general') -> Optional[Any]:
+        """Get data from cache if available and not expired."""
+        try:
+            # Check memory usage and cleanup if needed
+            if self._memory_monitor.should_cleanup():
+                await self._aggressive_memory_cleanup()
+            
+            # Get data from LRU cache
+            data = self._cache.get(cache_key)
+            if data is not None:
+                self._performance_metrics['cache_hits'] += 1
+                logger.debug(f"Cache hit for {cache_key}")
+                
+                # Track access pattern for optimization
+                self._adaptive_cache_optimizer.analyze_usage_pattern(
+                    cache_key, 
+                    self._cache._access_count.get(cache_key, 0),
+                    self._cache_ttl.get(cache_type, 300)
+                )
+                return data
+            else:
+                self._performance_metrics['cache_misses'] += 1
+                logger.debug(f"Cache miss for {cache_key}")
+                return None
+            
+        except Exception as e:
+            logger.error(f"Error getting cached data for {cache_key}: {str(e)}")
+            self._track_error("cache_get", str(e))
+            return None
+
+    def _set_cached_data(self, cache_key: str, data: Any, cache_type: str = 'general') -> None:
+        """Store data in cache with timestamp."""
+        try:
+            # Store in LRU cache with timestamp
+            self._cache.put(cache_key, (data, time.time()))
+            logger.debug(f"Cached data for {cache_key}")
+            
+            # Track for optimization
+            self._adaptive_cache_optimizer.analyze_usage_pattern(
+                cache_key, 
+                self._cache._access_count.get(cache_key, 0),
+                self._cache_ttl.get(cache_type, 300)
+            )
+            
+        except Exception as e:
+            logger.error(f"Error setting cached data for {cache_key}: {str(e)}")
+            self._track_error("cache_set", str(e))
+
+    async def _clear_expired_cache(self) -> None:
+        """Clear expired cache entries to prevent memory leaks."""
+        try:
+            total_cleared = 0
+            
+            # Clear expired items for each cache type
+            for cache_type, ttl in self._cache_ttl.items():
+                cleared = self._cache.clear_expired(ttl)
+                total_cleared += cleared
+                
+            if total_cleared > 0:
+                logger.debug(f"Cleared {total_cleared} expired cache entries")
+                
+            # Force garbage collection if memory usage is high
+            memory_usage = self._memory_monitor.get_memory_usage()
+            if memory_usage['percent'] > 70:
+                gc.collect()
+                logger.debug("Forced garbage collection due to high memory usage")
+                
+        except Exception as e:
+            logger.error(f"Error clearing expired cache: {str(e)}")
+            self._track_error("cache_clear", str(e))
+
+    async def _aggressive_memory_cleanup(self) -> None:
+        """Perform aggressive memory cleanup when usage is high."""
+        try:
+            logger.info("Performing aggressive memory cleanup...")
+            
+            # Clear more cache entries
+            for cache_type, ttl in self._cache_ttl.items():
+                # Clear items older than half the TTL
+                self._cache.clear_expired(ttl // 2)
+            
+            # Force garbage collection
+            gc.collect()
+            
+            # Clear old performance metrics
+            if len(self._performance_metrics['processing_times']) > 500:
+                recent_times = dict(list(self._performance_metrics['processing_times'].items())[-200:])
+                self._performance_metrics['processing_times'] = recent_times
+            
+            # Clear old error history
+            if len(self._error_history) > 100:
+                self._error_history = self._error_history[-50:]
+            
+            self._memory_monitor.last_cleanup = time.time()
+            logger.info("Aggressive memory cleanup completed")
+            
+        except Exception as e:
+            logger.error(f"Error in aggressive memory cleanup: {str(e)}")
+            self._track_error("memory_cleanup", str(e))
+
+    def _track_error(self, error_type: str, error_message: str) -> None:
+        """Track errors for monitoring and alerting."""
+        try:
+            self._error_count += 1
+            self._last_error_time = time.time()
+            
+            error_entry = {
+                'timestamp': time.time(),
+                'type': error_type,
+                'message': error_message,
+                'count': self._error_count
+            }
+            
+            self._error_history.append(error_entry)
+            
+            # Keep only last 100 errors
+            if len(self._error_history) > 100:
+                self._error_history = self._error_history[-100:]
+                
+            # Alert if too many errors
+            if self._error_count > self._error_threshold:
+                logger.warning(f"High error count: {self._error_count} errors detected")
+                
+        except Exception as e:
+            logger.error(f"Error tracking error: {str(e)}")
+
+    async def _parallel_fetch_market_data(self, symbol: str) -> Dict:
+        """Fetch market data in parallel to improve performance."""
+        try:
+            start_time = time.time()
+            
+            # Create tasks for parallel execution
+            tasks = [
+                self._fetch_funding_rate(symbol),
+                self._fetch_open_interest(symbol),
+                self._fetch_order_book(symbol),
+                self._fetch_volume_profile(symbol),
+                self._fetch_btc_volatility(),
+                self._fetch_altcoin_correlation(symbol),
+                self._fetch_sentiment(symbol)
+            ]
+            
+            # Execute all tasks in parallel
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Process results
+            market_data = {}
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    logger.warning(f"Error fetching market data {i}: {str(result)}")
+                    market_data[f'data_{i}'] = None
+                else:
+                    market_data[f'data_{i}'] = result
+            
+            processing_time = time.time() - start_time
+            self._performance_metrics['processing_times']['parallel_fetch'] = processing_time
+            logger.debug(f"Parallel market data fetch completed in {processing_time:.2f}s")
+            
+            return market_data
+            
+        except Exception as e:
+            logger.error(f"Error in parallel market data fetch: {str(e)}")
+            return {}
+
+    async def _fetch_funding_rate(self, symbol: str) -> Optional[float]:
+        """Fetch funding rate with caching."""
+        cache_key = f"funding_rate_{symbol}"
+        cached_data = await self._get_cached_data(cache_key, 'funding_rate')
+        if cached_data is not None:
+            return cached_data
+            
+        try:
+            self._performance_metrics['api_calls'] += 1
+            funding_rate = await self.binance_service.get_funding_rate(symbol)
+            self._set_cached_data(cache_key, funding_rate, 'funding_rate')
+            return funding_rate
+        except Exception as e:
+            logger.error(f"Error fetching funding rate for {symbol}: {str(e)}")
+            return None
+
+    async def _fetch_open_interest(self, symbol: str) -> Optional[float]:
+        """Fetch open interest with caching."""
+        cache_key = f"open_interest_{symbol}"
+        cached_data = await self._get_cached_data(cache_key, 'open_interest')
+        if cached_data is not None:
+            return cached_data
+            
+        try:
+            self._performance_metrics['api_calls'] += 1
+            open_interest = await self.binance_service.get_open_interest(symbol)
+            self._set_cached_data(cache_key, open_interest, 'open_interest')
+            return open_interest
+        except Exception as e:
+            logger.error(f"Error fetching open interest for {symbol}: {str(e)}")
+            return None
+
+    async def _fetch_order_book(self, symbol: str) -> Optional[Dict]:
+        """Fetch order book with caching."""
+        cache_key = f"order_book_{symbol}"
+        cached_data = await self._get_cached_data(cache_key, 'order_book')
+        if cached_data is not None:
+            return cached_data
+            
+        try:
+            self._performance_metrics['api_calls'] += 1
+            order_book = await self.binance_service.get_order_book(symbol)
+            self._set_cached_data(cache_key, order_book, 'order_book')
+            return order_book
+        except Exception as e:
+            logger.error(f"Error fetching order book for {symbol}: {str(e)}")
+            return None
+
+    async def _fetch_volume_profile(self, symbol: str) -> Optional[Dict]:
+        """Fetch volume profile with caching."""
+        cache_key = f"volume_profile_{symbol}"
+        cached_data = await self._get_cached_data(cache_key, 'volume_profile')
+        if cached_data is not None:
+            return cached_data
+            
+        try:
+            volume_profile = await self._analyze_volume_profile(symbol, timeframe='1h')
+            self._set_cached_data(cache_key, volume_profile, 'volume_profile')
+            return volume_profile
+        except Exception as e:
+            logger.error(f"Error fetching volume profile for {symbol}: {str(e)}")
+            return None
+
+    async def _fetch_btc_volatility(self) -> Optional[Dict]:
+        """Fetch BTC volatility with caching."""
+        cache_key = "btc_volatility"
+        cached_data = await self._get_cached_data(cache_key, 'btc_volatility')
+        if cached_data is not None:
+            return cached_data
+            
+        try:
+            btc_volatility = await self.analyze_btc_volatility()
+            self._set_cached_data(cache_key, btc_volatility, 'btc_volatility')
+            return btc_volatility
+        except Exception as e:
+            logger.error(f"Error fetching BTC volatility: {str(e)}")
+            return None
+
+    async def _fetch_altcoin_correlation(self, symbol: str) -> Optional[Dict]:
+        """Fetch altcoin correlation with caching."""
+        cache_key = f"altcoin_correlation_{symbol}"
+        cached_data = await self._get_cached_data(cache_key, 'altcoin_correlation')
+        if cached_data is not None:
+            return cached_data
+            
+        try:
+            altcoin_correlation = await self.analyze_altcoin_correlation(symbol)
+            self._set_cached_data(cache_key, altcoin_correlation, 'altcoin_correlation')
+            return altcoin_correlation
+        except Exception as e:
+            logger.error(f"Error fetching altcoin correlation for {symbol}: {str(e)}")
+            return None
+
+    async def _fetch_sentiment(self, symbol: str) -> Optional[Dict]:
+        """Fetch sentiment with caching."""
+        cache_key = f"sentiment_{symbol}"
+        cached_data = await self._get_cached_data(cache_key, 'sentiment')
+        if cached_data is not None:
+            return cached_data
+            
+        try:
+            sentiment = await self.analyze_market_sentiment(symbol)
+            self._set_cached_data(cache_key, sentiment, 'sentiment')
+            return sentiment
+        except Exception as e:
+            logger.error(f"Error fetching sentiment for {symbol}: {str(e)}")
+            return None
+
+    async def get_performance_metrics(self) -> Dict:
+        """Get comprehensive performance metrics for monitoring."""
+        try:
+            # Calculate cache hit rate
+            total_requests = self._performance_metrics['cache_hits'] + self._performance_metrics['cache_misses']
+            cache_hit_rate = (self._performance_metrics['cache_hits'] / total_requests * 100) if total_requests > 0 else 0
+            
+            # Calculate average processing times
+            avg_processing_time = 0
+            if self._performance_metrics['processing_times']:
+                avg_processing_time = sum(self._performance_metrics['processing_times'].values()) / len(self._performance_metrics['processing_times'])
+            
+            # Get memory usage
+            memory_usage = self._memory_monitor.get_memory_usage()
+            
+            # Get cache statistics
+            cache_stats = self._cache.get_stats()
+            
+            # Get error statistics
+            error_rate = 0
+            if self._error_count > 0:
+                total_operations = self._performance_metrics['api_calls'] + self._error_count
+                error_rate = (self._error_count / total_operations) * 100
+            
+            # Get optimization suggestions
+            optimization_suggestions = self._adaptive_cache_optimizer.get_optimization_suggestions()
+            
+            metrics = {
+                'api_calls': self._performance_metrics['api_calls'],
+                'api_errors': self._error_count,
+                'error_rate': error_rate,
+                'cache_hits': self._performance_metrics['cache_hits'],
+                'cache_misses': self._performance_metrics['cache_misses'],
+                'cache_hit_rate': cache_hit_rate,
+                'cache_size': cache_stats['size'],
+                'cache_max_size': cache_stats['maxsize'],
+                'cache_usage_percent': cache_stats['usage_percent'],
+                'avg_processing_time': avg_processing_time,
+                'processing_times': self._performance_metrics['processing_times'],
+                'memory_current_mb': memory_usage['current_mb'],
+                'memory_peak_mb': memory_usage['peak_mb'],
+                'memory_percent': memory_usage['percent'],
+                'memory_available_mb': memory_usage['available_mb'],
+                'optimization_suggestions': len(optimization_suggestions),
+                'last_error_time': self._last_error_time,
+                'error_history_count': len(self._error_history)
+            }
+            
+            # Check for performance alerts
+            alerts = await self._performance_alert.check_performance_alerts(metrics)
+            metrics['alerts'] = alerts
+            
+            return metrics
+            
+        except Exception as e:
+            logger.error(f"Error getting performance metrics: {str(e)}")
+            self._track_error("performance_metrics", str(e))
+            return {}
+
+    async def optimize_cache_settings(self) -> None:
+        """Dynamically optimize cache settings based on performance."""
+        try:
+            metrics = await self.get_performance_metrics()
+            cache_hit_rate = metrics.get('cache_hit_rate', 0)
+            
+            # Adjust cache TTL based on hit rate
+            if cache_hit_rate < 50:  # Low hit rate
+                # Increase TTL to improve hit rate
+                for cache_type in self._cache_ttl:
+                    self._cache_ttl[cache_type] = min(self._cache_ttl[cache_type] * 1.5, 1800)  # Max 30 minutes
+                logger.info(f"Low cache hit rate ({cache_hit_rate:.1f}%), increased TTL")
+            elif cache_hit_rate > 80:  # High hit rate
+                # Decrease TTL to reduce memory usage
+                for cache_type in self._cache_ttl:
+                    self._cache_ttl[cache_type] = max(self._cache_ttl[cache_type] * 0.8, 60)  # Min 1 minute
+                logger.info(f"High cache hit rate ({cache_hit_rate:.1f}%), decreased TTL")
+                
+        except Exception as e:
+            logger.error(f"Error optimizing cache settings: {str(e)}")
+
+    async def _batch_process_symbols(self, symbols: List[str], indicator_service: IndicatorService) -> Dict[str, Optional[Dict]]:
+        """Process multiple symbols in batches for better performance."""
+        try:
+            batch_size = 5  # Process 5 symbols at a time
+            results = {}
+            
+            for i in range(0, len(symbols), batch_size):
+                batch = symbols[i:i + batch_size]
+                
+                # Process batch in parallel
+                batch_tasks = []
+                for symbol in batch:
+                    task = self.generate_signals(symbol, indicator_service)
+                    batch_tasks.append((symbol, task))
+                
+                # Execute batch
+                batch_results = await asyncio.gather(*[task for _, task in batch_tasks], return_exceptions=True)
+                
+                # Process results
+                for (symbol, _), result in zip(batch_tasks, batch_results):
+                    if isinstance(result, Exception):
+                        logger.error(f"Error processing {symbol}: {str(result)}")
+                        results[symbol] = None
+                    else:
+                        results[symbol] = result
+                
+                # Small delay between batches to avoid rate limits
+                await asyncio.sleep(0.1)
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error in batch processing: {str(e)}")
+            return {}
+
+    async def _preload_common_data(self) -> None:
+        """Preload commonly used data to improve performance."""
+        try:
+            logger.info("Preloading common market data...")
+            
+            # Preload BTC volatility (used by many symbols)
+            await self._fetch_btc_volatility()
+            
+            # Preload common market conditions
+            common_symbols = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT']
+            for symbol in common_symbols:
+                await self._fetch_funding_rate(symbol)
+                await self._fetch_open_interest(symbol)
+            
+            logger.info("Common data preloaded successfully")
+            
+        except Exception as e:
+            logger.error(f"Error preloading common data: {str(e)}")
+
+    async def _optimize_memory_usage(self) -> None:
+        """Optimize memory usage by cleaning up old data."""
+        try:
+            # Clear old cache entries
+            await self._clear_expired_cache()
+            
+            # Clear old performance metrics (keep last 1000 entries)
+            if len(self._performance_metrics['processing_times']) > 1000:
+                # Keep only recent entries
+                recent_times = dict(list(self._performance_metrics['processing_times'].items())[-500:])
+                self._performance_metrics['processing_times'] = recent_times
+            
+            # Clear old trade tracking data
+            current_time = time.time()
+            expired_trade_keys = []
+            for key, timestamp in self._last_trade_time.items():
+                if current_time - timestamp > 86400:  # 24 hours
+                    expired_trade_keys.append(key)
+            
+            for key in expired_trade_keys:
+                del self._last_trade_time[key]
+                del self._last_trade_price[key]
+                del self._last_trade_side[key]
+                del self._last_trade_amount[key]
+                del self._last_trade_stop_loss[key]
+                del self._last_trade_take_profit[key]
+            
+            if expired_trade_keys:
+                logger.debug(f"Cleared {len(expired_trade_keys)} expired trade tracking entries")
+                
+        except Exception as e:
+            logger.error(f"Error optimizing memory usage: {str(e)}")
+
+    async def _adaptive_rate_limiting(self) -> None:
+        """Implement adaptive rate limiting based on API response times."""
+        try:
+            # Get recent processing times
+            recent_times = list(self._performance_metrics['processing_times'].values())
+            if not recent_times:
+                return
+            
+            avg_time = sum(recent_times) / len(recent_times)
+            
+            # If average time is high, add delay
+            if avg_time > 2.0:  # More than 2 seconds
+                delay = min(avg_time * 0.5, 5.0)  # Max 5 seconds delay
+                logger.warning(f"High processing time ({avg_time:.2f}s), adding {delay:.2f}s delay")
+                await asyncio.sleep(delay)
+                
+        except Exception as e:
+            logger.error(f"Error in adaptive rate limiting: {str(e)}")
 
