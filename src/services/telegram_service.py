@@ -2,22 +2,23 @@
 Telegram service for sending notifications and receiving commands.
 """
 import logging
-from typing import Dict, Optional
+from typing import Dict
 from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, ContextTypes
 from telegram.constants import ParseMode
 import asyncio
 from datetime import datetime, timedelta
 import telegram.error
+from src.services.base_notification_service import BaseNotificationService
 
 logger = logging.getLogger(__name__)
 
-class TelegramService:
+class TelegramService(BaseNotificationService):
     """Service for handling Telegram bot operations."""
     
     def __init__(self, config: Dict):
         """Initialize the service."""
-        self.config = config
+        super().__init__(config)
         self.bot = None
         self.application = None
         self._is_initialized = False
@@ -39,6 +40,9 @@ class TelegramService:
     async def initialize(self) -> None:
         """Initialize the Telegram service."""
         try:
+            # Initialize base service first
+            await super().initialize()
+            
             # Create bot and application
             self.bot = Bot(token=self.config['api']['telegram']['bot_token'])
             self.application = Application.builder().token(self.config['api']['telegram']['bot_token']).build()
@@ -50,13 +54,14 @@ class TelegramService:
             self.application.add_handler(CommandHandler("pause", self._handle_pause_command))
             self.application.add_handler(CommandHandler("unpause", self._handle_unpause_command))
             self.application.add_handler(CommandHandler("report", self._handle_report_command))
-            
+            self.application.add_handler(CommandHandler("balance", self._handle_balance_command))
+            self.application.add_handler(CommandHandler("cleanup", self._handle_cleanup_command))
+
             # Initialize application
             await self.application.initialize()
             await self.application.start()
             await self.application.updater.start_polling()
             
-            self._is_initialized = True
             logger.info("Telegram service initialized successfully")
         except Exception as e:
             logger.error(f"Error initializing Telegram service: {str(e)}")
@@ -95,46 +100,6 @@ class TelegramService:
             logger.error(f"Error sending message: {str(e)}")
             return False
             
-    async def send_order_notification(self, order: Dict) -> bool:
-        """Send an order notification.
-        
-        Args:
-            order: Order details
-            signals: Trading signals containing SL/TP information
-            
-        Returns:
-            bool: True if notification sent successfully, False otherwise
-        """
-        try:
-            if not self._is_initialized or self._is_closed:
-                logger.error("Telegram service not initialized or closed")
-                return False
-          
-            message = (
-                f"📊 <b>New Order</b>\n\n"
-                f"Symbol: {order['symbol']}\n"
-                f"Side: {order['side']}\n"
-                f"Size: {order['amount']}\n"
-                f"Price: {order['price']}\n"
-                f"Type: {order['type']}"
-            )
-            
-            # Add SL/TP information from order parameters
-            if 'stop_loss' in order:
-                sl_price = float(order['stop_loss'])
-                sl_percent = abs((sl_price - float(order['price'])) / float(order['price']) * 100)
-                message += f"\nStop Loss: {sl_price:.8f} ({sl_percent:.2f}%)"
-                
-            if 'take_profit' in order:
-                tp_price = float(order['take_profit'])
-                tp_percent = abs((tp_price - float(order['price'])) / float(order['price']) * 100)
-                message += f"\nTake Profit: {tp_price:.8f} ({tp_percent:.2f}%)"
-                
-            return await self.send_message(message)
-            
-        except Exception as e:
-            logger.error(f"Error sending order notification: {str(e)}")
-            return False
             
     async def send_startup_notification(self) -> bool:
         """Send bot startup notification.
@@ -199,15 +164,7 @@ class TelegramService:
     async def _handle_help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle the /help command."""
         try:
-            help_text = (
-                "🤖 <b>Available Commands</b>\n\n"
-                "/start - Start the bot and subscribe to updates\n"
-                "/help - Show this help message\n"
-                "/status - Show current bot status\n"
-                "/pause - Pause the bot\n"
-                "/unpause - Unpause the bot\n"
-                "/report - Show detailed report"
-            )
+            help_text = self.help_content()
             await update.message.reply_text(help_text, parse_mode='HTML')
         except Exception as e:
             logger.error(f"Error handling help command: {str(e)}")
@@ -235,8 +192,11 @@ class TelegramService:
             
             self._is_paused = True
             self._pause_event.set()  # Set the pause event
-            await update.message.reply_text("⏸ Bot trading paused successfully")
-            logger.info("Bot trading paused via Telegram command")
+            await update.message.reply_text(
+                "⏸ Bot trading paused successfully\n"
+                "⚠️ Note: Only new trades are paused. Trailing stops and position management will continue to work."
+            )
+            logger.info("Bot trading paused via Telegram command - Only new trades are paused")
         except Exception as e:
             logger.error(f"Error handling pause command: {str(e)}")
             await update.message.reply_text("An error occurred while pausing the bot.")
@@ -256,9 +216,13 @@ class TelegramService:
             self._pause_event.clear()  # Clear the pause event
             await update.message.reply_text("▶️ Bot trading resumed successfully")
             logger.info("Bot trading resumed via Telegram command")
+
+            # Reset profit target tracking
+            if hasattr(self.strategy, 'reset_profit_target'):
+                await self.strategy.reset_profit_target()
         except Exception as e:
             logger.error(f"Error handling unpause command: {str(e)}")
-            await update.message.reply_text("An error occurred while unpausing the bot.")
+            await update.message.reply_text("Error resuming trading. Please try again.")
 
     async def _handle_report_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle the /report command."""
@@ -271,84 +235,56 @@ class TelegramService:
                 await update.message.reply_text("Binance service not available")
                 return
             
-            # Get account balance
-            balance = await self.binance_service.get_account_balance()
-            if not balance:
-                await update.message.reply_text("Failed to get account balance")
-                return
+            # Get report chunks from base class
+            report_chunks = await self.generate_report()
             
-            # Get position statistics
-            position_stats = await self.binance_service.get_position_statistics()
-            if position_stats is None:
-                await update.message.reply_text("Failed to get position statistics")
-                return
-            
-            # Format header message
-            header_message = (
-                "📊 <b>Detailed Report</b>\n\n"
-                f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                f"Paused: {'Yes' if self._is_paused else 'No'}\n\n"
-                "💰 <b>Balance</b>\n"
-            )
-            
-            # Add balance information
-            for asset, data in balance.items():
-                if isinstance(data, dict):
-                    amount = data.get('total')
-                else:
-                    amount = data
-                    
-                if amount is not None:
-                    try:
-                        amount_float = float(amount)
-                        if amount_float > 0:
-                            header_message += f"{asset}: {amount_float}\n"
-                    except (ValueError, TypeError):
-                        logger.warning(f"Invalid balance amount for {asset}: {amount}")
-                        continue
-            
-            # Add positions summary
-            header_message += f"\n📈 Active Positions: {position_stats['active_positions']}\n"
-            header_message += f"💵 Total Unrealized PnL: {position_stats['total_pnl']:.2f} USDT\n"
-            
-            # Send header message
-            await update.message.reply_text(header_message, parse_mode='HTML')
-            
-            # Send position details in chunks if there are any
-            if position_stats['position_details']:
-                position_chunks = []
-                current_chunk = "📋 <b>Position Details</b>\n"
-                
-                for pos in position_stats['position_details']:
-                    position_info = (
-                        f"Symbol: {pos['symbol']}\n"
-                        f"Size: {pos['size']}\n"
-                        f"PnL: {pos['pnl']:.2f} USDT\n"
-                        f"Entry Price: {pos['entry_price']}\n"
-                        f"Mark Price: {pos['mark_price']}\n"
-                        f"Leverage: {pos['leverage']}x\n"
-                        f"Side: {pos['side']}\n\n"
-                    )
-                    
-                    # If adding this position would make the chunk too long, start a new chunk
-                    if len(current_chunk) + len(position_info) > 4000:
-                        position_chunks.append(current_chunk)
-                        current_chunk = "📋 <b>Position Details (continued)</b>\n" + position_info
-                    else:
-                        current_chunk += position_info
-                
-                # Add the last chunk if it's not empty
-                if current_chunk:
-                    position_chunks.append(current_chunk)
-                
-                # Send each chunk
-                for chunk in position_chunks:
-                    await update.message.reply_text(chunk, parse_mode='HTML')
-                    await asyncio.sleep(0.5)  # Small delay between messages
+            # Send each chunk
+            for chunk in report_chunks:
+                # Convert markdown to HTML for Telegram
+                chunk = chunk.replace('**', '<b>').replace('</b>', '</b>')
+                await update.message.reply_text(chunk, parse_mode='HTML')
+                await asyncio.sleep(0.5)  # Small delay between messages
             
         except Exception as e:
             logger.error(f"Error handling report command: {str(e)}")
             await update.message.reply_text("An error occurred while generating the report.")
+    
+    async def _handle_balance_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle the /balance command."""
+        try:
+            if not self._is_initialized:
+                await update.message.reply_text("Bot is not initialized. Please try again later.")
+                return
+            
+            if not self.binance_service:
+                await update.message.reply_text("Binance service not available")
+                return
+            
+            # Get balance report from base class
+            message = await self.generate_balance_report()
+            
+            # Convert markdown to HTML for Telegram
+            message = message.replace('**', '<b>').replace('</b>', '</b>')
+            
+            # Send message
+            await update.message.reply_text(message, parse_mode='HTML')
+            
+        except Exception as e:
+            logger.error(f"Error handling balance command: {str(e)}")
+            await update.message.reply_text("An error occurred while generating the balance.")
+
+    async def _handle_cleanup_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle the /cleanup command."""
+        try:
+            if not self._is_initialized:
+                await update.message.reply_text("Bot is not initialized. Please try again later.")  
+
+            message = await self.cleanup_orders()
+            await update.message.reply_text(message, parse_mode='HTML')
+        except Exception as e:
+            logger.error(f"Error handling cleanup command: {str(e)}")
+            await update.message.reply_text("An error occurred while cleaning up orders.")
+
 
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle incoming Telegram commands."""
@@ -371,6 +307,10 @@ class TelegramService:
                 await self._handle_unpause_command(update, context)
             elif command == '/report':
                 await self._handle_report_command(update, context)
+            elif command == '/balance':
+                await self._handle_balance_command(update, context)
+            elif command == '/cleanup':
+                await self._handle_cleanup_command(update, context)
             else:
                 await update.message.reply_text(
                     "Unknown command. Use /help to see available commands."
@@ -381,23 +321,6 @@ class TelegramService:
             await update.message.reply_text(
                 "An error occurred while processing your command. Please try again later."
             )
-
-    async def _get_status_message(self) -> str:
-        """Get the current bot status message."""
-        try:
-            status = "🟢 Running" if not self._is_paused else "🔴 Stopped"
-            uptime = str(datetime.now() - self._start_time).split('.')[0] if self._start_time else "N/A"
-            
-            message = (
-                f"🤖 <b>Bot Status</b>\n\n"
-                f"Status: {status}\n"
-                f"Uptime: {uptime}\n"
-                f"Last Update: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-            )
-            return message
-        except Exception as e:
-            logger.error(f"Error getting status message: {str(e)}")
-            return "Error getting status information."
 
     async def periodic_balance_check(self) -> None:
         """Periodically check and send balance updates."""
@@ -471,6 +394,15 @@ class TelegramService:
                     retry_count += 1
                     if retry_count < max_retries:
                         logger.warning(f"Conflict detected, retrying ({retry_count}/{max_retries})...")
+                        await asyncio.sleep(2)
+                    else:
+                        logger.error("Max retries reached for polling")
+                        raise
+                except Exception as e:
+                    logger.error(f"Error during polling: {str(e)}")
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        logger.warning(f"Error detected, retrying ({retry_count}/{max_retries})...")
                         await asyncio.sleep(2)
                     else:
                         logger.error("Max retries reached for polling")
@@ -705,129 +637,4 @@ class TelegramService:
         except Exception as e:
             logger.error(f"Error waiting for trading resume: {str(e)}")
             raise
-
-    async def send_dca_notification(self, dca_details: Dict) -> bool:
-        """Send DCA execution notification.
-        
-        Args:
-            dca_details: Dictionary containing DCA execution details
-            
-        Returns:
-            bool: True if notification sent successfully, False otherwise
-        """
-        try:
-            if not self._is_initialized or self._is_closed:
-                logger.error("Telegram service not initialized or closed")
-                return False
-                
-            message = (
-                f"💰 <b>DCA Executed</b>\n\n"
-                f"Symbol: {dca_details['symbol']}\n"
-                f"Amount: {dca_details['dca_amount']:.8f}\n"
-                f"New Entry: {dca_details['new_entry_price']:.8f}\n"
-                f"Price Drop: {dca_details['price_drop']:.2f}%\n"
-                f"Order ID: {dca_details['order_id']}"
-            )
-            
-            return await self.send_message(message)
-            
-        except Exception as e:
-            logger.error(f"Error sending DCA notification: {str(e)}")
-            return False
-            
-    async def send_trailing_stop_notification(self, symbol: str, new_stop: float, position_side: str) -> bool:
-        """Send trailing stop update notification.
-        
-        Args:
-            symbol: Trading pair symbol
-            new_stop: New stop loss price
-            position_side: Position side (LONG/SHORT)
-            
-        Returns:
-            bool: True if notification sent successfully, False otherwise
-        """
-        try:
-            if not self._is_initialized or self._is_closed:
-                logger.error("Telegram service not initialized or closed")
-                return False
-                
-            message = (
-                f"🛑 <b>Trailing Stop Updated</b>\n\n"
-                f"Symbol: {symbol}\n"
-                f"Position: {position_side}\n"
-                f"New Stop: {new_stop:.8f}"
-            )
-            
-            return await self.send_message(message)
-            
-        except Exception as e:
-            logger.error(f"Error sending trailing stop notification: {str(e)}")
-            return False
-
-    async def send_stop_loss_notification(self, symbol: str, position_side: str, entry_price: float, 
-                                        stop_price: float, pnl_percent: float) -> bool:
-        """Send a stop loss notification.
-        
-        Args:
-            symbol: Trading pair symbol
-            position_side: Position side (LONG/SHORT)
-            entry_price: Position entry price
-            stop_price: Stop loss price
-            pnl_percent: Percentage of profit/loss
-            
-        Returns:
-            bool: True if notification sent successfully, False otherwise
-        """
-        try:
-            if not self._is_initialized or self._is_closed:
-                logger.error("Telegram service not initialized or closed")
-                return False
-                
-            message = (
-                f"🛑 <b>Stop Loss Triggered</b>\n\n"
-                f"Symbol: {symbol}\n"
-                f"Position: {position_side}\n"
-                f"Entry Price: {entry_price:.8f}\n"
-                f"Stop Price: {stop_price:.8f}\n"
-                f"PnL: {pnl_percent:.2f}%"
-            )
-            
-            return await self.send_message(message)
-            
-        except Exception as e:
-            logger.error(f"Error sending stop loss notification: {str(e)}")
-            return False
-            
-    async def send_take_profit_notification(self, symbol: str, position_side: str, entry_price: float,
-                                          tp_price: float, pnl_percent: float) -> bool:
-        """Send a take profit notification.
-        
-        Args:
-            symbol: Trading pair symbol
-            position_side: Position side (LONG/SHORT)
-            entry_price: Position entry price
-            tp_price: Take profit price
-            pnl_percent: Percentage of profit/loss
-            
-        Returns:
-            bool: True if notification sent successfully, False otherwise
-        """
-        try:
-            if not self._is_initialized or self._is_closed:
-                logger.error("Telegram service not initialized or closed")
-                return False
-                
-            message = (
-                f"🎯 <b>Take Profit Triggered</b>\n\n"
-                f"Symbol: {symbol}\n"
-                f"Position: {position_side}\n"
-                f"Entry Price: {entry_price:.8f}\n"
-                f"TP Price: {tp_price:.8f}\n"
-                f"PnL: {pnl_percent:.2f}%"
-            )
-            
-            return await self.send_message(message)
-            
-        except Exception as e:
-            logger.error(f"Error sending take profit notification: {str(e)}")
-            return False 
+    

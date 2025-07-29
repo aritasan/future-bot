@@ -15,9 +15,11 @@ from typing import List, Set, Optional
 from src.core.config import load_config
 from src.services.binance_service import BinanceService
 from src.services.telegram_service import TelegramService
+from src.services.discord_service import DiscordService
 from src.services.indicator_service import IndicatorService
 from src.core.health_monitor import HealthMonitor
 from src.strategies.enhanced_trading_strategy import EnhancedTradingStrategy
+from src.services.notification_service import NotificationService
 
 # Create logs directory if it doesn't exist
 if not os.path.exists('logs'):
@@ -67,12 +69,14 @@ def signal_handler(signum, frame):
     """Handle shutdown signals."""
     global is_running
     logger.info("Received signal %s", signum)
+    logger.info('Frame: %s', frame)
     is_running = False
 
 async def process_symbol(
     symbol: str,
     binance_service: BinanceService,
     telegram_service: TelegramService,
+    discord_service: DiscordService,
     health_monitor: HealthMonitor,
     strategy: EnhancedTradingStrategy,
     indicator_service: IndicatorService
@@ -83,8 +87,21 @@ async def process_symbol(
         while is_running:
             try:
                 # Check if trading is paused
-                if telegram_service.is_trading_paused():
+                if (telegram_service is not None and telegram_service.is_trading_paused()):
                     await telegram_service.wait_for_trading_resume()
+                    continue
+                
+                if (discord_service is not None and discord_service.is_trading_paused()):
+                    await discord_service.wait_for_trading_resume()
+                    continue
+
+                # Check profit target
+                if await strategy.check_profit_target():
+                    # Pause trading through both services
+                    if telegram_service is not None:
+                        telegram_service.pause_trading()
+                    if discord_service is not None:
+                        discord_service.pause_trading()
                     continue
 
                 # Check health
@@ -126,7 +143,7 @@ async def process_symbol(
                 logger.error(f"Error closing Binance service for {symbol}: {str(e)}")
                 
             try:
-                if 'telegram' not in closed_services:
+                if telegram_service is not None and 'telegram' not in closed_services:
                     # Wait for any pending messages to be sent
                     await asyncio.sleep(2)
                     await telegram_service.close()
@@ -134,10 +151,18 @@ async def process_symbol(
             except Exception as e:
                 logger.error(f"Error closing Telegram service for {symbol}: {str(e)}")
 
+            try:
+                if 'discord' not in closed_services:
+                    await discord_service.close()
+                    closed_services.add('discord')
+            except Exception as e:
+                logger.error(f"Error closing Discord service for {symbol}: {str(e)}")
+
 
 async def cleanup_services(
     binance_service: Optional[BinanceService],
     telegram_service: Optional[TelegramService],
+    discord_service: Optional[DiscordService],
     health_monitor: Optional[HealthMonitor],
     indicator_service: Optional[IndicatorService],
     strategy: Optional[EnhancedTradingStrategy]
@@ -193,6 +218,17 @@ async def cleanup_services(
                 logger.warning("Timeout while closing Telegram service")
             except Exception as e:
                 logger.error(f"Error closing Telegram service: {str(e)}")
+
+        if discord_service and 'discord' not in closed_services:
+            try:
+                logger.info("Closing Discord service...")
+                await asyncio.wait_for(discord_service.close(), timeout=cleanup_timeout/4)
+                closed_services.add('discord')
+                logger.info("Discord service closed successfully")
+            except asyncio.TimeoutError:
+                logger.warning("Timeout while closing Discord service")
+            except Exception as e:
+                logger.error(f"Error closing Discord service: {str(e)}")
         
         # Finally close Binance service
         if binance_service and 'binance' not in closed_services:
@@ -225,8 +261,10 @@ async def main():
     global trading_bot, tasks
     binance_service = None
     telegram_service = None
+    discord_service = None
     health_monitor = None
     indicator_service = None
+    notification_service = None
     strategy = None
 
     try:
@@ -238,15 +276,28 @@ async def main():
         signal.signal(signal.SIGTERM, signal_handler)
 
         # Create service instances
-        binance_service = BinanceService(config)
-        telegram_service = TelegramService(config)
+        notification_service = NotificationService(
+            config=config,
+            telegram_service=None,  # Will be set after creation
+            discord_service=None    # Will be set after creation
+        )
+        
+        telegram_service = TelegramService(config) if config.get('api', {}).get('telegram', {}).get('enabled', True) else None
+        discord_service = DiscordService(config) if config.get('api', {}).get('discord', {}).get('enabled', True) else None
+        
+        # Update notification service with actual service instances
+        notification_service.telegram_service = telegram_service
+        notification_service.discord_service = discord_service
+        
+        # Create binance service with notification callback
+        binance_service = BinanceService(config, notification_service.send_message)
         health_monitor = HealthMonitor(config)
         indicator_service = IndicatorService(config)
         strategy = EnhancedTradingStrategy(
             config=config,
             binance_service=binance_service,
             indicator_service=indicator_service,
-            telegram_service=telegram_service
+            notification_service=notification_service
         )
 
         # Initialize Binance service first
@@ -259,14 +310,10 @@ async def main():
             logger.error(f"Error initializing Binance service: {str(e)}")
             return
 
-        # Set up services
-        telegram_service.set_binance_service(binance_service)
-
         # Initialize other services
         try:
-            await telegram_service.initialize()
-            if not telegram_service._is_initialized:
-                logger.error("Telegram service initialization failed")
+            if not await notification_service.initialize():
+                logger.error("Failed to initialize notification service")
                 return
                 
             if not await health_monitor.initialize():
@@ -287,20 +334,11 @@ async def main():
             return
 
         # Send startup notification
-        await telegram_service.send_startup_notification()
+        await notification_service.send_message("🚀 Trading bot started")
 
-        # Create a dedicated task for Telegram service
-        telegram_task = asyncio.create_task(telegram_service.run())
-        tasks.append(telegram_task)
-        logger.info("Telegram service task started")
-        
-        # Start monitoring tasks for the trading strategy
-        await strategy.start_monitoring_tasks()
-        logger.info("Trading strategy monitoring tasks started")
-        
-        # Start processing trading pairs
+        # Create tasks for each trading pair
         try:
-            with open("filtered_pairs.txt", "r") as f:
+            with open("future_symbols.txt", "r") as f:
                 trading_pairs = [line.strip() for line in f.readlines()]
         except Exception as e:
             logger.error(f"Error reading trading pairs: {str(e)}")
@@ -312,15 +350,12 @@ async def main():
                 symbol=symbol,
                 binance_service=binance_service,
                 telegram_service=telegram_service,
+                discord_service=discord_service,
                 health_monitor=health_monitor,
                 strategy=strategy,
                 indicator_service=indicator_service
             ))
             tasks.append(task)
-
-        # Create task for periodic balance check
-        balance_check_task = asyncio.create_task(telegram_service.periodic_balance_check())
-        tasks.append(balance_check_task)
 
         # Main loop to keep the bot running
         while is_running:
@@ -336,42 +371,23 @@ async def main():
                 await asyncio.sleep(60)  # Wait before retrying
             
         # Send shutdown notification
-        if telegram_service:
-            try:
-                await telegram_service.send_shutdown_notification()
-            except Exception as e:
-                logger.error(f"Error sending shutdown notification: {str(e)}")
-        
-        # Cancel all tasks and wait for them to complete
-        logger.info("Shutting down...")
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        
-        # Wait for all tasks to complete with timeout
-        try:
-            await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=5.0)
-        except asyncio.TimeoutError:
-            logger.warning("Some tasks did not complete in time")
-            # Force cancel remaining tasks
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
+        await notification_service.send_message("🛑 Trading bot stopped")
 
     except Exception as e:
         import traceback
         traceback.print_exc()
         logger.error(f"Fatal error in main: {str(e)}")
-        if telegram_service:
+        if notification_service:
             try:
-                await telegram_service.send_message(f"❌ Bot stopped due to error: {str(e)}")
+                await notification_service.send_error_notification(f"Bot stopped due to error: {str(e)}")
             except Exception as e:
                 logger.error(f"Error sending error notification: {str(e)}")
     finally:
-        # Cleanup services only once
+        # Cleanup services
         await cleanup_services(
             binance_service=binance_service,
             telegram_service=telegram_service,
+            discord_service=discord_service,
             health_monitor=health_monitor,
             indicator_service=indicator_service,
             strategy=strategy
@@ -380,7 +396,7 @@ async def main():
 
 if __name__ == "__main__":
     # Set event loop policy for Windows
-    if sys.platform == 'win32':
+    if sys.platform.lower() == 'win32':
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     
     try:

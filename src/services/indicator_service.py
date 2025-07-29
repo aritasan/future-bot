@@ -4,7 +4,7 @@ Service for managing technical indicators and data caching.
 import logging
 from typing import Dict, Optional
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import timedelta
 import ccxt.async_support as ccxt
 import asyncio
 import platform
@@ -41,6 +41,27 @@ class IndicatorService:
             "4h": 3600,  # 1 hour for 4h data
         }
         self._last_update = {}
+        self._time_offset = 0
+        self._last_sync_time = 0
+        self._sync_interval = 300
+        self._max_retries = 3
+        self._retry_delay = 1
+        self._max_retry_delay = 32
+        self._request_count = 0
+        self._last_request_time = 0
+        self._rate_limit = 1000  # Reduced from 2000 to avoid throttle queue issues
+        self._rate_limit_window = 60  # 60 seconds
+        self._rate_limit_queue = asyncio.Queue(maxsize=500)  # Limit queue size
+        self._rate_limit_task = None
+        self._ws_connections = {}
+        self._ws_subscriptions = {}
+        self._ws_data = {}
+        self._last_error_time = 0
+        self._error_count = 0
+        self._max_errors = 5
+        self._error_window = 300  # 5 minutes
+        self._throttle_backoff = 1  # Initial backoff time in seconds
+        self._max_throttle_backoff = 32  # Maximum backoff time in seconds
         
     async def initialize(self) -> bool:
         """Initialize the indicator service.
@@ -53,14 +74,23 @@ class IndicatorService:
                 logger.warning("Indicator service already initialized")
                 return True
                 
+            # Get API credentials based on mode
+            use_testnet = self.config['api']['binance']['use_testnet']
+            api_config = self.config['api']['binance']['testnet' if use_testnet else 'mainnet']
+            
             # Configure exchange options for Windows
             exchange_options = {
-                'apiKey': self.config['api']['binance']['api_key'],
-                'secret': self.config['api']['binance']['api_secret'],
+                'apiKey': api_config['api_key'],
+                'secret': api_config['api_secret'],
                 'enableRateLimit': True,
                 'options': {
                     'defaultType': 'future',
-                    'adjustForTimeDifference': True
+                    'adjustForTimeDifference': True,
+                    'recvWindow': 60000,  # 60 seconds
+                    'defaultTimeInForce': 'GTC',
+                    'createMarketBuyOrderRequiresPrice': False,
+                    'warnOnFetchOpenOrdersWithoutSymbol': False,
+                    'defaultPositionMode': 'hedge'  # Enable hedge mode
                 }
             }
             
@@ -74,6 +104,9 @@ class IndicatorService:
             # Initialize exchange
             self.exchange = ccxt.binance(exchange_options)
             
+            # Sync time with Binance server
+            await self._sync_time()
+            
             self._is_initialized = True
             logger.info("Indicator service initialized successfully")
             return True
@@ -82,71 +115,267 @@ class IndicatorService:
             logger.error(f"Failed to initialize indicator service: {str(e)}")
             return False
             
-    async def get_historical_data(self, symbol: str, timeframe: str = "5m", limit: int = 100) -> Optional[pd.DataFrame]:
-        """Get historical price data with caching and retry mechanism.
-        
-        Args:
-            symbol: Trading pair symbol
-            timeframe: Timeframe for data
-            limit: Number of candles to fetch
-            
-        Returns:
-            Optional[pd.DataFrame]: Historical price data
-        """
+    async def _sync_time(self) -> None:
+        """Synchronize local time with Binance server time."""
         try:
-            if not self._is_initialized:
-                logger.error("Indicator service not initialized")
-                return None
-                
-            if self._is_closed:
-                logger.error("Indicator service is closed")
-                return None
-                
-            cache_key = f"{symbol}_{timeframe}_{limit}"
-            current_time = datetime.now()
-            
-            # Check cache
-            if cache_key in self.data_cache:
-                cached_data, timestamp = self.data_cache[cache_key]
-                if current_time - timestamp < self.cache_expiry:
-                    return cached_data
-                    
-            # Fetch new data with retry mechanism
-            for attempt in range(self.max_retries):
+            current_time = time.time()
+            if current_time - self._last_sync_time < self._sync_interval:
+                return
+
+            # Get server time with retry mechanism
+            for attempt in range(3):
                 try:
-                    # Use the same event loop for all operations
-                    ohlcv = await self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+                    server_time = await self.exchange.fetch_time()
+                    local_time = int(time.time() * 1000)
+                    self._time_offset = server_time - local_time
+                    self._last_sync_time = current_time
                     
-                    # Convert to DataFrame
-                    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-                    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-                    df.set_index('timestamp', inplace=True)
+                    # Increase recvWindow to avoid timestamp errors
+                    if hasattr(self.exchange, 'options'):
+                        self.exchange.options['recvWindow'] = 60000  # 60 seconds
+                        # logger.info(f"Time synchronized. Offset: {self._time_offset}ms, recvWindow: 60s")
+                    else:
+                        logger.warning("Exchange options not available for recvWindow adjustment")
+                    return
+                except Exception as e:
+                    if attempt < 2:
+                        logger.warning(f"Time sync attempt {attempt + 1} failed: {str(e)}")
+                        await asyncio.sleep(1)
+                    else:
+                        raise e
                     
-                    # Validate data
-                    if df.empty or len(df) < 2:
-                        logger.warning(f"Not enough data for {symbol} {timeframe}")
-                        return None
+        except Exception as e:
+            logger.error(f"Error synchronizing time: {str(e)}")
+            # Force sync on next request
+            self._last_sync_time = 0
+
+    async def _setup_websocket(self, symbol: str, channel: str) -> None:
+        """Setup websocket connection for a symbol and channel."""
+        try:
+            if symbol not in self._ws_connections:
+                self._ws_connections[symbol] = {}
+                
+            if channel not in self._ws_connections[symbol]:
+                # Check if websocket method is supported
+                try:
+                    if channel == 'ticker':
+                        # Fallback to REST API for ticker
+                        ticker = await self._make_request(self.exchange.fetch_ticker, symbol)
+                        if ticker:
+                            self._ws_data[symbol] = ticker
+                            self._cache[f"{symbol}_ticker"] = {
+                                'data': ticker,
+                                'timestamp': time.time()
+                            }
+                        return
                         
-                    # Check for missing values
-                    if df.isnull().any().any():
-                        logger.warning(f"Missing values in data for {symbol} {timeframe}")
-                        df = df.ffill().bfill()
+                    elif channel == 'orderbook':
+                        ws = await self.exchange.watch_order_book(symbol)
+                    elif channel == 'trades':
+                        ws = await self.exchange.watch_trades(symbol)
+                    else:
+                        raise ValueError(f"Unsupported websocket channel: {channel}")
                         
-                    # Update cache
-                    self.data_cache[cache_key] = (df, current_time)
+                    self._ws_connections[symbol][channel] = ws
+                    self._ws_data[symbol] = {}
                     
-                    return df
+                    # Start background task to process websocket data
+                    asyncio.create_task(self._process_ws_data(symbol, channel))
                     
                 except Exception as e:
-                    if attempt < self.max_retries - 1:
-                        logger.warning(f"Attempt {attempt + 1} failed for {symbol}: {str(e)}")
-                        await asyncio.sleep(self.retry_delay)
+                    if "not supported" in str(e).lower():
+                        # Fallback to REST API for unsupported methods
+                        await self._fallback_to_rest_api(symbol, channel)
                     else:
-                        logger.error(f"Error fetching historical data for {symbol}: {str(e)}")
-                        return None
+                        raise e
                         
         except Exception as e:
-            logger.error(f"Error in get_historical_data for {symbol}: {str(e)}")
+            logger.error(f"Error setting up websocket for {symbol} {channel}: {str(e)}")
+            await self._fallback_to_rest_api(symbol, channel)
+            
+    async def _fallback_to_rest_api(self, symbol: str, channel: str) -> None:
+        """Fallback to REST API when websocket fails or is not supported."""
+        try:
+            if channel == 'ticker':
+                data = await self._make_request(self.exchange.fetch_ticker, symbol)
+            elif channel == 'orderbook':
+                data = await self._make_request(self.exchange.fetch_order_book, symbol)
+            elif channel == 'trades':
+                data = await self._make_request(self.exchange.fetch_trades, symbol)
+            else:
+                return
+                
+            if data:
+                self._ws_data[symbol] = data
+                self._cache[f"{symbol}_{channel}"] = {
+                    'data': data,
+                    'timestamp': time.time()
+                }
+                
+        except Exception as e:
+            logger.error(f"Error in REST API fallback for {symbol} {channel}: {str(e)}")
+            
+    async def _process_ws_data(self, symbol: str, channel: str) -> None:
+        """Process websocket data for a symbol and channel."""
+        try:
+            ws = self._ws_connections[symbol][channel]
+            while True:
+                data = await ws.recv()
+                self._ws_data[symbol] = data
+                
+        except Exception as e:
+            logger.error(f"Error processing websocket data for {symbol} {channel}: {str(e)}")
+            await self._cleanup_websocket(symbol, channel)
+            
+    async def _cleanup_websocket(self, symbol: str, channel: str) -> None:
+        """Cleanup websocket connection."""
+        try:
+            if symbol in self._ws_connections and channel in self._ws_connections[symbol]:
+                await self._ws_connections[symbol][channel].close()
+                del self._ws_connections[symbol][channel]
+                if not self._ws_connections[symbol]:
+                    del self._ws_connections[symbol]
+                if symbol in self._ws_data:
+                    del self._ws_data[symbol]
+                    
+        except Exception as e:
+            logger.error(f"Error cleaning up websocket for {symbol} {channel}: {str(e)}")
+            
+    async def _rate_limit_handler(self) -> None:
+        """Handle rate limiting by queueing requests."""
+        while True:
+            try:
+                current_time = time.time()
+                
+                # Check error rate
+                if self._error_count >= self._max_errors:
+                    if current_time - self._last_error_time < self._error_window:
+                        # Too many errors, wait longer
+                        await asyncio.sleep(self._error_window)
+                        self._error_count = 0
+                        self._last_error_time = current_time
+                    else:
+                        self._error_count = 0
+                
+                # Check rate limit
+                if self._request_count >= self._rate_limit:
+                    # Wait until rate limit window resets
+                    wait_time = self._rate_limit_window - (current_time - self._last_request_time)
+                    if wait_time > 0:
+                        await asyncio.sleep(wait_time)
+                    self._request_count = 0
+                    self._last_request_time = current_time
+                    
+                # Process queued requests
+                while not self._rate_limit_queue.empty():
+                    request = await self._rate_limit_queue.get()
+                    try:
+                        await request
+                    except Exception as e:
+                        logger.error(f"Error processing queued request: {str(e)}")
+                        self._error_count += 1
+                        self._last_error_time = current_time
+                    finally:
+                        self._rate_limit_queue.task_done()
+                        
+                await asyncio.sleep(0.1)
+                
+            except Exception as e:
+                logger.error(f"Error in rate limit handler: {str(e)}")
+                await asyncio.sleep(1)
+                
+    async def _make_request(self, func, *args, **kwargs):
+        """Make a request with rate limiting and retry mechanism."""
+        retries = 0
+        last_error = None
+        throttle_backoff = self._throttle_backoff
+
+        while retries < self._max_retries:
+            try:
+                # Check rate limit
+                current_time = time.time()
+                if current_time - self._last_request_time >= self._rate_limit_window:
+                    self._request_count = 0
+                    self._last_request_time = current_time
+                    
+                if self._request_count >= self._rate_limit:
+                    # Wait until rate limit window resets
+                    wait_time = self._rate_limit_window - (current_time - self._last_request_time)
+                    if wait_time > 0:
+                        await asyncio.sleep(wait_time)
+                    self._request_count = 0
+                    self._last_request_time = current_time
+                    
+                # Make request
+                self._request_count += 1
+                result = await func(*args, **kwargs)
+                # Reset throttle backoff on successful request
+                throttle_backoff = self._throttle_backoff
+                return result
+                
+            except Exception as e:
+                last_error = e
+                retries += 1
+                
+                if '-1021' in str(e):  # Timestamp error
+                    logger.warning(f"Timestamp error detected: {str(e)}. Forcing time sync...")
+                    self._last_sync_time = 0
+                    await self._sync_time()
+                    continue
+                    
+                if 'throttle queue is over maxCapacity' in str(e):
+                    # Exponential backoff for throttle errors
+                    wait_time = min(throttle_backoff, self._max_throttle_backoff)
+                    logger.warning(f"Throttle queue full, waiting {wait_time}s before retry (attempt {retries}/{self._max_retries})")
+                    await asyncio.sleep(wait_time)
+                    throttle_backoff *= 2  # Double the backoff time
+                    continue
+                    
+                if retries < self._max_retries:
+                    delay = min(self._retry_delay * (2 ** (retries - 1)), self._max_retry_delay)
+                    logger.warning(f"Request failed, retrying in {delay}s (attempt {retries}/{self._max_retries})")
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error(f"Request failed after {retries} attempts: {str(last_error)}")
+                    self._error_count += 1
+                    self._last_error_time = time.time()
+                    raise last_error
+
+    async def get_historical_data(self, symbol: str, timeframe: str = "5m", limit: int = 100) -> Optional[pd.DataFrame]:
+        """Get historical data with improved caching and rate limiting."""
+        try:
+            # Check cache first
+            cache_key = f"{symbol}_{timeframe}_{limit}"
+            if cache_key in self._cache:
+                cache_data = self._cache[cache_key]
+                if time.time() - cache_data['timestamp'] < self._cache_ttl.get(timeframe, 60):
+                    return cache_data['data']
+                    
+            # Get data from exchange
+            data = await self._make_request(
+                self.exchange.fetch_ohlcv,
+                symbol,
+                timeframe=timeframe,
+                limit=limit
+            )
+            
+            if data:
+                df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                df.set_index('timestamp', inplace=True)
+                
+                # Update cache
+                self._cache[cache_key] = {
+                    'data': df,
+                    'timestamp': time.time()
+                }
+                
+                return df
+                
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error getting historical data for {symbol}: {str(e)}")
             return None
             
     async def calculate_indicators(self, symbol: str, timeframe: str = "5m", limit: int = 100) -> Optional[pd.DataFrame]:
@@ -180,25 +409,33 @@ class IndicatorService:
                     return cached_data
             
             # Fetch new data if cache is invalid or missing
-            ohlcv = await self.exchange.fetch_ohlcv(symbol, timeframe, limit)
-            if not ohlcv:
-                logger.error(f"Failed to fetch OHLCV data for {symbol}")
-                return None
+            try:
+                ohlcv = await self._make_request(self.exchange.fetch_ohlcv, symbol, timeframe, limit)
+                if not ohlcv:
+                    logger.error(f"Failed to fetch OHLCV data for {symbol}")
+                    return None
+                    
+                # Convert to DataFrame
+                df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                df.set_index('timestamp', inplace=True)
                 
-            # Convert to DataFrame
-            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            df.set_index('timestamp', inplace=True)
-            
-            # Calculate indicators
-            df = await self._calculate_technical_indicators(df)
-            
-            # Cache the result
-            self._cache[cache_key] = (df, current_time)
-            self._last_update[cache_key] = current_time
-            
-            return df
-            
+                # Calculate indicators
+                df = await self._calculate_technical_indicators(df)
+                
+                # Cache the result
+                self._cache[cache_key] = (df, current_time)
+                self._last_update[cache_key] = current_time
+                
+                return df
+                
+            except Exception as e:
+                if 'throttle queue is over maxCapacity' in str(e):
+                    logger.warning(f"Throttle queue full for {symbol}, using cached data if available")
+                    if cache_key in self._cache:
+                        return self._cache[cache_key][0]
+                raise e
+                
         except Exception as e:
             logger.error(f"Error calculating indicators: {str(e)}")
             return None
@@ -345,6 +582,14 @@ class IndicatorService:
             df = self._calculate_roc(df)
             df = self._calculate_adx(df)
             df = self._calculate_ichimoku(df)
+            
+            # Add advanced momentum indicators
+            df = self._calculate_momentum(df)
+            df = self._calculate_stochastic(df)
+            df = self._calculate_mfi(df)
+            df = self._calculate_obv(df)
+            df = self._calculate_cci(df)
+            df = self._calculate_williams_r(df)
             
             return df
             
@@ -541,3 +786,136 @@ class IndicatorService:
         except Exception as e:
             logger.error(f"Error calculating ATR for {symbol}: {str(e)}")
             return None 
+
+    def _calculate_momentum(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate momentum indicators."""
+        try:
+            # Rate of Change (ROC)
+            df['ROC'] = ((df['close'] - df['close'].shift(14)) / df['close'].shift(14)) * 100.0
+            
+            # Momentum
+            df['MOM'] = df['close'] - df['close'].shift(10)
+            
+            # Relative Momentum Index (RMI)
+            df['RMI'] = self._calculate_rmi(df)
+            
+            return df
+        except Exception as e:
+            logger.error(f"Error calculating momentum indicators: {str(e)}")
+            return df
+
+    def _calculate_rmi(self, df: pd.DataFrame) -> pd.Series:
+        """Calculate Relative Momentum Index."""
+        try:
+            # Calculate price changes
+            price_changes = df['close'].diff()
+            
+            # Calculate upward and downward movements
+            up_moves = price_changes.where(price_changes > 0, 0.0)
+            down_moves = -price_changes.where(price_changes < 0, 0.0)
+            
+            # Calculate smoothed averages
+            up_avg = up_moves.rolling(window=14).mean()
+            down_avg = down_moves.rolling(window=14).mean()
+            
+            # Calculate RMI
+            rmi = 100.0 - (100.0 / (1.0 + (up_avg / down_avg)))
+            return rmi
+        except Exception as e:
+            logger.error(f"Error calculating RMI: {str(e)}")
+            return pd.Series(0.0, index=df.index)
+
+    def _calculate_stochastic(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate Stochastic Oscillator."""
+        try:
+            # Calculate %K
+            low_min = df['low'].rolling(window=14).min()
+            high_max = df['high'].rolling(window=14).max()
+            df['STOCH_K'] = 100.0 * ((df['close'] - low_min) / (high_max - low_min))
+            
+            # Calculate %D (3-period moving average of %K)
+            df['STOCH_D'] = df['STOCH_K'].rolling(window=3).mean()
+            
+            return df
+        except Exception as e:
+            logger.error(f"Error calculating Stochastic: {str(e)}")
+            return df
+
+    def _calculate_mfi(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate Money Flow Index."""
+        try:
+            # Calculate typical price
+            typical_price = (df['high'] + df['low'] + df['close']) / 3.0
+            
+            # Calculate money flow
+            money_flow = typical_price * df['volume']
+            
+            # Calculate positive and negative money flow
+            price_diff = typical_price.diff()
+            positive_flow = money_flow.where(price_diff > 0, 0.0)
+            negative_flow = money_flow.where(price_diff < 0, 0.0)
+            
+            # Calculate money ratio
+            positive_flow_sum = positive_flow.rolling(window=14).sum()
+            negative_flow_sum = negative_flow.rolling(window=14).sum()
+            money_ratio = positive_flow_sum / negative_flow_sum
+            
+            # Calculate MFI
+            df['MFI'] = 100.0 - (100.0 / (1.0 + money_ratio))
+            
+            return df
+        except Exception as e:
+            logger.error(f"Error calculating MFI: {str(e)}")
+            return df
+
+    def _calculate_obv(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate On-Balance Volume."""
+        try:
+            # Calculate price changes
+            price_changes = df['close'].diff()
+            
+            # Calculate OBV
+            obv = pd.Series(0.0, index=df.index)
+            obv[price_changes > 0] = df['volume']
+            obv[price_changes < 0] = -df['volume']
+            df['OBV'] = obv.cumsum()
+            
+            return df
+        except Exception as e:
+            logger.error(f"Error calculating OBV: {str(e)}")
+            return df
+
+    def _calculate_cci(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate Commodity Channel Index."""
+        try:
+            # Calculate typical price
+            typical_price = (df['high'] + df['low'] + df['close']) / 3.0
+            
+            # Calculate moving average
+            ma = typical_price.rolling(window=20).mean()
+            
+            # Calculate mean deviation
+            mean_deviation = abs(typical_price - ma).rolling(window=20).mean()
+            
+            # Calculate CCI
+            df['CCI'] = (typical_price - ma) / (0.015 * mean_deviation)
+            
+            return df
+        except Exception as e:
+            logger.error(f"Error calculating CCI: {str(e)}")
+            return df
+
+    def _calculate_williams_r(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate Williams %R."""
+        try:
+            # Calculate highest high and lowest low
+            highest_high = df['high'].rolling(window=14).max()
+            lowest_low = df['low'].rolling(window=14).min()
+            
+            # Calculate Williams %R
+            df['WILLIAMS_R'] = -100.0 * (highest_high - df['close']) / (highest_high - lowest_low)
+            
+            return df
+        except Exception as e:
+            logger.error(f"Error calculating Williams %R: {str(e)}")
+            return df 

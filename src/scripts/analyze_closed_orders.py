@@ -5,7 +5,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 import pandas as pd
-from typing import Dict, List, Optional
+from typing import Dict, List
 import matplotlib.pyplot as plt
 import seaborn as sns
 import sys
@@ -36,9 +36,16 @@ class OrderAnalyzer:
             start_time = int((datetime.now() - timedelta(days=days)).timestamp() * 1000)
             
             # Get all markets
-            markets = await self.binance_service.get_markets()
-            if not markets:
-                logger.error("Failed to get markets")
+            # Read futures symbols from file
+            try:
+                with open('future_symbols.txt', 'r') as f:
+                    markets = [line.strip() for line in f if line.strip()]
+                logger.info(f"Loaded {len(markets)} futures markets from file")
+            except FileNotFoundError:
+                logger.error("future_symbols.txt file not found")
+                return []
+            except Exception as e:
+                logger.error(f"Error reading futures symbols file: {str(e)}")
                 return []
                 
             # Fetch orders for each market
@@ -187,6 +194,20 @@ class OrderAnalyzer:
             # Convert to DataFrame
             df = pd.DataFrame(orders)
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            
+            # Extract realized PnL
+            if 'info' in df.columns:
+                # Try to extract realizedPnl from info column
+                df['realized_pnl'] = df['info'].apply(
+                    lambda x: float(x.get('realizedPnl', 0)) if isinstance(x, dict) and 'realizedPnl' in x else 0
+                )
+            elif 'realized_pnl' not in df.columns:
+                # Calculate PnL if not available
+                df['realized_pnl'] = 0
+                if 'cost' in df.columns and 'filled' in df.columns and 'price' in df.columns:
+                    df['realized_pnl'] = (df['price'] - df['cost']) * df['filled']
+            
+            # Convert realized_pnl to float
             df['pnl'] = df['realized_pnl'].astype(float)
             
             # Create figure with subplots
@@ -231,6 +252,7 @@ class OrderAnalyzer:
             logger.info(f"Performance plots saved to {output_file}")
         except Exception as e:
             logger.error(f"Error generating plots: {str(e)}")
+            logger.error(f"DataFrame columns: {df.columns.tolist() if 'df' in locals() else 'No DataFrame'}")
             
     def export_to_csv(self, orders: List[Dict], output_file: str = "closed_orders.csv"):
         """Export order data to CSV file."""

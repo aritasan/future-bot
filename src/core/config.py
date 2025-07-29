@@ -9,7 +9,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Trading parameters
-ORDER_RISK_PERCENT = float(os.getenv("ORDER_RISK_PERCENT", "1.0"))  # 100% risk per trade
 MAX_DRAWDOWN = float(os.getenv("MAX_DRAWDOWN", "10.0"))  # 10% max drawdown
 ATR_PERIOD = int(os.getenv("ATR_PERIOD", "14"))
 MAX_ORDERS_PER_SYMBOL = int(os.getenv("MAX_ORDERS_PER_SYMBOL", "3"))
@@ -31,14 +30,6 @@ TIMEFRAME_WEIGHTS = {
     "4h": 0.2
 }
 
-# Signal score weights
-SIGNAL_SCORE_WEIGHTS = {
-    "technical": 0.3,
-    "market": 0.2,
-    "timeframe": 0.2,
-    "btc": 0.15,
-    "sentiment": 0.15
-}
 
 # Drawdown warning levels
 DRAWDOWN_WARNING_LEVELS = [0.5, 0.7, 0.9]
@@ -69,19 +60,6 @@ CPU_THRESHOLD = 80  # percent
 MEMORY_THRESHOLD = 80  # percent
 DISK_THRESHOLD = 80  # percent
 
-# Trading pairs
-TRADING_PAIRS = [
-    'BTC/USDT',
-    'ETH/USDT',
-    'BNB/USDT',
-    'ADA/USDT',
-    'DOGE/USDT',
-    'XRP/USDT',
-    'DOT/USDT',
-    'UNI/USDT',
-    'LINK/USDT',
-    'LTC/USDT'
-]
 
 # Timeframes
 TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d']
@@ -108,75 +86,208 @@ TREND_MULTIPLIER = float(os.getenv("TREND_MULTIPLIER", "1.2"))  # Trend strength
 TAKE_PROFIT_MULTIPLIER = float(os.getenv("TAKE_PROFIT_MULTIPLIER", "2.0"))  # Risk:Reward ratio
 DCA_MULTIPLIER = float(os.getenv("DCA_MULTIPLIER", "0.5"))  # DCA size relative to initial position
 ATR_MULTIPLIER = float(os.getenv("ATR_MULTIPLIER", "1.5"))  # ATR multiplier for dynamic stops
+STOP_LOSS_ATR_MULTIPLIER = float(os.getenv("STOP_LOSS_ATR_MULTIPLIER", "1.5"))  # ATR multiplier for stop loss calculation
+
+# New risk management parameters
+MIN_STOP_DISTANCE = float(os.getenv("MIN_STOP_DISTANCE", "0.005"))  # 0.5% minimum distance for stop loss
+MIN_TP_DISTANCE = float(os.getenv("MIN_TP_DISTANCE", "0.01"))     # 1% minimum distance for take profit
+TRAILING_STOP_ACTIVATION = float(os.getenv("TRAILING_STOP_ACTIVATION", "0.02"))
+TRAILING_STOP_DISTANCE = float(os.getenv("TRAILING_STOP_DISTANCE", "0.01"))
+DCA_ENABLED = bool(os.getenv("DCA_ENABLED", "true"))
+MAX_DCA_ATTEMPTS = int(os.getenv("MAX_DCA_ATTEMPTS", "3"))
+DCA_DISTANCE = float(os.getenv("DCA_DISTANCE", "0.02"))
 
 def load_config() -> Dict[str, Any]:
-    """Load configuration from environment variables."""
-    config = {
-        'api': {
-            'binance': {
-                'api_key': BINANCE_API_KEY,
-                'api_secret': BINANCE_API_SECRET
+    """Load configuration from environment variables and config file."""
+    try:
+        # Load environment variables
+        config = {
+            'is_telegram_enabled': os.getenv('IS_TELEGRAM_ENABLED', 'false').lower() == 'true',
+            'api': {
+                'binance': {
+                    'use_testnet': os.getenv('USE_TESTNET', 'false').lower() == 'true',
+                    'mainnet': {
+                        'api_key': os.getenv('BINANCE_MAINNET_API_KEY'),
+                        'api_secret': os.getenv('BINANCE_MAINNET_API_SECRET')
+                    },
+                    'testnet': {
+                        'api_key': os.getenv('BINANCE_TESTNET_API_KEY'),
+                        'api_secret': os.getenv('BINANCE_TESTNET_API_SECRET')
+                    }
+                },
+                'telegram': {
+                    'bot_token': os.getenv('TELEGRAM_BOT_TOKEN'),
+                    'chat_id': os.getenv('TELEGRAM_CHAT_ID'),
+                    'enabled': os.getenv('TELEGRAM_ENABLED', 'false').lower() == 'true'
+                },
+                'discord': {
+                    'webhook_url': os.getenv('DISCORD_WEBHOOK_URL'),
+                    'bot_token': os.getenv('DISCORD_BOT_TOKEN'),
+                    'channel_id': os.getenv('DISCORD_CHANNEL_ID'),
+                    'enabled': os.getenv('DISCORD_ENABLED', 'true').lower() == 'true'
+                },
+                'twitter': {
+                    'api_key': TWITTER_API_KEY,
+                    'api_secret': TWITTER_API_SECRET,
+                    'access_token': TWITTER_ACCESS_TOKEN,
+                    'access_token_secret': TWITTER_ACCESS_TOKEN_SECRET
+                },
+                'news': {
+                    'api_key': NEWS_API_KEY
+                }
             },
-            'telegram': {
-                'bot_token': TELEGRAM_BOT_TOKEN,
-                'chat_id': TELEGRAM_CHAT_ID
+            'trading': {
+                'min_volume': 1000000,
+                'min_volatility': 0.02,
+                'max_drawdown': MAX_DRAWDOWN,
+                'risk_per_trade': RISK_PER_TRADE,
+                'min_volume_ratio': MIN_VOLUME_RATIO,
+                'max_volatility_ratio': MAX_VOLATILITY_RATIO,
+                'min_adx': MIN_ADX,
+                'max_bb_width': MAX_BB_WIDTH,
+                'timeframe_weights': TIMEFRAME_WEIGHTS,
+                'max_correlation': MAX_CORRELATION,
+                'leverage': DEFAULT_LEVERAGE,
+                "signal_thresholds": {
+                    "long_entry": 0.25,  # Increased from 0.25 for stricter entry conditions
+                    "short_entry": -0.4,  # Decreased from -0.25 for stricter entry conditions
+                    "exit": 0.0,  # Neutral threshold for exit signals
+                    "trend_strength": 0.5,  # Minimum trend strength required
+                    "volume_ratio": 1.2,  # Minimum volume ratio required
+                    "volatility_ratio": 1.5,  # Maximum volatility ratio allowed
+                    "correlation_threshold": 0.7  # Minimum correlation with BTC required
+                }
             },
-            'twitter': {
-                'api_key': TWITTER_API_KEY,
-                'api_secret': TWITTER_API_SECRET,
-                'access_token': TWITTER_ACCESS_TOKEN,
-                'access_token_secret': TWITTER_ACCESS_TOKEN_SECRET
+            'risk_management': {
+                # General risk parameters
+                'max_risk_per_trade': 0.02,  # 2% of account balance
+                'max_risk_per_position': 0.05,  # 5% of account balance
+                'min_stop_distance': 0.1,  # 10% minimum stop distance
+                'min_tp_distance': 0.1,  # 10% minimum take profit distance
+                'take_profit_multiplier': 4.0,  # R:R ratio
+                
+                # IP monitoring configuration
+                'ip_monitor': {
+                    'enabled': os.getenv('IP_MONITOR_ENABLED', 'true').lower() == 'true',
+                    'check_interval': int(os.getenv('IP_MONITOR_CHECK_INTERVAL', '300')),  # 5 minutes
+                    'notification_cooldown': int(os.getenv('IP_MONITOR_NOTIFICATION_COOLDOWN', '300')),  # 5 minutes
+                    'ip_services': [
+                        'https://api.ipify.org',
+                        'https://httpbin.org/ip',
+                        'https://ipinfo.io/ip',
+                        'https://icanhazip.com'
+                    ]
+                },
+                
+                # Stop loss calculation parameters
+                'atr_multiplier': 1.5,  # ATR multiplier for stop loss calculation
+                'volatility_multiplier': 1.5,  # Volatility adjustment factor
+                'trend_multiplier': 1.2,  # Trend strength adjustment factor
+                'base_stop_distance': 0.02,  # Base stop distance (2%)
+                'stop_loss_atr_multiplier': 4.0,  # ATR multiplier for stop loss calculation
+                
+                # DCA parameters
+                'dca': {
+                    'enabled': True,
+                    'dca_size_multiplier': 0.5,  # 50% of initial position size
+                    'max_dca_size_multiplier': 2,  # Maximum DCA size multiplier
+                    'min_dca_size': 0.001,  # Minimum DCA size
+                    'max_attempts': 3,  # Maximum number of DCA attempts per position
+                    'min_interval': 3600,  # Minimum time between DCA attempts (1 hour)
+                    'risk_reduction': 0.5,  # Reduce risk by 50% for each DCA attempt
+                    'price_drop_thresholds': [0.02, 0.05, 0.1],  # Price drop thresholds
+                    'volume_threshold': 1.5,  # Minimum volume ratio
+                    'volatility_threshold': 0.02,  # Maximum volatility
+                    'rsi_thresholds': {
+                        'oversold': 30,
+                        'overbought': 70
+                    },
+                    'min_time_between_attempts': 3600,  # Minimum 1 hour between attempts
+                    'max_positions': 5,  # Maximum number of positions in DCA
+                    'btc_correlation_threshold': 0.7,  # Minimum BTC correlation
+                    
+                    # New time-based adjustment parameters
+                    'time_based_adjustment': {
+                        'enabled': True,
+                        'time_windows': [3600, 7200, 14400],  # 1h, 2h, 4h
+                        'size_multipliers': [1.0, 0.8, 0.6]   # Reduce DCA size over time
+                    },
+                    
+                    # New risk control parameters
+                    'risk_control': {
+                        'max_drawdown': 0.1,  # 10% max drawdown for DCA
+                        'max_position_size': 0.2,  # 20% of account
+                        'min_profit_target': 0.03  # 3% minimum profit target
+                    }
+                },
+                
+                # Trailing stop parameters
+                'trailing_stop': {
+                    'update_interval': 600,  # Update every 600 seconds
+                    'break_even': {
+                        'min_profit': 0.1,  # Minimum 10% profit
+                        'min_time': 300  # Minimum 5 minutes
+                    },
+                    'partial_profit': {
+                        'min_profit': 0.2,  # Minimum 20% profit
+                        'min_time': 600,  # Minimum 10 minutes
+                        'close_ratio': 0.5  # Close 50% of position
+                    },
+                    
+                    # New dynamic trailing stop parameters
+                    'dynamic': {
+                        'enabled': True,
+                        'atr_multiplier': 4.5,
+                        'volatility_adjustment': True,
+                        'trend_adjustment': True
+                    },
+                    
+                    # New time-based parameters
+                    'time_based': {
+                        'enabled': True,
+                        'time_windows': [1800, 3600, 7200],  # 30m, 1h, 2h
+                        'distance_multipliers': [1.0, 1.2, 1.5]  # Increase distance over time
+                    }
+                },
+                
+                # Emergency stop parameters
+                'emergency_stop': {
+                    'volatility_threshold': 0.1,  # 10% volatility threshold
+                    'volume_threshold': 2.0,  # 2x average volume threshold
+                    'distance': 0.02  # 2% emergency stop distance
+                },
+
+                # New order frequency control parameters
+                'order_frequency': {
+                    'min_time_between_orders': 300,  # 5 minutes minimum between orders
+                    'max_orders_per_hour': 12,  # Maximum 12 orders per hour
+                    'max_orders_per_day': 50,  # Maximum 50 orders per day
+                    'cool_down_period': 3600,  # 1 hour cool down if limits exceeded
+                    'time_windows': {
+                        'hourly': 3600,
+                        'daily': 86400
+                    }
+                }
             },
-            'news': {
-                'api_key': NEWS_API_KEY
+            'cache': {
+                'price_ttl': PRICE_CACHE_TTL,
+                'position_ttl': POSITION_CACHE_TTL
+            },
+            'circuit_breaker': {
+                'failure_threshold': FAILURE_THRESHOLD,
+                'reset_timeout': RESET_TIMEOUT
+            },
+            'health_monitor': {
+                'cpu_threshold': CPU_THRESHOLD,
+                'memory_threshold': MEMORY_THRESHOLD,
+                'disk_threshold': DISK_THRESHOLD
+            },
+            'model': {
+                'dir': MODEL_DIR,
+                'positions_file': POSITIONS_FILE
             }
-        },
-        'trading': {
-            'order_risk_percent': ORDER_RISK_PERCENT,
-            'max_drawdown': MAX_DRAWDOWN,
-            'atr_period': ATR_PERIOD,
-            'max_orders_per_symbol': MAX_ORDERS_PER_SYMBOL,
-            'risk_per_trade': RISK_PER_TRADE,
-            'min_volume_ratio': MIN_VOLUME_RATIO,
-            'max_volatility_ratio': MAX_VOLATILITY_RATIO,
-            'min_adx': MIN_ADX,
-            'max_bb_width': MAX_BB_WIDTH,
-            'timeframe_weights': TIMEFRAME_WEIGHTS,
-            'signal_score_weights': SIGNAL_SCORE_WEIGHTS,
-            'drawdown_warning_levels': DRAWDOWN_WARNING_LEVELS,
-            'trading_pairs': TRADING_PAIRS,
-            'timeframes': TIMEFRAMES,
-            'default_timeframe': DEFAULT_TIMEFRAME,
-            'default_leverage': DEFAULT_LEVERAGE,
-            'max_leverage': MAX_LEVERAGE,
-            'min_order_size': MIN_ORDER_SIZE,
-            'max_correlation': MAX_CORRELATION,
-            'price_precision': PRICE_PRECISION
-        },
-        'risk_management': {
-            'base_stop_distance': BASE_STOP_DISTANCE,
-            'volatility_multiplier': VOLATILITY_MULTIPLIER,
-            'trend_multiplier': TREND_MULTIPLIER,
-            'take_profit_multiplier': TAKE_PROFIT_MULTIPLIER,
-            'dca_multiplier': DCA_MULTIPLIER,
-            'atr_multiplier': ATR_MULTIPLIER
-        },
-        'cache': {
-            'price_ttl': PRICE_CACHE_TTL,
-            'position_ttl': POSITION_CACHE_TTL
-        },
-        'circuit_breaker': {
-            'failure_threshold': FAILURE_THRESHOLD,
-            'reset_timeout': RESET_TIMEOUT
-        },
-        'health_monitor': {
-            'cpu_threshold': CPU_THRESHOLD,
-            'memory_threshold': MEMORY_THRESHOLD,
-            'disk_threshold': DISK_THRESHOLD
-        },
-        'model': {
-            'dir': MODEL_DIR,
-            'positions_file': POSITIONS_FILE
         }
-    }
-    return config 
+        return config
+    except Exception as e:
+        print(f"Error loading configuration: {e}")
+        return {} 
