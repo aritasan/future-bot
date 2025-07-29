@@ -585,6 +585,9 @@ class EnhancedTradingStrategy:
         try:
             start_time = time.time()
             
+            # Add small delay to avoid rate limiting
+            await asyncio.sleep(0.1)
+            
             # Clear expired cache periodically
             cache_stats = self._cache.get_stats()
             if cache_stats['size'] > 100:  # Clear when cache gets too large
@@ -728,33 +731,80 @@ class EnhancedTradingStrategy:
             logger.info(f"{symbol} Signal score: {signal_score}")
             logger.info(f"Generated {position_type} signal for {symbol} with score {signal_score:.2f}")
             logger.info(f"Signal components for {symbol}:")
-            logger.info(f"- Trend: {timeframe_analysis.get('trend', 'NEUTRAL')}")
+            
+            # Safe access to timeframe_analysis
+            if isinstance(timeframe_analysis, dict):
+                trend_info = timeframe_analysis.get('trend', 'NEUTRAL')
+            else:
+                trend_info = 'NEUTRAL'
+            logger.info(f"- Trend: {trend_info}")
+            
             logger.info(f"- Volume: {'OK' if self.check_volume_condition(df) else 'LOW'}")
-            logger.info(f"- Volatility: {btc_volatility.get('volatility_level', 'LOW')}")
-            logger.info(f"- Correlation: {altcoin_correlation.get('correlation', 0):.2f}")
-            logger.info(f"- Sentiment: {sentiment.get('sentiment', 0):.2f}")
-            logger.info(f"- Market Structure: {market_structure.get('structure', 'NEUTRAL')}")
+            
+            # Safe access to btc_volatility
+            if isinstance(btc_volatility, dict):
+                volatility_info = btc_volatility.get('volatility_level', 'LOW')
+            else:
+                volatility_info = 'LOW'
+            logger.info(f"- Volatility: {volatility_info}")
+            
+            # Safe access to altcoin_correlation
+            if isinstance(altcoin_correlation, dict):
+                correlation_info = altcoin_correlation.get('correlation', 0)
+            else:
+                correlation_info = 0
+            logger.info(f"- Correlation: {correlation_info:.2f}")
+            
+            # Safe access to sentiment
+            if isinstance(sentiment, dict):
+                sentiment_info = sentiment.get('sentiment', 0)
+            else:
+                sentiment_info = 0
+            logger.info(f"- Sentiment: {sentiment_info:.2f}")
+            
+            # Safe access to market_structure
+            if isinstance(market_structure, dict):
+                structure_info = market_structure.get('structure', 'NEUTRAL')
+            else:
+                structure_info = 'NEUTRAL'
+            logger.info(f"- Market Structure: {structure_info}")
+            
             logger.info(f"- Funding Rate: {funding_rate:.4f}")
             logger.info(f"- Open Interest: {open_interest}")
 
-            # Prepare signal response
+            # Prepare signal response with safe data conversion
+            def safe_convert_data(data):
+                """Safely convert data for JSON serialization."""
+                if isinstance(data, dict):
+                    return {k: safe_convert_data(v) for k, v in data.items()}
+                elif isinstance(data, list):
+                    return [safe_convert_data(item) for item in data]
+                elif isinstance(data, (np.bool_, np.integer, np.floating)):
+                    return data.item()
+                elif isinstance(data, np.ndarray):
+                    return data.tolist()
+                elif isinstance(data, (bool, int, float, str)) or data is None:
+                    return data
+                else:
+                    return str(data)
+            
             signal = {
                 'symbol': symbol,
                 'position_type': position_type,
                 'score': signal_score,
-                'price': df['close'].iloc[-1],
+                'price': float(df['close'].iloc[-1]),
                 'timestamp': datetime.now().isoformat(),
                 'analysis': {
-                    'trend': timeframe_analysis,
-                    'volume': self.check_volume_condition(df),
-                    'volatility': btc_volatility,
-                    'correlation': altcoin_correlation,
-                    'sentiment': sentiment,
-                    'market_structure': market_structure,
-                    'volume_profile': volume_profile,
-                    'funding_rate': funding_rate,
-                    'open_interest': open_interest,
-                    'order_book': order_book
+                    'trend': safe_convert_data(timeframe_analysis),
+                    'volume': bool(self.check_volume_condition(df)),
+                    'volatility': safe_convert_data(btc_volatility),
+                    'correlation': safe_convert_data(altcoin_correlation),
+                    'sentiment': safe_convert_data(sentiment),
+                    'market_structure': safe_convert_data(market_structure),
+                    'volume_profile': safe_convert_data(volume_profile),
+                    'funding_rate': float(funding_rate) if funding_rate is not None else 0.0,
+                    'open_interest': float(open_interest) if open_interest is not None else 0.0,
+                    'order_book': safe_convert_data(order_book)
                 }
             }
 
@@ -1599,7 +1649,12 @@ class EnhancedTradingStrategy:
                   Positive for LONG, negative for SHORT
         """
         try:
-            if df is None or df.empty:
+            # Handle tuple data from cache
+            if isinstance(df, tuple):
+                logger.warning(f"Received tuple instead of DataFrame for candlestick pattern analysis, skipping...")
+                return 0.0
+                
+            if df is None or not hasattr(df, 'empty') or df.empty:
                 return 0.0
                 
             score = 0.0
@@ -2312,6 +2367,14 @@ class EnhancedTradingStrategy:
             str: Trend direction (UP/DOWN)
         """
         try:
+            # Check if df is a tuple (from cache)
+            if isinstance(df, tuple):
+                logger.warning(f"Received tuple instead of DataFrame for trend analysis, skipping...")
+                return "NEUTRAL"
+                
+            if df is None or not hasattr(df, 'empty') or df.empty:
+                return "NEUTRAL"
+                
             # Calculate EMAs
             ema_20 = df["close"].ewm(span=20).mean()
             ema_50 = df["close"].ewm(span=50).mean()
@@ -2594,6 +2657,11 @@ class EnhancedTradingStrategy:
                                    open_interest: float, order_book: Dict) -> float:
         """Calculate signal score with dynamic weights and logging."""
         try:
+            # Handle tuple data from cache
+            if isinstance(df, tuple):
+                logger.warning(f"Received tuple instead of DataFrame for signal score calculation, skipping...")
+                return 0.0
+                
             # Xác định position type dựa trên trend
             position_type = 'LONG' if is_trending_up(self.get_trend(df)) else 'SHORT'
             
@@ -2647,6 +2715,14 @@ class EnhancedTradingStrategy:
             bool: True if volume condition is met, False otherwise
         """
         try:
+            # Check if df is a tuple (from cache)
+            if isinstance(df, tuple):
+                logger.warning(f"Received tuple instead of DataFrame for volume condition check, skipping...")
+                return False
+                
+            if df is None or not hasattr(df, 'empty') or df.empty:
+                return False
+                
             volume_ma = df["volume"].rolling(20).mean()
             if volume_ma.iloc[-1] == 0:
                 return False
@@ -2668,6 +2744,14 @@ class EnhancedTradingStrategy:
             bool: True if volatility condition is met, False otherwise
         """
         try:
+            # Check if df is a tuple (from cache)
+            if isinstance(df, tuple):
+                logger.warning(f"Received tuple instead of DataFrame for volatility condition check, skipping...")
+                return False
+                
+            if df is None or not hasattr(df, 'empty') or df.empty:
+                return False
+                
             atr = df["ATR"].iloc[-1]
             atr_ma = df["ATR"].rolling(20).mean().iloc[-1]
             if atr_ma == 0:
@@ -2689,6 +2773,14 @@ class EnhancedTradingStrategy:
             bool: True if ADX condition is met, False otherwise
         """
         try:
+            # Check if df is a tuple (from cache)
+            if isinstance(df, tuple):
+                logger.warning(f"Received tuple instead of DataFrame for ADX condition check, skipping...")
+                return False
+                
+            if df is None or not hasattr(df, 'empty') or df.empty:
+                return False
+                
             return df["ADX"].iloc[-1] >= self.min_adx
             
         except Exception as e:
@@ -2705,6 +2797,14 @@ class EnhancedTradingStrategy:
             bool: True if Bollinger condition is met, False otherwise
         """
         try:
+            # Check if df is a tuple (from cache)
+            if isinstance(df, tuple):
+                logger.warning(f"Received tuple instead of DataFrame for Bollinger condition check, skipping...")
+                return False
+                
+            if df is None or not hasattr(df, 'empty') or df.empty:
+                return False
+                
             bb_width = (df["BB_upper"].iloc[-1] - df["BB_lower"].iloc[-1]) / df["BB_middle"].iloc[-1]
             return bb_width <= self.max_bb_width
             
@@ -3673,7 +3773,13 @@ class EnhancedTradingStrategy:
                 return None
                 
             df = market_conditions['df']
-            if df is None or df.empty:
+            
+            # Handle tuple data from cache
+            if isinstance(df, tuple):
+                logger.warning(f"Received tuple instead of DataFrame for trend analysis, skipping...")
+                return None
+                
+            if df is None or not hasattr(df, 'empty') or df.empty:
                 logger.warning(f"Empty DataFrame for {symbol}")
                 return None
                 
@@ -3759,7 +3865,13 @@ class EnhancedTradingStrategy:
                 return None
                 
             df = market_conditions['df']
-            if df is None or df.empty:
+            
+            # Handle tuple data from cache
+            if isinstance(df, tuple):
+                logger.warning(f"Received tuple instead of DataFrame for breakout analysis, skipping...")
+                return None
+                
+            if df is None or not hasattr(df, 'empty') or df.empty:
                 logger.warning(f"Empty DataFrame for {symbol}")
                 return None
                 
@@ -3982,6 +4094,11 @@ class EnhancedTradingStrategy:
     def _calculate_volume_score(self, df: pd.DataFrame, position_type: str) -> float:
         """Calculate volume score based on volume conditions and position type."""
         try:
+            # Handle tuple data from cache
+            if isinstance(df, tuple):
+                logger.warning("Received tuple instead of DataFrame for volume score calculation, skipping...")
+                return 0.0
+                
             if df is None or not hasattr(df, 'empty') or df.empty:
                 logger.warning("Empty DataFrame provided for volume score calculation")
                 return 0.0
@@ -4053,6 +4170,11 @@ class EnhancedTradingStrategy:
             float: Volatility score between -1 and 1
         """
         try:
+            # Check if btc_volatility is a tuple (from cache)
+            if isinstance(btc_volatility, tuple):
+                logger.warning(f"Received tuple instead of dict for btc_volatility, skipping...")
+                return 0.0
+                
             if not btc_volatility or not isinstance(btc_volatility, dict):
                 return 0.0
                 
@@ -4096,6 +4218,11 @@ class EnhancedTradingStrategy:
     def _calculate_correlation_score(self, altcoin_correlation: Dict, position_type: str) -> float:
         """Calculate correlation score based on altcoin correlation and position type."""
         try:
+            # Check if altcoin_correlation is a tuple (from cache)
+            if isinstance(altcoin_correlation, tuple):
+                logger.warning(f"Received tuple instead of dict for altcoin_correlation, skipping...")
+                return 0.0
+                
             if not altcoin_correlation or 'correlation' not in altcoin_correlation:
                 return 0.0
                 
@@ -4143,6 +4270,11 @@ class EnhancedTradingStrategy:
             float: Sentiment score between -1 and 1
         """
         try:
+            # Check if sentiment is a tuple (from cache)
+            if isinstance(sentiment, tuple):
+                logger.warning(f"Received tuple instead of dict for sentiment, skipping...")
+                return 0.0
+                
             if not sentiment or not isinstance(sentiment, dict):
                 return 0.0
                 
@@ -4219,6 +4351,11 @@ class EnhancedTradingStrategy:
     def _calculate_structure_score(self, market_structure: Dict, position_type: str) -> float:
         """Calculate structure score based on market structure and position type."""
         try:
+            # Check if market_structure is a tuple (from cache)
+            if isinstance(market_structure, tuple):
+                logger.warning(f"Received tuple instead of dict for market_structure, skipping...")
+                return 0.0
+                
             if not market_structure or not isinstance(market_structure, dict):
                 return 0.0
                 
@@ -4265,6 +4402,11 @@ class EnhancedTradingStrategy:
     def _calculate_volume_profile_score(self, volume_profile: Dict, position_type: str) -> float:
         """Calculate volume profile score based on volume distribution and position type."""
         try:
+            # Check if volume_profile is a tuple (from cache)
+            if isinstance(volume_profile, tuple):
+                logger.warning(f"Received tuple instead of dict for volume_profile, skipping...")
+                return 0.0
+                
             if not volume_profile or 'high_volume_nodes' not in volume_profile:
                 return 0.0
                 
@@ -4317,6 +4459,11 @@ class EnhancedTradingStrategy:
     def _calculate_funding_rate_score(self, funding_rate: float, position_type: str) -> float:
         """Calculate funding rate score based on funding rate and position type."""
         try:
+            # Check if funding_rate is a tuple (from cache)
+            if isinstance(funding_rate, tuple):
+                logger.warning(f"Received tuple instead of float for funding_rate, skipping...")
+                return 0.0
+                
             if not isinstance(funding_rate, (float, int)):
                 return 0.0
                 
@@ -4344,6 +4491,11 @@ class EnhancedTradingStrategy:
     def _calculate_open_interest_score(self, open_interest: float, position_type: str) -> float:
         """Calculate open interest score based on OI value and position type."""
         try:
+            # Check if open_interest is a tuple (from cache)
+            if isinstance(open_interest, tuple):
+                logger.warning(f"Received tuple instead of float for open_interest, skipping...")
+                return 0.0
+                
             if not isinstance(open_interest, (float, int)):
                 return 0.0
                 
@@ -4366,6 +4518,11 @@ class EnhancedTradingStrategy:
     def _calculate_order_book_score(self, order_book: Dict, position_type: str) -> float:
         """Calculate order book score based on order book depth and position type."""
         try:
+            # Check if order_book is a tuple (from cache)
+            if isinstance(order_book, tuple):
+                logger.warning(f"Received tuple instead of dict for order_book, skipping...")
+                return 0.0
+                
             if not order_book or not isinstance(order_book, dict):
                 return 0.0
                 
@@ -4409,7 +4566,17 @@ class EnhancedTradingStrategy:
             Dict: Support and resistance levels
         """
         try:
-            if df is None or df.empty:
+            # Check if df is a tuple (from cache)
+            if isinstance(df, tuple):
+                logger.warning(f"Received tuple instead of DataFrame for support resistance calculation, skipping...")
+                return {
+                    'support_levels': [],
+                    'resistance_levels': [],
+                    'nearest_support': None,
+                    'nearest_resistance': None
+                }
+                
+            if df is None or not hasattr(df, 'empty') or df.empty:
                 logger.error("No data provided for support/resistance calculation")
                 return {
                     'support_levels': [],
@@ -4487,6 +4654,22 @@ class EnhancedTradingStrategy:
             Dict: Dictionary containing value area information
         """
         try:
+            # Check if df is a tuple (from cache)
+            if isinstance(df, tuple):
+                logger.warning(f"Received tuple instead of DataFrame for value area calculation, skipping...")
+                return {
+                    'value_area_high': 0,
+                    'value_area_low': 0,
+                    'current_price': 0
+                }
+                
+            if df is None or not hasattr(df, 'empty') or df.empty:
+                return {
+                    'value_area_high': 0,
+                    'value_area_low': 0,
+                    'current_price': 0
+                }
+                
             # Calculate price levels
             price_range = df['high'].max() - df['low'].min()
             num_levels = 20
@@ -4630,15 +4813,24 @@ class EnhancedTradingStrategy:
                            total_score: float, conditions: Dict) -> None:
         """Log detailed signal analysis."""
         try:
-            # Convert numpy.bool_ to Python bool
+            # Convert numpy types to JSON serializable types
             def convert_numpy_types(obj):
                 if isinstance(obj, np.bool_):
                     return bool(obj)
+                elif isinstance(obj, np.integer):
+                    return int(obj)
+                elif isinstance(obj, np.floating):
+                    return float(obj)
+                elif isinstance(obj, np.ndarray):
+                    return obj.tolist()
                 elif isinstance(obj, dict):
                     return {k: convert_numpy_types(v) for k, v in obj.items()}
                 elif isinstance(obj, list):
                     return [convert_numpy_types(item) for item in obj]
-                return obj
+                elif isinstance(obj, (bool, int, float, str)) or obj is None:
+                    return obj
+                else:
+                    return str(obj)  # Convert any other types to string
 
             log_data = {
                 'symbol': symbol,
@@ -5012,6 +5204,14 @@ class EnhancedTradingStrategy:
         Calculate momentum using rate of change (ROC)
         """
         try:
+            # Check if df is a tuple (from cache)
+            if isinstance(df, tuple):
+                logger.warning(f"Received tuple instead of DataFrame for momentum calculation, skipping...")
+                return {'strength': 0, 'direction': 0, 'roc': 0}
+                
+            if df is None or not hasattr(df, 'empty') or df.empty:
+                return {'strength': 0, 'direction': 0, 'roc': 0}
+                
             # Calculate rate of change
             roc = ((df['close'].iloc[-1] - df['close'].iloc[-lookback_period]) / 
                    df['close'].iloc[-lookback_period]) * 100
@@ -5088,6 +5288,14 @@ class EnhancedTradingStrategy:
         Determine if position should be closed based on momentum with enhanced conditions
         """
         try:
+            # Check if df is a tuple (from cache)
+            if isinstance(df, tuple):
+                logger.warning(f"Received tuple instead of DataFrame for momentum exit check, skipping...")
+                return False
+                
+            if df is None or not hasattr(df, 'empty') or df.empty:
+                return False
+                
             # Calculate momentum
             momentum = self._calculate_momentum(df)
             
@@ -5643,18 +5851,40 @@ class EnhancedTradingStrategy:
                 await self._aggressive_memory_cleanup()
             
             # Get data from LRU cache
-            data = self._cache.get(cache_key)
-            if data is not None:
+            cached_item = self._cache.get(cache_key)
+            if cached_item is not None:
                 self._performance_metrics['cache_hits'] += 1
                 logger.debug(f"Cache hit for {cache_key}")
                 
-                # Track access pattern for optimization
-                self._adaptive_cache_optimizer.analyze_usage_pattern(
-                    cache_key, 
-                    self._cache._access_count.get(cache_key, 0),
-                    self._cache_ttl.get(cache_type, 300)
-                )
-                return data
+                # Handle tuple format (data, timestamp) from cache
+                if isinstance(cached_item, tuple) and len(cached_item) == 2:
+                    data, timestamp = cached_item
+                    # Check if data is expired
+                    current_time = time.time()
+                    ttl = self._cache_ttl.get(cache_type, 300)
+                    if current_time - timestamp > ttl:
+                        # Data is expired, remove from cache
+                        self._cache.cache.pop(cache_key, None)
+                        self._performance_metrics['cache_misses'] += 1
+                        logger.debug(f"Cache data expired for {cache_key}")
+                        return None
+                    
+                    # Track access pattern for optimization
+                    self._adaptive_cache_optimizer.analyze_usage_pattern(
+                        cache_key, 
+                        self._cache._access_count.get(cache_key, 0),
+                        ttl
+                    )
+                    return data
+                else:
+                    # Handle legacy format (just data)
+                    # Track access pattern for optimization
+                    self._adaptive_cache_optimizer.analyze_usage_pattern(
+                        cache_key, 
+                        self._cache._access_count.get(cache_key, 0),
+                        self._cache_ttl.get(cache_type, 300)
+                    )
+                    return cached_item
             else:
                 self._performance_metrics['cache_misses'] += 1
                 logger.debug(f"Cache miss for {cache_key}")

@@ -598,7 +598,7 @@ class BinanceService:
             return None
             
     async def fetch_ohlcv(self, symbol: str, timeframe: str = '1h', limit: int = 100) -> Optional[List]:
-        """Fetch OHLCV data for a symbol.
+        """Fetch OHLCV data for a symbol with improved error handling.
         
         Args:
             symbol: Trading pair symbol
@@ -617,17 +617,60 @@ class BinanceService:
                 logger.error("Binance service is closed")
                 return None
                 
-            # Fetch OHLCV data
-            ohlcv = await self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-            
-            if not ohlcv:
-                logger.error(f"Failed to fetch OHLCV data for {symbol}")
-                return None
+            # # Check if symbol exists and is active
+            # try:
+            #     markets = await self.exchange.load_markets()
+            #     if symbol not in markets:
+            #         logger.warning(f"Symbol {symbol} not found in markets")
+            #         return None
+            #     if not markets[symbol].get('active', False):
+            #         logger.warning(f"Symbol {symbol} is not active")
+            #         return None
+            # except Exception as e:
+            #     logger.error(f"Error checking symbol status for {symbol}: {str(e)}")
+            #     return None
                 
-            return ohlcv
-            
+            # Fetch OHLCV data with retry mechanism
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    ohlcv = await self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+                    
+                    if not ohlcv or len(ohlcv) == 0:
+                        logger.warning(f"No OHLCV data available for {symbol} (attempt {attempt + 1}/{max_retries})")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(1)
+                            continue
+                        else:
+                            logger.error(f"Failed to fetch OHLCV data for {symbol} after {max_retries} attempts")
+                            return None
+                    
+                    # Validate data
+                    if not isinstance(ohlcv, list) or len(ohlcv) == 0:
+                        logger.warning(f"Invalid OHLCV data format for {symbol} (attempt {attempt + 1}/{max_retries})")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(1)
+                            continue
+                        else:
+                            logger.error(f"Invalid OHLCV data format for {symbol} after {max_retries} attempts")
+                            return None
+                    
+                    return ohlcv
+                    
+                except Exception as e:
+                    if 'symbol' in str(e).lower() and 'not found' in str(e).lower():
+                        logger.warning(f"Symbol {symbol} not found: {str(e)}")
+                        return None
+                    elif attempt < max_retries - 1:
+                        logger.warning(f"Error fetching OHLCV data for {symbol} (attempt {attempt + 1}/{max_retries}): {str(e)}")
+                        await asyncio.sleep(1)
+                        continue
+                    else:
+                        logger.error(f"Failed to fetch OHLCV data for {symbol} after {max_retries} attempts: {str(e)}")
+                        return None
+                        
         except Exception as e:
-            logger.error(f"Error fetching OHLCV data: {str(e)}")
+            logger.error(f"Error fetching OHLCV data for {symbol}: {str(e)}")
             return None
             
     def clear_cache(self, cache_type: str = None):
@@ -739,18 +782,18 @@ class BinanceService:
     async def _fetch_market_data(self, symbol: str) -> Optional[Dict]:
         """Fetch market data efficiently."""
         try:
-            # Check if symbol exists and is active
-            try:
-                markets = await self.exchange.load_markets()
-                if symbol not in markets:
-                    logger.warning(f"Symbol {symbol} not found in markets")
-                    return None
-                if not markets[symbol].get('active', False):
-                    logger.warning(f"Symbol {symbol} is not active")
-                    return None
-            except Exception as e:
-                logger.error(f"Error checking symbol status for {symbol}: {str(e)}")
-                return None
+            # # Check if symbol exists and is active
+            # try:
+            #     markets = await self.exchange.load_markets()
+            #     if symbol not in markets:
+            #         logger.warning(f"Symbol {symbol} not found in markets")
+            #         return None
+            #     if not markets[symbol].get('active', False):
+            #         logger.warning(f"Symbol {symbol} is not active")
+            #         return None
+            # except Exception as e:
+            #     logger.error(f"Error checking symbol status for {symbol}: {str(e)}")
+            #     return None
 
             # Fetch multiple data points in parallel
             tasks = [
@@ -1694,3 +1737,18 @@ The bot will resume trading once the IP is whitelisted.
         except Exception as e:
             logger.error(f"Error getting future symbols: {str(e)}")
             return None
+
+    async def get_recent_trades(self, symbol: str, limit: int = 100) -> List[Dict]:
+        """Get recent trades for a symbol (REST, no websocket, limit supported)."""
+        try:
+            if not self._is_initialized:
+                logger.error("Binance service not initialized")
+                return []
+            # Use ccxt's fetch_trades with limit
+            trades = await self._make_request(self.exchange.fetch_trades, symbol, limit)
+            if not trades:
+                return []
+            return trades
+        except Exception as e:
+            logger.error(f"Error getting recent trades for {symbol}: {str(e)}")
+            return []

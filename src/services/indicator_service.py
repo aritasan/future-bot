@@ -341,54 +341,142 @@ class IndicatorService:
                     self._last_error_time = time.time()
                     raise last_error
 
+    async def get_current_price(self, symbol: str) -> Optional[float]:
+        """Get current price from websocket if available, fallback to REST."""
+        try:
+            # Ưu tiên lấy từ websocket
+            ws_ticker = self._ws_data.get(symbol, {}).get('ticker')
+            if ws_ticker and 'last' in ws_ticker:
+                return float(ws_ticker['last'])
+            # Nếu chưa có, setup websocket và fallback REST
+            await self._setup_websocket(symbol, 'ticker')
+            ticker = await self._make_request(self.exchange.fetch_ticker, symbol)
+            if ticker and 'last' in ticker:
+                return float(ticker['last'])
+            return None
+        except Exception as e:
+            logger.error(f"Error getting current price for {symbol}: {str(e)}")
+            return None
+
+    async def get_orderbook(self, symbol: str, limit: int = 20) -> Optional[dict]:
+        """Get orderbook from websocket if available, fallback to REST."""
+        try:
+            ws_orderbook = self._ws_data.get(symbol, {}).get('orderbook')
+            if ws_orderbook:
+                return ws_orderbook
+            await self._setup_websocket(symbol, 'orderbook')
+            orderbook = await self._make_request(self.exchange.fetch_order_book, symbol, limit)
+            return orderbook
+        except Exception as e:
+            logger.error(f"Error getting orderbook for {symbol}: {str(e)}")
+            return None
+
+    async def get_recent_trades(self, symbol: str, limit: int = 100) -> Optional[list]:
+        """Get recent trades from websocket if available, fallback to REST."""
+        try:
+            ws_trades = self._ws_data.get(symbol, {}).get('trades')
+            if ws_trades:
+                return ws_trades[-limit:]
+            await self._setup_websocket(symbol, 'trades')
+            trades = await self._make_request(self.exchange.fetch_trades, symbol, limit)
+            return trades
+        except Exception as e:
+            logger.error(f"Error getting recent trades for {symbol}: {str(e)}")
+            return None
+
     async def get_historical_data(self, symbol: str, timeframe: str = "5m", limit: int = 100) -> Optional[pd.DataFrame]:
         """Get historical data with improved caching and rate limiting."""
         try:
-            # Check cache first
+            if not self._is_initialized:
+                logger.error("Indicator service not initialized")
+                return None
+                
+            if self._is_closed:
+                logger.error("Indicator service is closed")
+                return None
+                
+            # Tối ưu TTL cache: timeframe >= 1h thì TTL 10 phút, còn lại giữ nguyên
+            cache_ttl = self._cache_ttl.get(timeframe, 60)
+            if timeframe in ["1h", "4h", "1d"]:
+                cache_ttl = 600  # 10 phút
             cache_key = f"{symbol}_{timeframe}_{limit}"
             if cache_key in self._cache:
                 cache_data = self._cache[cache_key]
-                if time.time() - cache_data['timestamp'] < self._cache_ttl.get(timeframe, 60):
+                if time.time() - cache_data['timestamp'] < cache_ttl:
                     return cache_data['data']
                     
-            # Get data from exchange
-            data = await self._make_request(
-                self.exchange.fetch_ohlcv,
-                symbol,
-                timeframe=timeframe,
-                limit=limit
-            )
-            
-            if data:
-                df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-                df.set_index('timestamp', inplace=True)
+            # # Check if symbol exists and is active
+            # try:
+            #     markets = await self.exchange.load_markets()
+            #     if symbol not in markets:
+            #         logger.warning(f"Symbol {symbol} not found in markets")
+            #         return None
+            #     if not markets[symbol].get('active', False):
+            #         logger.warning(f"Symbol {symbol} is not active")
+            #         return None
+            # except Exception as e:
+            #     logger.error(f"Error checking symbol status for {symbol}: {str(e)}")
+            #     return None
                 
-                # Update cache
-                self._cache[cache_key] = {
-                    'data': df,
-                    'timestamp': time.time()
-                }
-                
-                return df
-                
-            return None
-            
+            # Get data from exchange with retry mechanism
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    data = await self._make_request(
+                        self.exchange.fetch_ohlcv,
+                        symbol,
+                        timeframe=timeframe,
+                        limit=limit
+                    )
+                    
+                    if not data or len(data) == 0:
+                        logger.warning(f"No historical data available for {symbol} (attempt {attempt + 1}/{max_retries})")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(1)
+                            continue
+                        else:
+                            logger.error(f"Failed to fetch historical data for {symbol} after {max_retries} attempts")
+                            return None
+                            
+                    df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                    df.set_index('timestamp', inplace=True)
+                    
+                    # Validate data
+                    if df.empty or df['close'].isna().all():
+                        logger.warning(f"Invalid historical data for {symbol} (attempt {attempt + 1}/{max_retries})")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(1)
+                            continue
+                        else:
+                            logger.error(f"Invalid historical data for {symbol} after {max_retries} attempts")
+                            return None
+                    
+                    # Update cache
+                    self._cache[cache_key] = {
+                        'data': df,
+                        'timestamp': time.time()
+                    }
+                    return df
+                    
+                except Exception as e:
+                    if 'symbol' in str(e).lower() and 'not found' in str(e).lower():
+                        logger.warning(f"Symbol {symbol} not found: {str(e)}")
+                        return None
+                    elif attempt < max_retries - 1:
+                        logger.warning(f"Error fetching historical data for {symbol} (attempt {attempt + 1}/{max_retries}): {str(e)}")
+                        await asyncio.sleep(1)
+                        continue
+                    else:
+                        logger.error(f"Failed to fetch historical data for {symbol} after {max_retries} attempts: {str(e)}")
+                        return None
+                        
         except Exception as e:
             logger.error(f"Error getting historical data for {symbol}: {str(e)}")
             return None
             
     async def calculate_indicators(self, symbol: str, timeframe: str = "5m", limit: int = 100) -> Optional[pd.DataFrame]:
-        """Calculate technical indicators for a symbol.
-        
-        Args:
-            symbol: Trading pair symbol
-            timeframe: Candlestick timeframe
-            limit: Number of candles to fetch
-            
-        Returns:
-            Optional[pd.DataFrame]: DataFrame with indicators or None if error
-        """
+        """Calculate technical indicators for a symbol with improved error handling."""
         try:
             if not self._is_initialized:
                 logger.error("Indicator service not initialized")
@@ -408,36 +496,75 @@ class IndicatorService:
                 if current_time - timestamp < self._cache_ttl[timeframe]:
                     return cached_data
             
+            # # Check if symbol exists and is active
+            # try:
+            #     markets = await self.exchange.load_markets()
+            #     if symbol not in markets:
+            #         logger.warning(f"Symbol {symbol} not found in markets")
+            #         return None
+            #     if not markets[symbol].get('active', False):
+            #         logger.warning(f"Symbol {symbol} is not active")
+            #         return None
+            # except Exception as e:
+            #     logger.error(f"Error checking symbol status for {symbol}: {str(e)}")
+            #     return None
+            
             # Fetch new data if cache is invalid or missing
-            try:
-                ohlcv = await self._make_request(self.exchange.fetch_ohlcv, symbol, timeframe, limit)
-                if not ohlcv:
-                    logger.error(f"Failed to fetch OHLCV data for {symbol}")
-                    return None
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    ohlcv = await self._make_request(self.exchange.fetch_ohlcv, symbol, timeframe, limit)
+                    if not ohlcv or len(ohlcv) == 0:
+                        logger.warning(f"No OHLCV data available for {symbol} (attempt {attempt + 1}/{max_retries})")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(1)  # Wait before retry
+                            continue
+                        else:
+                            logger.error(f"Failed to fetch OHLCV data for {symbol} after {max_retries} attempts")
+                            return None
                     
-                # Convert to DataFrame
-                df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-                df.set_index('timestamp', inplace=True)
-                
-                # Calculate indicators
-                df = await self._calculate_technical_indicators(df)
-                
-                # Cache the result
-                self._cache[cache_key] = (df, current_time)
-                self._last_update[cache_key] = current_time
-                
-                return df
-                
-            except Exception as e:
-                if 'throttle queue is over maxCapacity' in str(e):
-                    logger.warning(f"Throttle queue full for {symbol}, using cached data if available")
-                    if cache_key in self._cache:
-                        return self._cache[cache_key][0]
-                raise e
-                
+                    # Convert to DataFrame
+                    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                    df.set_index('timestamp', inplace=True)
+                    
+                    # Validate data
+                    if df.empty or df['close'].isna().all():
+                        logger.warning(f"Invalid OHLCV data for {symbol} (attempt {attempt + 1}/{max_retries})")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(1)
+                            continue
+                        else:
+                            logger.error(f"Invalid OHLCV data for {symbol} after {max_retries} attempts")
+                            return None
+                    
+                    # Calculate indicators
+                    df = await self._calculate_technical_indicators(df)
+                    
+                    # Cache the result
+                    self._cache[cache_key] = (df, current_time)
+                    self._last_update[cache_key] = current_time
+                    
+                    return df
+                    
+                except Exception as e:
+                    if 'throttle queue is over maxCapacity' in str(e):
+                        logger.warning(f"Throttle queue full for {symbol}, using cached data if available")
+                        if cache_key in self._cache:
+                            return self._cache[cache_key][0]
+                    elif 'symbol' in str(e).lower() and 'not found' in str(e).lower():
+                        logger.warning(f"Symbol {symbol} not found: {str(e)}")
+                        return None
+                    elif attempt < max_retries - 1:
+                        logger.warning(f"Error fetching data for {symbol} (attempt {attempt + 1}/{max_retries}): {str(e)}")
+                        await asyncio.sleep(1)
+                        continue
+                    else:
+                        logger.error(f"Failed to fetch data for {symbol} after {max_retries} attempts: {str(e)}")
+                        return None
+                        
         except Exception as e:
-            logger.error(f"Error calculating indicators: {str(e)}")
+            logger.error(f"Error calculating indicators for {symbol}: {str(e)}")
             return None
             
     def clear_cache(self):

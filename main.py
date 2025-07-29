@@ -112,15 +112,20 @@ async def process_symbol(
                     continue
 
                 # Generate trading signals
-                signals = await strategy.generate_signals(symbol, indicator_service)
-                if signals is not None:
-                    try:
-                        # Process trading signals with enhanced risk management
-                        await strategy.process_trading_signals(signals)
-                    except Exception as e:
-                        logger.error(f"Error processing signals for {symbol}: {str(e)}")
-                        health_monitor.record_error()
-                        continue
+                try:
+                    signals = await strategy.generate_signals(symbol, indicator_service)
+                    if signals is not None:
+                        try:
+                            # Process trading signals with enhanced risk management
+                            await strategy.process_trading_signals(signals)
+                        except Exception as e:
+                            logger.error(f"Error processing signals for {symbol}: {str(e)}")
+                            health_monitor.record_error()
+                            continue
+                except Exception as e:
+                    logger.error(f"Error generating signals for {symbol}: {str(e)}")
+                    health_monitor.record_error()
+                    continue
 
                 await asyncio.sleep(1)  # Prevent CPU overload
 
@@ -339,7 +344,19 @@ async def main():
         # Create tasks for each trading pair
         try:
             with open("future_symbols.txt", "r") as f:
-                trading_pairs = [line.strip() for line in f.readlines()]
+                all_symbols = [line.strip() for line in f.readlines() if line.strip()]
+            logger.info(f"Loaded {len(all_symbols)} symbols from future_symbols.txt")
+            
+            # Filter out obviously invalid symbols
+            trading_pairs = []
+            for symbol in all_symbols:
+                if symbol and len(symbol) > 0 and '/' in symbol:
+                    trading_pairs.append(symbol)
+                else:
+                    logger.warning(f"Skipping invalid symbol format: {symbol}")
+                    
+            logger.info(f"Filtered to {len(trading_pairs)} valid symbol formats")
+            
         except Exception as e:
             logger.error(f"Error reading trading pairs: {str(e)}")
             return
