@@ -461,6 +461,10 @@ class EnhancedTradingStrategy:
             bool: True if profit target reached, False otherwise
         """
         try:
+            if not self.config['trading'].get('enable_check_profit', False):
+                logger.info("Profit target checking is disabled in config")
+                return False
+
             if self.initial_balance is None:
                 return False
 
