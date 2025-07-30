@@ -1,412 +1,529 @@
+"""
+WorldQuant Portfolio Optimizer Implementation
+Advanced portfolio optimization with mean-variance, risk parity, factor neutral portfolios, and cross-asset hedging.
+"""
+
+import logging
 import numpy as np
 import pandas as pd
+from typing import Dict, List, Optional, Tuple, Any
 from scipy.optimize import minimize
 from scipy.stats import norm
-from typing import Dict, List, Optional, Tuple
-import logging
+import warnings
+from datetime import datetime
+
+# Suppress warnings
+warnings.filterwarnings('ignore')
 
 logger = logging.getLogger(__name__)
 
-class PortfolioOptimizer:
+class WorldQuantPortfolioOptimizer:
     """
-    Advanced portfolio optimization using modern quantitative methods.
-    Implements Markowitz, Black-Litterman, and Risk Parity approaches.
+    WorldQuant-level portfolio optimizer with advanced optimization techniques.
     """
     
-    def __init__(self, risk_free_rate: float = 0.02, target_return: float = None):
-        self.risk_free_rate = risk_free_rate
-        self.target_return = target_return
-        self.optimization_history = []
-        
-    def optimize_portfolio(self, returns: pd.DataFrame, method: str = 'markowitz', 
-                         constraints: Dict = None) -> Dict:
+    def __init__(self, config: Dict):
         """
-        Optimize portfolio weights using specified method.
+        Initialize WorldQuant Portfolio Optimizer.
+        
+        Args:
+            config: Configuration dictionary
+        """
+        self.config = config
+        
+        # Optimization parameters
+        self.optimization_params = {
+            'mean_variance': {
+                'risk_free_rate': 0.02,
+                'target_return': 0.10,  # Reduced from 0.15
+                'max_volatility': 0.25,
+                'min_weight': 0.01,
+                'max_weight': 0.40  # Increased from 0.30
+            },
+            'risk_parity': {
+                'target_risk_contribution': 0.1,
+                'min_weight': 0.01,
+                'max_weight': 0.40,  # Increased from 0.30
+                'risk_budget_method': 'equal'  # 'equal', 'volatility', 'custom'
+            },
+            'factor_neutral': {
+                'factor_exposures': ['market', 'size', 'value', 'momentum', 'volatility', 'liquidity'],
+                'max_factor_exposure': 0.2,  # Increased from 0.1
+                'min_weight': 0.01,
+                'max_weight': 0.40  # Increased from 0.30
+            },
+            'cross_asset_hedging': {
+                'hedge_ratio_method': 'minimum_variance',  # 'minimum_variance', 'optimal_hedge'
+                'correlation_threshold': 0.7,
+                'hedge_cost_factor': 0.001
+            }
+        }
+        
+        # Portfolio constraints
+        self.constraints = {
+            'long_only': True,
+            'leverage_limit': 1.0,
+            'concentration_limit': 0.3,
+            'sector_limit': 0.4,
+            'geographic_limit': 0.5
+        }
+        
+        # Performance tracking
+        self.optimization_history = {}
+        self.portfolio_metrics = {}
+        self.rebalancing_dates = []
+        
+        logger.info("WorldQuantPortfolioOptimizer initialized")
+    
+    async def initialize(self) -> bool:
+        """Initialize the portfolio optimizer."""
+        try:
+            logger.info("WorldQuantPortfolioOptimizer initialized successfully")
+            return True
+        except Exception as e:
+            logger.error(f"Error initializing WorldQuantPortfolioOptimizer: {str(e)}")
+            return False
+    
+    async def optimize_mean_variance(self, returns: pd.DataFrame, 
+                                   target_return: Optional[float] = None,
+                                   max_volatility: Optional[float] = None) -> Dict[str, Any]:
+        """
+        Mean-variance optimization.
         
         Args:
             returns: DataFrame of asset returns
-            method: Optimization method ('markowitz', 'black_litterman', 'risk_parity', 'max_sharpe')
-            constraints: Additional constraints for optimization
+            target_return: Target portfolio return
+            max_volatility: Maximum portfolio volatility
             
         Returns:
-            Dict: Optimization results with weights and metrics
+            Dictionary with optimization results
         """
         try:
-            # Convert returns dict to DataFrame if needed
-            if isinstance(returns, dict):
-                returns_df = pd.DataFrame(returns)
-            else:
-                returns_df = returns
-            
-            if method == 'markowitz':
-                return self._markowitz_optimization(returns_df, constraints)
-            elif method == 'black_litterman':
-                return self._black_litterman_optimization(returns_df, constraints)
-            elif method == 'risk_parity':
-                return self._risk_parity_optimization(returns_df, constraints)
-            elif method == 'max_sharpe':
-                return self._max_sharpe_optimization(returns_df, constraints)
-            else:
-                raise ValueError(f"Unknown optimization method: {method}")
-                
-        except Exception as e:
-            logger.error(f"Error in portfolio optimization: {str(e)}")
-            return {'error': str(e)}
-    
-    def _markowitz_optimization(self, returns: pd.DataFrame, constraints: Dict = None) -> Dict:
-        """Markowitz mean-variance optimization."""
-        try:
-            # Ensure returns is a DataFrame
-            if not isinstance(returns, pd.DataFrame):
-                if isinstance(returns, dict):
-                    returns = pd.DataFrame(returns)
-                elif isinstance(returns, list):
-                    return {'error': 'Returns data is a list, expected DataFrame', 'optimization_success': False}
-                else:
-                    return {'error': f'Invalid returns data type: {type(returns)}', 'optimization_success': False}
+            logger.info("Performing mean-variance optimization...")
             
             # Calculate expected returns and covariance matrix
-            expected_returns = returns.mean() * 252  # Annualized
-            cov_matrix = returns.cov() * 252  # Annualized
+            expected_returns = returns.mean()
+            cov_matrix = returns.cov()
             
-            # Check for insufficient data
-            if returns.empty or returns.isnull().all().all():
-                return {'error': 'No returns data available', 'optimization_success': False}
-            
-            if cov_matrix.empty or cov_matrix.isnull().all().all():
-                return {'error': 'Insufficient data for optimization', 'optimization_success': False}
-            
-            # Check if we have enough data points
-            if len(returns) < 30:  # Need at least 30 data points
-                return {'error': 'Insufficient data points for optimization (need at least 30)', 'optimization_success': False}
+            # Set parameters
+            target_return = target_return or self.optimization_params['mean_variance']['target_return']
+            max_volatility = max_volatility or self.optimization_params['mean_variance']['max_volatility']
+            min_weight = self.optimization_params['mean_variance']['min_weight']
+            max_weight = self.optimization_params['mean_variance']['max_weight']
             
             n_assets = len(expected_returns)
             
-            # Define objective function (minimize portfolio variance)
+            # Objective function: minimize portfolio variance
             def objective(weights):
                 portfolio_variance = np.dot(weights.T, np.dot(cov_matrix, weights))
                 return portfolio_variance
             
-            # Define constraints
-            constraints_list = [
+            # Constraints
+            constraints = [
+                {'type': 'eq', 'fun': lambda x: np.sum(x) - 1},  # Weights sum to 1
+                {'type': 'eq', 'fun': lambda x: np.dot(expected_returns, x) - target_return}  # Target return
+            ]
+            
+            # Bounds
+            bounds = [(min_weight, max_weight) for _ in range(n_assets)]
+            
+            # Initial weights (equal weight)
+            initial_weights = np.array([1/n_assets] * n_assets)
+            
+            # Optimize
+            result = minimize(
+                objective, 
+                initial_weights,
+                method='SLSQP',
+                bounds=bounds,
+                constraints=constraints,
+                options={'maxiter': 2000, 'ftol': 1e-8, 'eps': 1e-8}  # Increased iterations and tolerance
+            )
+            
+            if result.success:
+                optimal_weights = result.x
+                
+                # Calculate portfolio metrics
+                portfolio_return = np.dot(expected_returns, optimal_weights)
+                portfolio_variance = np.dot(optimal_weights.T, np.dot(cov_matrix, optimal_weights))
+                portfolio_volatility = np.sqrt(portfolio_variance)
+                sharpe_ratio = (portfolio_return - self.optimization_params['mean_variance']['risk_free_rate']) / portfolio_volatility
+                
+                # Risk decomposition
+                risk_contributions = self._calculate_risk_contributions(optimal_weights, cov_matrix)
+                
+                optimization_result = {
+                    'weights': dict(zip(returns.columns, optimal_weights)),
+                    'portfolio_return': float(portfolio_return),
+                    'portfolio_volatility': float(portfolio_volatility),
+                    'sharpe_ratio': float(sharpe_ratio),
+                    'risk_contributions': risk_contributions,
+                    'optimization_status': 'success',
+                    'target_return': target_return,
+                    'max_volatility': max_volatility
+                }
+                
+                logger.info(f"Mean-variance optimization completed - Return: {portfolio_return:.4f}, Vol: {portfolio_volatility:.4f}, Sharpe: {sharpe_ratio:.3f}")
+                return optimization_result
+            else:
+                logger.warning(f"Mean-variance optimization failed: {result.message}")
+                return {'optimization_status': 'failed', 'message': result.message}
+                
+        except Exception as e:
+            logger.error(f"Error in mean-variance optimization: {str(e)}")
+            return {'optimization_status': 'error', 'message': str(e)}
+    
+    async def optimize_risk_parity(self, returns: pd.DataFrame, 
+                                 target_risk_contribution: Optional[float] = None) -> Dict[str, Any]:
+        """
+        Risk parity optimization.
+        
+        Args:
+            returns: DataFrame of asset returns
+            target_risk_contribution: Target risk contribution per asset
+            
+        Returns:
+            Dictionary with optimization results
+        """
+        try:
+            logger.info("Performing risk parity optimization...")
+            
+            # Calculate covariance matrix
+            cov_matrix = returns.cov()
+            n_assets = len(cov_matrix)
+            
+            # Set parameters
+            target_risk_contribution = target_risk_contribution or self.optimization_params['risk_parity']['target_risk_contribution']
+            min_weight = self.optimization_params['risk_parity']['min_weight']
+            max_weight = self.optimization_params['risk_parity']['max_weight']
+            
+            # Objective function: minimize variance of risk contributions
+            def objective(weights):
+                portfolio_variance = np.dot(weights.T, np.dot(cov_matrix, weights))
+                risk_contributions = weights * (np.dot(cov_matrix, weights)) / np.sqrt(portfolio_variance)
+                risk_contribution_variance = np.var(risk_contributions)
+                return risk_contribution_variance
+            
+            # Constraints
+            constraints = [
                 {'type': 'eq', 'fun': lambda x: np.sum(x) - 1}  # Weights sum to 1
             ]
             
-            if self.target_return is not None:
-                constraints_list.append({
-                    'type': 'eq', 
-                    'fun': lambda x: np.dot(x, expected_returns) - self.target_return
-                })
+            # Bounds
+            bounds = [(min_weight, max_weight) for _ in range(n_assets)]
             
-            # Add custom constraints
-            if constraints:
-                if 'min_weight' in constraints:
-                    constraints_list.append({
-                        'type': 'ineq',
-                        'fun': lambda x: x - constraints['min_weight']
-                    })
-                if 'max_weight' in constraints:
-                    constraints_list.append({
-                        'type': 'ineq',
-                        'fun': lambda x: constraints['max_weight'] - x
-                    })
-            
-            # Initial guess (equal weights)
+            # Initial weights (equal weight)
             initial_weights = np.array([1/n_assets] * n_assets)
             
             # Optimize
             result = minimize(
-                objective, initial_weights, 
-                method='SLSQP', 
-                constraints=constraints_list,
-                bounds=[(0, 1)] * n_assets
-            )
-            
-            if result.success:
-                optimal_weights = result.x
-                portfolio_return = np.dot(optimal_weights, expected_returns)
-                portfolio_variance = result.fun
-                portfolio_volatility = float(np.sqrt(portfolio_variance))
-                sharpe_ratio = (portfolio_return - self.risk_free_rate) / portfolio_volatility if portfolio_volatility > 0 else 0
-                
-                results = {
-                    'method': 'markowitz',
-                    'weights': dict(zip(returns.columns, optimal_weights)),
-                    'portfolio_return': portfolio_return,
-                    'portfolio_volatility': portfolio_volatility,
-                    'sharpe_ratio': sharpe_ratio,
-                    'optimization_success': True
-                }
-                
-                self._store_optimization_result(results)
-                return results
-            else:
-                return {'error': 'Optimization failed', 'optimization_success': False}
-                
-        except Exception as e:
-            logger.error(f"Error in Markowitz optimization: {str(e)}")
-            return {'error': str(e), 'optimization_success': False}
-    
-    def _black_litterman_optimization(self, returns: pd.DataFrame, constraints: Dict = None) -> Dict:
-        """Black-Litterman model optimization."""
-        try:
-            # Calculate market equilibrium returns
-            market_caps = np.ones(len(returns.columns))  # Equal market caps for simplicity
-            market_weights = market_caps / np.sum(market_caps)
-            
-            # Calculate equilibrium returns
-            cov_matrix = returns.cov() * 252
-            risk_aversion = 3.0  # Typical risk aversion parameter
-            equilibrium_returns = risk_aversion * np.dot(cov_matrix, market_weights)
-            
-            # Define views (example: bullish view on first asset)
-            views = np.array([0.05])  # 5% excess return expectation
-            view_assets = np.array([0])  # First asset
-            view_matrix = np.zeros((len(views), len(returns.columns)))
-            view_matrix[0, view_assets[0]] = 1
-            
-            # Define view uncertainty
-            tau = 0.05  # Scaling parameter
-            omega = tau * np.dot(np.dot(view_matrix, cov_matrix), view_matrix.T)
-            
-            # Black-Litterman posterior returns
-            bl_returns = self._calculate_black_litterman_returns(
-                equilibrium_returns, cov_matrix, views, view_matrix, omega
-            )
-            
-            # Optimize with posterior returns
-            return self._markowitz_optimization_with_returns(returns, bl_returns, constraints)
-            
-        except Exception as e:
-            logger.error(f"Error in Black-Litterman optimization: {str(e)}")
-            return {'error': str(e), 'optimization_success': False}
-    
-    def _calculate_black_litterman_returns(self, equilibrium_returns, cov_matrix, views, view_matrix, omega):
-        """Calculate Black-Litterman posterior returns."""
-        try:
-            tau = 0.05
-            sigma = tau * cov_matrix
-            
-            # Posterior covariance
-            posterior_cov = np.linalg.inv(np.linalg.inv(sigma) + np.dot(np.dot(view_matrix.T, np.linalg.inv(omega)), view_matrix))
-            
-            # Posterior returns
-            posterior_returns = np.dot(posterior_cov, 
-                np.dot(np.linalg.inv(sigma), equilibrium_returns) + 
-                np.dot(np.dot(view_matrix.T, np.linalg.inv(omega)), views)
-            )
-            
-            return posterior_returns
-            
-        except Exception as e:
-            logger.error(f"Error calculating Black-Litterman returns: {str(e)}")
-            return equilibrium_returns
-    
-    def _risk_parity_optimization(self, returns: pd.DataFrame, constraints: Dict = None) -> Dict:
-        """Risk parity optimization."""
-        try:
-            cov_matrix = returns.cov() * 252
-            n_assets = len(returns.columns)
-            
-            # Define objective function (minimize risk contribution dispersion)
-            def objective(weights):
-                portfolio_vol = float(np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights))))
-                risk_contributions = weights * np.dot(cov_matrix, weights) / portfolio_vol
-                return np.sum((risk_contributions - np.mean(risk_contributions))**2)
-            
-            # Constraints
-            constraints_list = [
-                {'type': 'eq', 'fun': lambda x: np.sum(x) - 1}
-            ]
-            
-            # Initial guess
-            initial_weights = np.array([1/n_assets] * n_assets)
-            
-            # Optimize
-            result = minimize(
-                objective, initial_weights,
+                objective, 
+                initial_weights,
                 method='SLSQP',
-                constraints=constraints_list,
-                bounds=[(0, 1)] * n_assets
+                bounds=bounds,
+                constraints=constraints,
+                options={'maxiter': 1000}
             )
             
             if result.success:
                 optimal_weights = result.x
-                expected_returns = returns.mean() * 252
-                portfolio_return = np.dot(optimal_weights, expected_returns)
-                portfolio_volatility = np.sqrt(np.dot(optimal_weights.T, np.dot(cov_matrix, optimal_weights)))
-                sharpe_ratio = (portfolio_return - self.risk_free_rate) / portfolio_volatility
                 
-                # Calculate risk contributions
-                risk_contributions = optimal_weights * np.dot(cov_matrix, optimal_weights) / portfolio_volatility
+                # Calculate portfolio metrics
+                portfolio_variance = np.dot(optimal_weights.T, np.dot(cov_matrix, optimal_weights))
+                portfolio_volatility = np.sqrt(portfolio_variance)
+                expected_returns = returns.mean()
+                portfolio_return = np.dot(expected_returns, optimal_weights)
                 
-                results = {
-                    'method': 'risk_parity',
+                # Risk contributions
+                risk_contributions = self._calculate_risk_contributions(optimal_weights, cov_matrix)
+                
+                # Risk parity metrics
+                risk_parity_score = 1 - np.std(list(risk_contributions.values()))
+                
+                optimization_result = {
                     'weights': dict(zip(returns.columns, optimal_weights)),
-                    'portfolio_return': portfolio_return,
-                    'portfolio_volatility': portfolio_volatility,
-                    'sharpe_ratio': sharpe_ratio,
-                    'risk_contributions': dict(zip(returns.columns, risk_contributions)),
-                    'optimization_success': True
+                    'portfolio_return': float(portfolio_return),
+                    'portfolio_volatility': float(portfolio_volatility),
+                    'risk_contributions': risk_contributions,
+                    'risk_parity_score': float(risk_parity_score),
+                    'optimization_status': 'success',
+                    'target_risk_contribution': target_risk_contribution
                 }
                 
-                self._store_optimization_result(results)
-                return results
+                logger.info(f"Risk parity optimization completed - Vol: {portfolio_volatility:.4f}, Parity Score: {risk_parity_score:.3f}")
+                return optimization_result
             else:
-                return {'error': 'Risk parity optimization failed', 'optimization_success': False}
+                logger.warning(f"Risk parity optimization failed: {result.message}")
+                return {'optimization_status': 'failed', 'message': result.message}
                 
         except Exception as e:
             logger.error(f"Error in risk parity optimization: {str(e)}")
-            return {'error': str(e), 'optimization_success': False}
+            return {'optimization_status': 'error', 'message': str(e)}
     
-    def _max_sharpe_optimization(self, returns: pd.DataFrame, constraints: Dict = None) -> Dict:
-        """Maximum Sharpe ratio optimization."""
+    async def optimize_factor_neutral(self, returns: pd.DataFrame, 
+                                    factor_exposures: Dict[str, Dict[str, float]],
+                                    target_factors: Optional[List[str]] = None) -> Dict[str, Any]:
+        """
+        Factor neutral portfolio optimization.
+        
+        Args:
+            returns: DataFrame of asset returns
+            factor_exposures: Dictionary of factor exposures for each asset
+            target_factors: List of factors to neutralize
+            
+        Returns:
+            Dictionary with optimization results
+        """
         try:
-            expected_returns = returns.mean() * 252
-            cov_matrix = returns.cov() * 252
-            n_assets = len(expected_returns)
+            logger.info("Performing factor neutral optimization...")
             
-            # Define objective function (negative Sharpe ratio to minimize)
+            # Set parameters
+            target_factors = target_factors or self.optimization_params['factor_neutral']['factor_exposures']
+            max_factor_exposure = self.optimization_params['factor_neutral']['max_factor_exposure']
+            min_weight = self.optimization_params['factor_neutral']['min_weight']
+            max_weight = self.optimization_params['factor_neutral']['max_weight']
+            
+            n_assets = len(returns.columns)
+            expected_returns = returns.mean()
+            cov_matrix = returns.cov()
+            
+            # Objective function: maximize Sharpe ratio
             def objective(weights):
-                portfolio_return = np.dot(weights, expected_returns)
-                portfolio_volatility = float(np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights))))
-                return -(portfolio_return - self.risk_free_rate) / portfolio_volatility
+                portfolio_return = np.dot(expected_returns, weights)
+                portfolio_variance = np.dot(weights.T, np.dot(cov_matrix, weights))
+                portfolio_volatility = np.sqrt(portfolio_variance)
+                sharpe_ratio = (portfolio_return - self.optimization_params['mean_variance']['risk_free_rate']) / portfolio_volatility
+                return -sharpe_ratio  # Minimize negative Sharpe ratio
             
-            # Constraints
-            constraints_list = [
-                {'type': 'eq', 'fun': lambda x: np.sum(x) - 1}
+            # Factor neutrality constraints
+            constraints = [
+                {'type': 'eq', 'fun': lambda x: np.sum(x) - 1}  # Weights sum to 1
             ]
             
-            # Initial guess
+            # Add factor neutrality constraints
+            for factor in target_factors:
+                if factor in factor_exposures:
+                    factor_exposures_factor = [factor_exposures[asset].get(factor, 0) for asset in returns.columns]
+                    
+                    # Constraint: factor exposure should be close to zero
+                    constraints.append({
+                        'type': 'ineq', 
+                        'fun': lambda x, exposures=factor_exposures_factor: max_factor_exposure - abs(np.dot(x, exposures))
+                    })
+                    constraints.append({
+                        'type': 'ineq', 
+                        'fun': lambda x, exposures=factor_exposures_factor: max_factor_exposure + abs(np.dot(x, exposures))
+                    })
+            
+            # Bounds
+            bounds = [(min_weight, max_weight) for _ in range(n_assets)]
+            
+            # Initial weights (equal weight)
             initial_weights = np.array([1/n_assets] * n_assets)
             
             # Optimize
             result = minimize(
-                objective, initial_weights,
+                objective, 
+                initial_weights,
                 method='SLSQP',
-                constraints=constraints_list,
-                bounds=[(0, 1)] * n_assets
+                bounds=bounds,
+                constraints=constraints,
+                options={'maxiter': 1000}
             )
             
             if result.success:
                 optimal_weights = result.x
-                portfolio_return = np.dot(optimal_weights, expected_returns)
-                portfolio_volatility = float(np.sqrt(np.dot(optimal_weights.T, np.dot(cov_matrix, optimal_weights))))
-                sharpe_ratio = -result.fun  # Convert back to positive
                 
-                results = {
-                    'method': 'max_sharpe',
+                # Calculate portfolio metrics
+                portfolio_return = np.dot(expected_returns, optimal_weights)
+                portfolio_variance = np.dot(optimal_weights.T, np.dot(cov_matrix, optimal_weights))
+                portfolio_volatility = np.sqrt(portfolio_variance)
+                sharpe_ratio = (portfolio_return - self.optimization_params['mean_variance']['risk_free_rate']) / portfolio_volatility
+                
+                # Factor exposures
+                factor_exposures_portfolio = {}
+                for factor in target_factors:
+                    if factor in factor_exposures:
+                        factor_exposures_factor = [factor_exposures[asset].get(factor, 0) for asset in returns.columns]
+                        factor_exposure = np.dot(optimal_weights, factor_exposures_factor)
+                        factor_exposures_portfolio[factor] = float(factor_exposure)
+                
+                # Risk contributions
+                risk_contributions = self._calculate_risk_contributions(optimal_weights, cov_matrix)
+                
+                optimization_result = {
                     'weights': dict(zip(returns.columns, optimal_weights)),
-                    'portfolio_return': portfolio_return,
-                    'portfolio_volatility': portfolio_volatility,
-                    'sharpe_ratio': sharpe_ratio,
-                    'optimization_success': True
+                    'portfolio_return': float(portfolio_return),
+                    'portfolio_volatility': float(portfolio_volatility),
+                    'sharpe_ratio': float(sharpe_ratio),
+                    'factor_exposures': factor_exposures_portfolio,
+                    'risk_contributions': risk_contributions,
+                    'optimization_status': 'success',
+                    'target_factors': target_factors
                 }
                 
-                self._store_optimization_result(results)
-                return results
+                logger.info(f"Factor neutral optimization completed - Return: {portfolio_return:.4f}, Vol: {portfolio_volatility:.4f}, Sharpe: {sharpe_ratio:.3f}")
+                return optimization_result
             else:
-                return {'error': 'Max Sharpe optimization failed', 'optimization_success': False}
+                logger.warning(f"Factor neutral optimization failed: {result.message}")
+                return {'optimization_status': 'failed', 'message': result.message}
                 
         except Exception as e:
-            logger.error(f"Error in max Sharpe optimization: {str(e)}")
-            return {'error': str(e), 'optimization_success': False}
+            logger.error(f"Error in factor neutral optimization: {str(e)}")
+            return {'optimization_status': 'error', 'message': str(e)}
     
-    def _markowitz_optimization_with_returns(self, returns: pd.DataFrame, custom_returns: np.array, constraints: Dict = None) -> Dict:
-        """Markowitz optimization with custom expected returns."""
+    async def optimize_cross_asset_hedging(self, returns: pd.DataFrame, 
+                                         hedge_assets: List[str],
+                                         hedge_ratio_method: str = 'minimum_variance') -> Dict[str, Any]:
+        """
+        Cross-asset hedging optimization.
+        
+        Args:
+            returns: DataFrame of asset returns
+            hedge_assets: List of hedge assets
+            hedge_ratio_method: Method for calculating hedge ratios
+            
+        Returns:
+            Dictionary with optimization results
+        """
         try:
-            cov_matrix = returns.cov() * 252
-            n_assets = len(returns.columns)
+            logger.info("Performing cross-asset hedging optimization...")
             
+            # Separate core assets and hedge assets
+            core_assets = [col for col in returns.columns if col not in hedge_assets]
+            core_returns = returns[core_assets]
+            hedge_returns = returns[hedge_assets]
+            
+            # Calculate hedge ratios
+            hedge_ratios = {}
+            for core_asset in core_assets:
+                for hedge_asset in hedge_assets:
+                    if hedge_ratio_method == 'minimum_variance':
+                        # Minimum variance hedge ratio
+                        covariance = np.cov(returns[core_asset], returns[hedge_asset])[0, 1]
+                        hedge_variance = np.var(returns[hedge_asset])
+                        hedge_ratio = -covariance / hedge_variance if hedge_variance > 0 else 0
+                    elif hedge_ratio_method == 'optimal_hedge':
+                        # Optimal hedge ratio using regression
+                        correlation = np.corrcoef(returns[core_asset], returns[hedge_asset])[0, 1]
+                        volatility_ratio = np.std(returns[core_asset]) / np.std(returns[hedge_asset])
+                        hedge_ratio = -correlation * volatility_ratio
+                    else:
+                        hedge_ratio = 0
+                    
+                    hedge_ratios[(core_asset, hedge_asset)] = hedge_ratio
+            
+            # Create hedged portfolio
+            hedged_returns = core_returns.copy()
+            for core_asset in core_assets:
+                for hedge_asset in hedge_assets:
+                    hedge_ratio = hedge_ratios.get((core_asset, hedge_asset), 0)
+                    hedged_returns[core_asset] += hedge_ratio * hedge_returns[hedge_asset]
+            
+            # Optimize hedged portfolio
+            expected_returns = hedged_returns.mean()
+            cov_matrix = hedged_returns.cov()
+            
+            # Objective function: maximize Sharpe ratio
             def objective(weights):
+                portfolio_return = np.dot(expected_returns, weights)
                 portfolio_variance = np.dot(weights.T, np.dot(cov_matrix, weights))
-                return portfolio_variance
+                portfolio_volatility = np.sqrt(portfolio_variance)
+                sharpe_ratio = (portfolio_return - self.optimization_params['mean_variance']['risk_free_rate']) / portfolio_volatility
+                return -sharpe_ratio
             
-            constraints_list = [
-                {'type': 'eq', 'fun': lambda x: np.sum(x) - 1}
+            # Constraints
+            constraints = [
+                {'type': 'eq', 'fun': lambda x: np.sum(x) - 1}  # Weights sum to 1
             ]
             
-            if self.target_return is not None:
-                constraints_list.append({
-                    'type': 'eq', 
-                    'fun': lambda x: np.dot(x, custom_returns) - self.target_return
-                })
+            # Bounds
+            n_core_assets = len(core_assets)
+            min_weight = self.optimization_params['mean_variance']['min_weight']
+            max_weight = self.optimization_params['mean_variance']['max_weight']
+            bounds = [(min_weight, max_weight) for _ in range(n_core_assets)]
             
-            initial_weights = np.array([1/n_assets] * n_assets)
+            # Initial weights
+            initial_weights = np.array([1/n_core_assets] * n_core_assets)
             
+            # Optimize
             result = minimize(
-                objective, initial_weights,
+                objective, 
+                initial_weights,
                 method='SLSQP',
-                constraints=constraints_list,
-                bounds=[(0, 1)] * n_assets
+                bounds=bounds,
+                constraints=constraints,
+                options={'maxiter': 1000}
             )
             
             if result.success:
                 optimal_weights = result.x
-                portfolio_return = np.dot(optimal_weights, custom_returns)
-                portfolio_variance = result.fun
-                portfolio_volatility = float(np.sqrt(portfolio_variance))
-                sharpe_ratio = (portfolio_return - self.risk_free_rate) / portfolio_volatility
                 
-                return {
-                    'method': 'black_litterman',
-                    'weights': dict(zip(returns.columns, optimal_weights)),
-                    'portfolio_return': portfolio_return,
-                    'portfolio_volatility': portfolio_volatility,
-                    'sharpe_ratio': sharpe_ratio,
-                    'optimization_success': True
+                # Calculate portfolio metrics
+                portfolio_return = np.dot(expected_returns, optimal_weights)
+                portfolio_variance = np.dot(optimal_weights.T, np.dot(cov_matrix, optimal_weights))
+                portfolio_volatility = np.sqrt(portfolio_variance)
+                sharpe_ratio = (portfolio_return - self.optimization_params['mean_variance']['risk_free_rate']) / portfolio_volatility
+                
+                # Calculate hedge effectiveness
+                original_volatility = np.sqrt(np.dot(optimal_weights.T, np.dot(core_returns.cov(), optimal_weights)))
+                hedge_effectiveness = (original_volatility - portfolio_volatility) / original_volatility
+                
+                # Risk contributions
+                risk_contributions = self._calculate_risk_contributions(optimal_weights, cov_matrix)
+                
+                optimization_result = {
+                    'weights': dict(zip(core_assets, optimal_weights)),
+                    'hedge_ratios': hedge_ratios,
+                    'portfolio_return': float(portfolio_return),
+                    'portfolio_volatility': float(portfolio_volatility),
+                    'sharpe_ratio': float(sharpe_ratio),
+                    'hedge_effectiveness': float(hedge_effectiveness),
+                    'risk_contributions': risk_contributions,
+                    'optimization_status': 'success',
+                    'hedge_ratio_method': hedge_ratio_method
                 }
+                
+                logger.info(f"Cross-asset hedging optimization completed - Return: {portfolio_return:.4f}, Vol: {portfolio_volatility:.4f}, Hedge Effectiveness: {hedge_effectiveness:.3f}")
+                return optimization_result
             else:
-                return {'error': 'Black-Litterman optimization failed', 'optimization_success': False}
+                logger.warning(f"Cross-asset hedging optimization failed: {result.message}")
+                return {'optimization_status': 'failed', 'message': result.message}
                 
         except Exception as e:
-            logger.error(f"Error in Black-Litterman optimization: {str(e)}")
-            return {'error': str(e), 'optimization_success': False}
+            logger.error(f"Error in cross-asset hedging optimization: {str(e)}")
+            return {'optimization_status': 'error', 'message': str(e)}
     
-    def _store_optimization_result(self, result: Dict):
-        """Store optimization result in history."""
-        self.optimization_history.append({
-            'timestamp': pd.Timestamp.now(),
-            'result': result
-        })
+    def _calculate_risk_contributions(self, weights: np.ndarray, cov_matrix: pd.DataFrame) -> Dict[str, float]:
+        """Calculate risk contributions for each asset."""
+        try:
+            portfolio_variance = np.dot(weights.T, np.dot(cov_matrix, weights))
+            portfolio_volatility = np.sqrt(portfolio_variance)
+            
+            risk_contributions = {}
+            for i, asset in enumerate(cov_matrix.columns):
+                marginal_risk = np.dot(cov_matrix.iloc[i], weights) / portfolio_volatility
+                risk_contribution = weights[i] * marginal_risk
+                risk_contributions[asset] = float(risk_contribution)
+            
+            return risk_contributions
+            
+        except Exception as e:
+            logger.error(f"Error calculating risk contributions: {str(e)}")
+            return {}
     
-    def get_optimization_summary(self) -> Dict:
-        """Get summary of all optimization results."""
-        if not self.optimization_history:
-            return {'message': 'No optimization history available'}
-        
-        summary = {
-            'total_optimizations': len(self.optimization_history),
-            'methods_used': [],
-            'average_sharpe_ratios': {},
-            'best_performing_method': None,
-            'recent_results': []
-        }
-        
-        method_performance = {}
-        
-        for record in self.optimization_history:
-            result = record['result']
-            method = result.get('method', 'unknown')
+    async def get_portfolio_summary(self) -> Dict[str, Any]:
+        """Get comprehensive portfolio optimization summary."""
+        try:
+            summary = {
+                'optimization_methods': ['mean_variance', 'risk_parity', 'factor_neutral', 'cross_asset_hedging'],
+                'optimization_history': len(self.optimization_history),
+                'portfolio_metrics': len(self.portfolio_metrics),
+                'rebalancing_dates': len(self.rebalancing_dates)
+            }
             
-            if method not in summary['methods_used']:
-                summary['methods_used'].append(method)
-                method_performance[method] = []
+            return summary
             
-            if 'sharpe_ratio' in result:
-                method_performance[method].append(result['sharpe_ratio'])
-        
-        # Calculate average Sharpe ratios
-        for method, ratios in method_performance.items():
-            summary['average_sharpe_ratios'][method] = np.mean(ratios)
-        
-        # Find best performing method
-        if summary['average_sharpe_ratios']:
-            best_method = max(summary['average_sharpe_ratios'], 
-                            key=summary['average_sharpe_ratios'].get)
-            summary['best_performing_method'] = best_method
-        
-        # Get recent results
-        summary['recent_results'] = self.optimization_history[-5:]
-        
-        return summary 
+        except Exception as e:
+            logger.error(f"Error getting portfolio summary: {str(e)}")
+            return {} 

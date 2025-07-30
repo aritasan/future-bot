@@ -11,7 +11,7 @@ from datetime import datetime
 
 from .statistical_validator import StatisticalValidator
 from .risk_manager import RiskManager
-from .portfolio_optimizer import PortfolioOptimizer
+from .portfolio_optimizer import WorldQuantPortfolioOptimizer
 from .market_microstructure import MarketMicrostructureAnalyzer
 from .backtesting_engine import AdvancedBacktestingEngine
 from .factor_model import WorldQuantFactorModel
@@ -39,7 +39,7 @@ class QuantitativeIntegration:
         )
         
         self.risk_manager = RiskManager(config)
-        self.portfolio_optimizer = PortfolioOptimizer(config)
+        self.portfolio_optimizer = WorldQuantPortfolioOptimizer(config)
         self.market_microstructure = MarketMicrostructureAnalyzer(config)
         self.backtesting_engine = AdvancedBacktestingEngine(config)
         self.factor_model = WorldQuantFactorModel(config)
