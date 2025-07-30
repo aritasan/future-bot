@@ -289,7 +289,7 @@ class AdvancedBacktestingEngine:
                 return {}
             total_return = (portfolio['total_value'] - self.initial_capital) / self.initial_capital if self.initial_capital != 0 else 0
             annualized_return = self._calculate_annualized_return(returns_series) if len(returns_series) > 1 else 0
-            volatility = returns_series.std() * np.sqrt(252) if len(returns_series) > 1 else 0
+            volatility = float(returns_series.std() * np.sqrt(252)) if len(returns_series) > 1 else 0
             sharpe_ratio = (annualized_return - self.risk_free_rate) / volatility if volatility > 0 else 0
             # Risk metrics
             max_drawdown = self._calculate_max_drawdown(equity_series) if len(equity_series) > 1 else 0
@@ -369,7 +369,7 @@ class AdvancedBacktestingEngine:
         """Calculate Sortino ratio."""
         try:
             negative_returns = returns_series[returns_series < 0]
-            downside_deviation = negative_returns.std() * np.sqrt(252)
+            downside_deviation = float(negative_returns.std() * np.sqrt(252))
             annualized_return = self._calculate_annualized_return(returns_series)
             return (annualized_return - self.risk_free_rate) / downside_deviation if downside_deviation > 0 else 0
         except Exception as e:

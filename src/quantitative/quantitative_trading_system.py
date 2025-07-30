@@ -61,6 +61,38 @@ class QuantitativeTradingSystem:
         
         self.trading_history = []
         
+    async def initialize(self) -> bool:
+        """
+        Initialize the quantitative trading system.
+        
+        Returns:
+            bool: True if initialization successful, False otherwise
+        """
+        try:
+            logger.info("Initializing Quantitative Trading System...")
+            
+            # Verify all components are available
+            required_components = [
+                'risk_manager',
+                'statistical_validator', 
+                'portfolio_optimizer',
+                'market_analyzer',
+                'backtesting_engine',
+                'factor_model'
+            ]
+            
+            for component in required_components:
+                if not hasattr(self, component):
+                    logger.error(f"Required component {component} not available")
+                    return False
+            
+            logger.info("Quantitative Trading System initialized successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error initializing Quantitative Trading System: {str(e)}")
+            return False
+        
     def analyze_trading_opportunity(self, market_data: Dict, 
                                   signal_data: Dict = None) -> Dict:
         """
@@ -396,6 +428,124 @@ class QuantitativeTradingSystem:
             
         except Exception as e:
             logger.error(f"Error getting system summary: {str(e)}")
+            return {'error': str(e)}
+    
+    def get_performance_metrics(self) -> Dict:
+        """
+        Get comprehensive performance metrics for the quantitative system.
+        
+        Returns:
+            Dict: Performance metrics including analysis counts, success rates, etc.
+        """
+        try:
+            metrics = {
+                'total_analyses': len(self.trading_history),
+                'recent_analyses_count': len([h for h in self.trading_history 
+                                            if (pd.Timestamp.now() - h['timestamp']).days <= 7]),
+                'system_status': 'active',
+                'risk_management_metrics': self.risk_manager.get_risk_summary(),
+                'statistical_validation_metrics': self.statistical_validator.get_validation_summary(),
+                'portfolio_optimization_metrics': self.portfolio_optimizer.get_optimization_summary(),
+                'market_analysis_metrics': self.market_analyzer.get_analysis_summary(),
+                'backtesting_metrics': self.backtesting_engine.get_backtest_summary(),
+                'factor_analysis_metrics': self.factor_model.get_factor_summary()
+            }
+            
+            return metrics
+            
+        except Exception as e:
+            logger.error(f"Error getting performance metrics: {str(e)}")
+            return {'error': str(e)}
+    
+    async def validate_signal(self, signal_data: Dict, market_data: Dict) -> Dict:
+        """
+        Validate trading signal using statistical methods.
+        
+        Args:
+            signal_data: Dictionary containing signal information
+            market_data: Market data including returns for validation
+            
+        Returns:
+            Dict: Validation results with statistical metrics
+        """
+        try:
+            # Extract returns from market data
+            historical_returns = None
+            if 'returns' in market_data and len(market_data['returns']) > 0:
+                historical_returns = np.array(market_data['returns'])
+            
+            # Use the statistical validator to validate the signal
+            validation_results = self.statistical_validator.validate_signal(
+                signal_data, 
+                historical_returns
+            )
+            
+            # Add additional quantitative validation
+            validation_results['quantitative_validation'] = {
+                'signal_strength': signal_data.get('strength', 0.0),
+                'confidence': signal_data.get('confidence', 0.0),
+                'position_size': signal_data.get('position_size', 0.01),
+                'risk_metrics': self.risk_manager.calculate_risk_metrics(
+                    returns=historical_returns if historical_returns is not None else np.array([0.01]),
+                    signal_data=signal_data,
+                    position_size=signal_data.get('position_size', 0.01)
+                ) if historical_returns is not None else {}
+            }
+            
+            return validation_results
+            
+        except Exception as e:
+            logger.error(f"Error validating signal: {str(e)}")
+            return {'is_valid': False, 'error': str(e)}
+    
+    async def get_recommendations(self, symbol: str) -> Dict:
+        """
+        Get trading recommendations for a symbol.
+        
+        Args:
+            symbol: Trading symbol
+            
+        Returns:
+            Dict: Trading recommendations with analysis
+        """
+        try:
+            recommendations = {
+                'symbol': symbol,
+                'timestamp': pd.Timestamp.now(),
+                'market_analysis': {},
+                'risk_assessment': {},
+                'trading_recommendation': {
+                    'action': 'hold',
+                    'confidence': 0.0,
+                    'position_size': 0.01,
+                    'reasoning': []
+                }
+            }
+            
+            # Get market data for analysis
+            # This would typically fetch real market data
+            # For now, return a basic recommendation structure
+            
+            # Add basic market analysis
+            recommendations['market_analysis'] = {
+                'volatility': 0.02,
+                'trend': 'neutral',
+                'support_level': 0.0,
+                'resistance_level': 0.0
+            }
+            
+            # Add risk assessment
+            recommendations['risk_assessment'] = {
+                'var_95': -0.02,
+                'max_drawdown': 0.05,
+                'sharpe_ratio': 0.5,
+                'risk_level': 'medium'
+            }
+            
+            return recommendations
+            
+        except Exception as e:
+            logger.error(f"Error getting recommendations for {symbol}: {str(e)}")
             return {'error': str(e)}
     
     def export_analysis_report(self, analysis_id: str = None) -> Dict:

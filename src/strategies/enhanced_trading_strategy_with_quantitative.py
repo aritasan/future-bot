@@ -28,13 +28,13 @@ from src.services.binance_service import BinanceService
 from src.services.notification_service import NotificationService
 from src.utils.helpers import is_long_side, is_short_side, is_trending_down, is_trending_up
 from src.quantitative.integration import QuantitativeIntegration
+from src.quantitative.quantitative_trading_system import QuantitativeTradingSystem
 
 logger = logging.getLogger(__name__)
 
 class EnhancedTradingStrategyWithQuantitative:
     """
-    Enhanced trading strategy with quantitative analysis integration.
-    Extends the original strategy with quantitative trading capabilities.
+    Enhanced trading strategy with WorldQuant-level quantitative analysis integration.
     """
     
     def __init__(self, config: Dict, binance_service: BinanceService, 
@@ -56,139 +56,104 @@ class EnhancedTradingStrategyWithQuantitative:
         self.notification_service = notification_service
         self.cache_service = cache_service
         
-        # Initialize quantitative integration
-        quantitative_config = {
-            'confidence_level': config.get('quantitative_confidence_level', 0.95),
-            'max_position_size': config.get('quantitative_max_position_size', 0.02),
-            'risk_free_rate': config.get('quantitative_risk_free_rate', 0.02),
-            'optimization_method': config.get('quantitative_optimization_method', 'markowitz'),
-            'n_factors': config.get('quantitative_n_factors', 5),
-            'var_limit': config.get('quantitative_var_limit', 0.02),
-            'quantitative_integration_enabled': config.get('quantitative_integration_enabled', True)
-        }
-        
-        self.quantitative_integration = QuantitativeIntegration(quantitative_config)
-        
-        # Initialize other services
-        self.sentiment_service = SentimentService(config)
+        # Initialize quantitative components
+        self.quantitative_integration = QuantitativeIntegration(config)
+        self.quantitative_system = QuantitativeTradingSystem(config)
         
         # Performance tracking
-        self.performance_metrics = {}
         self.signal_history = {}
         self.quantitative_analysis_history = {}
-        
-        # Cache for optimization
         self.data_cache = {}
-        self.last_analysis_time = {}
         
-        logger.info("Enhanced Trading Strategy with Quantitative Integration initialized")
+        # Confidence performance tracking
+        self.confidence_performance = {
+            'buy': {'executions': 0, 'successes': 0, 'thresholds': []},
+            'sell': {'executions': 0, 'successes': 0, 'thresholds': []},
+            'thresholds': {
+                'buy': {'avg_threshold': 0.0, 'count': 0},
+                'sell': {'avg_threshold': 0.0, 'count': 0}
+            }
+        }
+        
+        # Initialize cache service if provided
+        if self.cache_service:
+            logger.info("Cache service initialized for enhanced trading strategy")
+        
+        logger.info("Enhanced Trading Strategy with Quantitative Analysis initialized")
     
     async def initialize(self) -> bool:
-        """Initialize the strategy."""
+        """Initialize the strategy and quantitative components."""
         try:
-            logger.info("Initializing Enhanced Trading Strategy with Quantitative Integration...")
-            
             # Initialize quantitative integration
-            if self.quantitative_integration:
-                logger.info("Quantitative integration initialized")
+            await self.quantitative_integration.initialize()
             
-            # Initialize sentiment service
-            if self.sentiment_service:
-                logger.info("Sentiment service initialized")
+            # Initialize quantitative trading system
+            await self.quantitative_system.initialize()
             
-            logger.info("Enhanced Trading Strategy with Quantitative Integration initialization completed")
+            logger.info("Enhanced Trading Strategy with Quantitative Analysis initialized successfully")
             return True
             
         except Exception as e:
-            logger.error(f"Error initializing strategy: {str(e)}")
+            logger.error(f"Error initializing enhanced trading strategy: {str(e)}")
             return False
     
     async def generate_signals(self, symbol: str, indicator_service: IndicatorService) -> Optional[Dict]:
-        """
-        Generate trading signals with WorldQuant-level quantitative enhancement.
-        
-        Args:
-            symbol: Trading symbol
-            indicator_service: Indicator service
-            
-        Returns:
-            Optional[Dict]: Enhanced trading signal with sophisticated analysis
-        """
+        """Generate trading signals with WorldQuant-level quantitative analysis."""
         try:
             # Get comprehensive market data
             market_data = await self._get_comprehensive_market_data(symbol)
             
-            # Generate base signal using advanced strategy
-            base_signal = await self._generate_advanced_signal(symbol, indicator_service, market_data)
+            # Generate advanced signal with quantitative analysis
+            signal = await self._generate_advanced_signal(symbol, indicator_service, market_data)
             
-            if not base_signal:
-                return None
+            if signal:
+                # Store signal history
+                self._store_signal_history(symbol, signal)
+                
+                # Log quantitative analysis
+                validation = await self.quantitative_system.validate_signal(signal, market_data)
+                await self._log_quantitative_analysis(symbol, signal, validation)
+                
+                logger.info(f"Generated signal for {symbol}: {signal.get('action', 'HOLD')} "
+                          f"(confidence: {signal.get('confidence', 0):.3f})")
+                
+                return signal
             
-            # Apply market microstructure analysis
-            microstructure_signal = await self._apply_market_microstructure_analysis(symbol, base_signal, market_data)
-            
-            # Apply advanced risk management
-            risk_adjusted_signal = await self._apply_advanced_risk_management(symbol, microstructure_signal, market_data)
-            
-            # Apply statistical arbitrage signals
-            stat_arb_signal = await self._apply_statistical_arbitrage(symbol, risk_adjusted_signal, market_data)
-            
-            # Apply momentum and mean reversion analysis
-            momentum_signal = await self._apply_momentum_mean_reversion_analysis(symbol, stat_arb_signal, market_data)
-            
-            # Apply volatility regime analysis
-            volatility_signal = await self._apply_volatility_regime_analysis(symbol, momentum_signal, market_data)
-            
-            # Apply correlation analysis
-            correlation_signal = await self._apply_correlation_analysis(symbol, volatility_signal, market_data)
-            
-            # Final signal optimization
-            final_signal = await self._optimize_final_signal(symbol, correlation_signal, market_data)
-            
-            # Validate signal quantitatively
-            validation_results = await self.quantitative_integration.validate_signal_quantitatively(
-                symbol, final_signal, market_data
-            )
-            
-            # Add validation results to signal
-            final_signal['quantitative_validation'] = validation_results
-            
-            # Optimize position size with advanced methods
-            optimized_size = await self._optimize_position_size_advanced(
-                symbol, final_signal.get('position_size', 0.01), market_data, final_signal
-            )
-            final_signal['optimized_position_size'] = optimized_size
-            
-            # Store signal history
-            self._store_signal_history(symbol, final_signal)
-            
-            # Log quantitative analysis
-            await self._log_quantitative_analysis(symbol, final_signal, validation_results)
-            
-            return final_signal
+            return None
             
         except Exception as e:
+            import traceback
+            logger.error(traceback.format_exc())
             logger.error(f"Error generating signals for {symbol}: {str(e)}")
             return None
     
     async def _generate_advanced_signal(self, symbol: str, indicator_service: IndicatorService, market_data: Dict) -> Optional[Dict]:
-        """Generate advanced signal using WorldQuant-level analysis."""
+        """Generate advanced signal with quantitative analysis."""
         try:
-            # Get multi-timeframe data
-            df_1h = await indicator_service.get_historical_data(symbol, '1h', limit=500)
-            df_4h = await indicator_service.get_historical_data(symbol, '4h', limit=200)
-            df_1d = await indicator_service.get_historical_data(symbol, '1d', limit=100)
+            # Get market data for different timeframes
+            klines_1h = await indicator_service.get_klines(symbol, '1h', limit=100)
+            klines_4h = await indicator_service.get_klines(symbol, '4h', limit=100)
+            klines_1d = await indicator_service.get_klines(symbol, '1d', limit=100)
             
-            if df_1h is None or df_1h.empty:
+            if klines_1h is None or klines_4h is None or klines_1d is None:
+                logger.warning(f"Missing market data for {symbol}")
                 return None
+            
+            # Convert klines to DataFrames
+            df_1h = self._convert_klines_to_dataframe(klines_1h)
+            df_4h = self._convert_klines_to_dataframe(klines_4h)
+            df_1d = self._convert_klines_to_dataframe(klines_1d)
             
             # Calculate advanced indicators
             df_1h = await self._calculate_advanced_indicators(df_1h)
             df_4h = await self._calculate_advanced_indicators(df_4h)
             df_1d = await self._calculate_advanced_indicators(df_1d)
             
-            # Multi-timeframe analysis
+            # Create advanced signal
             signal = self._create_advanced_signal(symbol, df_1h, df_4h, df_1d, market_data)
+            
+            # Apply quantitative analysis
+            signal = await self._apply_quantitative_analysis(symbol, signal, market_data)
             
             return signal
             
@@ -196,12 +161,63 @@ class EnhancedTradingStrategyWithQuantitative:
             logger.error(f"Error generating advanced signal for {symbol}: {str(e)}")
             return None
     
+    def _convert_klines_to_dataframe(self, klines: Dict) -> pd.DataFrame:
+        """Convert klines dictionary to pandas DataFrame."""
+        try:
+            if not klines or 'close' not in klines:
+                return pd.DataFrame()
+            
+            # Create DataFrame from klines data
+            df = pd.DataFrame({
+                'open': klines['open'],
+                'high': klines['high'],
+                'low': klines['low'],
+                'close': klines['close'],
+                'volume': klines.get('volume', [0] * len(klines['close']))
+            })
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error converting klines to DataFrame: {str(e)}")
+            return pd.DataFrame()
+    
+    async def _apply_quantitative_analysis(self, symbol: str, signal: Dict, market_data: Dict) -> Dict:
+        """Apply quantitative analysis to signal."""
+        try:
+            # Apply market microstructure analysis
+            signal = await self._apply_market_microstructure_analysis(symbol, signal, market_data)
+            
+            # Apply advanced risk management
+            signal = await self._apply_advanced_risk_management(symbol, signal, market_data)
+            
+            # Apply statistical arbitrage
+            signal = await self._apply_statistical_arbitrage(symbol, signal, market_data)
+            
+            # Apply momentum mean reversion analysis
+            signal = await self._apply_momentum_mean_reversion_analysis(symbol, signal, market_data)
+            
+            # Apply volatility regime analysis
+            signal = await self._apply_volatility_regime_analysis(symbol, signal, market_data)
+            
+            # Apply correlation analysis
+            signal = await self._apply_correlation_analysis(symbol, signal, market_data)
+            
+            # Optimize final signal
+            signal = await self._optimize_final_signal(symbol, signal, market_data)
+            
+            return signal
+            
+        except Exception as e:
+            logger.error(f"Error applying quantitative analysis for {symbol}: {str(e)}")
+            return signal
+    
     async def _calculate_advanced_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """Calculate advanced technical indicators."""
         try:
             # Basic indicators
-            df['sma_20'] = df['close'].rolling(20).mean()
-            df['sma_50'] = df['close'].rolling(50).mean()
+            df['sma_20'] = df['close'].rolling(window=20).mean()
+            df['sma_50'] = df['close'].rolling(window=50).mean()
             df['ema_12'] = df['close'].ewm(span=12).mean()
             df['ema_26'] = df['close'].ewm(span=26).mean()
             
@@ -218,37 +234,24 @@ class EnhancedTradingStrategyWithQuantitative:
             df['rsi'] = 100 - (100 / (1 + rs))
             
             # Bollinger Bands
-            df['bb_middle'] = df['close'].rolling(20).mean()
-            bb_std = df['close'].rolling(20).std()
+            df['bb_middle'] = df['close'].rolling(window=20).mean()
+            bb_std = df['close'].rolling(window=20).std()
             df['bb_upper'] = df['bb_middle'] + (bb_std * 2)
             df['bb_lower'] = df['bb_middle'] - (bb_std * 2)
-            df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['bb_middle']
-            
-            # Advanced indicators
-            # Stochastic RSI
-            df['stoch_rsi'] = (df['rsi'] - df['rsi'].rolling(14).min()) / (df['rsi'].rolling(14).max() - df['rsi'].rolling(14).min())
-            
-            # Williams %R
-            df['williams_r'] = (df['high'].rolling(14).max() - df['close']) / (df['high'].rolling(14).max() - df['low'].rolling(14).min()) * -100
             
             # ATR (Average True Range)
             high_low = df['high'] - df['low']
             high_close = np.abs(df['high'] - df['close'].shift())
             low_close = np.abs(df['low'] - df['close'].shift())
-            true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-            df['atr'] = true_range.rolling(14).mean()
+            true_range = np.maximum(high_low, np.maximum(high_close, low_close))
+            df['atr'] = true_range.rolling(window=14).mean()
             
             # Volume indicators
-            df['volume_sma'] = df['volume'].rolling(20).mean()
+            df['volume_sma'] = df['volume'].rolling(window=20).mean()
             df['volume_ratio'] = df['volume'] / df['volume_sma']
             
-            # Price momentum
+            # Momentum indicators
             df['momentum'] = df['close'] / df['close'].shift(10) - 1
-            df['rate_of_change'] = df['close'].pct_change(10)
-            
-            # Volatility indicators
-            df['volatility'] = df['close'].pct_change().rolling(20).std()
-            df['volatility_ratio'] = df['volatility'] / df['volatility'].rolling(50).mean()
             
             return df
             
@@ -257,49 +260,50 @@ class EnhancedTradingStrategyWithQuantitative:
             return df
     
     def _create_advanced_signal(self, symbol: str, df_1h: pd.DataFrame, df_4h: pd.DataFrame, df_1d: pd.DataFrame, market_data: Dict) -> Dict:
-        """Create advanced trading signal using multi-timeframe analysis."""
+        """Create advanced trading signal with multi-timeframe analysis."""
         try:
-            signal = {
-                'symbol': symbol,
-                'timestamp': datetime.now(),
-                'signal_strength': 0.0,
-                'position_size': 0.01,
-                'action': 'hold',
-                'confidence': 0.0,
-                'timeframes': {}
+            # Analyze each timeframe
+            timeframe_1h = self._analyze_timeframe(df_1h, '1h')
+            timeframe_4h = self._analyze_timeframe(df_4h, '4h')
+            timeframe_1d = self._analyze_timeframe(df_1d, '1d')
+            
+            # Combine timeframe signals
+            timeframes = {
+                '1h': timeframe_1h,
+                '4h': timeframe_4h,
+                '1d': timeframe_1d
             }
             
-            # 1-hour timeframe analysis
-            h1_signal = self._analyze_timeframe(df_1h, '1h')
-            signal['timeframes']['1h'] = h1_signal
+            combined_signal = self._combine_timeframe_signals(timeframes)
             
-            # 4-hour timeframe analysis
-            h4_signal = self._analyze_timeframe(df_4h, '4h')
-            signal['timeframes']['4h'] = h4_signal
+            # Add market data context
+            combined_signal['symbol'] = symbol
+            combined_signal['timestamp'] = datetime.now().isoformat()
+            combined_signal['market_data'] = market_data
             
-            # 1-day timeframe analysis
-            d1_signal = self._analyze_timeframe(df_1d, '1d')
-            signal['timeframes']['1d'] = d1_signal
+            # Ensure current_price is available
+            if 'current_price' not in combined_signal or combined_signal['current_price'] <= 0:
+                # Get current price from 1h timeframe as fallback
+                if len(df_1h) > 0:
+                    combined_signal['current_price'] = float(df_1h['close'].iloc[-1])
+                else:
+                    combined_signal['current_price'] = 0.0
             
-            # Combine signals using weighted approach
-            combined_signal = self._combine_timeframe_signals(signal['timeframes'])
-            
-            signal.update(combined_signal)
-            
-            return signal
+            return combined_signal
             
         except Exception as e:
-            logger.error(f"Error creating advanced signal for {symbol}: {str(e)}")
-            return {'symbol': symbol, 'action': 'hold', 'signal_strength': 0.0}
+            logger.error(f"Error creating advanced signal: {str(e)}")
+            return {'signal': 'hold', 'strength': 0.0, 'confidence': 0.0, 'current_price': 0.0}
     
     def _analyze_timeframe(self, df: pd.DataFrame, timeframe: str) -> Dict:
-        """Analyze single timeframe for signals."""
+        """Analyze single timeframe for trading signals."""
         try:
-            if df.empty or len(df) < 50:
-                return {'signal': 'hold', 'strength': 0.0, 'confidence': 0.0}
+            if len(df) < 50:
+                return {'signal': 'hold', 'strength': 0.0, 'confidence': 0.0, 'current_price': 0.0}
             
             current = df.iloc[-1]
             prev = df.iloc[-2]
+            current_price = float(current['close'])
             
             signal_strength = 0.0
             signal_reasons = []
@@ -361,7 +365,8 @@ class EnhancedTradingStrategyWithQuantitative:
                 'signal': action,
                 'strength': signal_strength,
                 'confidence': min(abs(signal_strength), 1.0),
-                'reasons': signal_reasons
+                'reasons': signal_reasons,
+                'current_price': current_price
             }
             
         except Exception as e:
@@ -377,6 +382,15 @@ class EnhancedTradingStrategyWithQuantitative:
             combined_strength = 0.0
             weighted_confidence = 0.0
             all_reasons = []
+            
+            # Get current price from 1h timeframe (most recent)
+            current_price = 0.0
+            if '1h' in timeframes and 'current_price' in timeframes['1h']:
+                current_price = timeframes['1h']['current_price']
+            elif '4h' in timeframes and 'current_price' in timeframes['4h']:
+                current_price = timeframes['4h']['current_price']
+            elif '1d' in timeframes and 'current_price' in timeframes['1d']:
+                current_price = timeframes['1d']['current_price']
             
             for timeframe, signal in timeframes.items():
                 weight = weights.get(timeframe, 0.2)
@@ -399,162 +413,130 @@ class EnhancedTradingStrategyWithQuantitative:
             # Determine final action and confidence with WorldQuant-level asymmetric logic
             if combined_strength > buy_threshold:
                 action = 'buy'
-                # Asymmetric confidence calculation for BUY (lower base, higher potential)
-                base_confidence = weighted_confidence * 0.8  # Lower base for BUY
-                strength_boost = min(0.15, (combined_strength - buy_threshold) / (0.4 - buy_threshold) * 0.2)
-                confidence = min(0.95, base_confidence + strength_boost)
+                confidence = min(combined_strength, 1.0)
             elif combined_strength < sell_threshold:
                 action = 'sell'
-                # Asymmetric confidence calculation for SELL (higher base, stricter requirements)
-                base_confidence = weighted_confidence * 1.2  # Higher base for SELL
-                strength_boost = min(0.10, (sell_threshold - combined_strength) / (sell_threshold + 0.4) * 0.15)
-                confidence = min(0.95, base_confidence + strength_boost)
+                confidence = min(abs(combined_strength), 1.0)
             else:
                 action = 'hold'
-                confidence = weighted_confidence  # Use the weighted confidence for hold actions
-            
-            # Log threshold information for monitoring
-            logger.info(f"Dynamic thresholds - Buy: {buy_threshold:.3f}, Sell: {sell_threshold:.3f}, "
-                       f"Combined strength: {combined_strength:.3f}, Weighted confidence: {weighted_confidence:.3f}, "
-                       f"Final confidence: {confidence:.3f}, Action: {action}, "
-                       f"Market regime: {thresholds['market_regime']}")
+                confidence = 0.0
             
             return {
                 'action': action,
-                'signal_strength': combined_strength,
+                'strength': combined_strength,
                 'confidence': confidence,
-                'reasons': all_reasons
+                'reasons': all_reasons,
+                'timeframes': timeframes,
+                'thresholds': thresholds,
+                'position_size': 0.01,  # Default position size
+                'current_price': current_price  # Add current price to signal
             }
             
         except Exception as e:
             logger.error(f"Error combining timeframe signals: {str(e)}")
-            return {'action': 'hold', 'signal_strength': 0.0, 'confidence': 0.0}
+            return {'action': 'hold', 'strength': 0.0, 'confidence': 0.0, 'current_price': 0.0}
     
     async def _get_comprehensive_market_data(self, symbol: str) -> Dict:
         """Get comprehensive market data for quantitative analysis."""
         try:
-            market_data = {}
+            market_data = {
+                'symbol': symbol,
+                'timestamp': datetime.now().isoformat(),
+                'returns': [],
+                'volatility': 0.0,
+                'market_regime': 'normal'
+            }
             
-            # Get historical data
-            df = await self.indicator_service.get_historical_data(symbol, '1h', limit=252)
-            if df is not None and not df.empty:
-                # Calculate returns
-                df['returns'] = df['close'].pct_change()
-                market_data['returns'] = df['returns'].dropna().values
+            # Get historical data for returns calculation
+            klines = await self.indicator_service.get_klines(symbol, '1h', limit=100)
+            if klines is not None and isinstance(klines, dict) and 'close' in klines and len(klines['close']) > 1:
+                prices = np.array(klines['close'])
+                returns = np.diff(np.log(prices))
+                market_data['returns'] = returns.tolist()
+                market_data['volatility'] = float(np.std(returns) * np.sqrt(252))
+            
+            # Get additional market data if available
+            try:
+                # Get funding rate
+                funding_rate = await self.binance_service.get_funding_rate(symbol)
+                if funding_rate is not None:
+                    market_data['funding_rate'] = float(funding_rate)
                 
-                # Get current price
-                market_data['current_price'] = df['close'].iloc[-1]
-            
-            # Get orderbook data
-            try:
-                orderbook = await self.binance_service.get_order_book(symbol)
-                market_data['orderbook'] = orderbook
+                # Get 24h ticker
+                ticker = await self.binance_service.get_ticker(symbol)
+                if ticker and isinstance(ticker, dict):
+                    market_data['volume_24h'] = float(ticker.get('volume', 0))
+                    market_data['price_change_24h'] = float(ticker.get('percentage', 0))
+                
             except Exception as e:
-                logger.warning(f"Could not get orderbook for {symbol}: {str(e)}")
-            
-            # Get recent trades
-            try:
-                if hasattr(self.binance_service, 'get_recent_trades'):
-                    trades = await self.binance_service.get_recent_trades(symbol)
-                else:
-                    trades = await self.binance_service.get_trades(symbol)
-                market_data['trades'] = pd.DataFrame(trades)
-            except Exception as e:
-                logger.warning(f"Could not get trades for {symbol}: {str(e)}")
-            
-            # Get portfolio data (if available)
-            try:
-                positions = await self.binance_service.get_positions()
-                portfolio_returns = self._calculate_portfolio_returns(positions)
-                market_data['portfolio_returns'] = portfolio_returns
-            except Exception as e:
-                logger.warning(f"Could not get portfolio data: {str(e)}")
+                logger.warning(f"Could not fetch additional market data for {symbol}: {str(e)}")
             
             return market_data
             
         except Exception as e:
             logger.error(f"Error getting comprehensive market data for {symbol}: {str(e)}")
-            return {}
+            return {'symbol': symbol, 'returns': [], 'volatility': 0.0}
     
     def _create_base_signal(self, symbol: str, df: pd.DataFrame, conditions: Dict) -> Dict:
         """Create base trading signal."""
         try:
+            current_price = float(df['close'].iloc[-1])
+            
             signal = {
                 'symbol': symbol,
-                'timestamp': datetime.now(),
-                'signal_strength': 0.5,
-                'position_size': 0.01,
-                'action': 'hold'
+                'action': 'hold',
+                'strength': 0.0,
+                'confidence': 0.0,
+                'current_price': current_price,
+                'timestamp': datetime.now().isoformat(),
+                'conditions': conditions,
+                'position_size': 0.01  # Default position size
             }
-            
-            # Determine signal based on conditions
-            if conditions.get('trend') == 'up' and conditions.get('macd_bullish', False):
-                signal['action'] = 'buy'
-                signal['signal_strength'] = 0.7
-            elif conditions.get('trend') == 'down' and conditions.get('macd_bearish', False):
-                signal['action'] = 'sell'
-                signal['signal_strength'] = 0.7
-            
-            # Adjust signal strength based on conditions
-            if conditions.get('rsi_oversold', False) and signal['action'] == 'buy':
-                signal['signal_strength'] += 0.1
-            elif conditions.get('rsi_overbought', False) and signal['action'] == 'sell':
-                signal['signal_strength'] += 0.1
-            
-            if conditions.get('volume_trend', False):
-                signal['signal_strength'] += 0.1
-            
-            # Cap signal strength
-            signal['signal_strength'] = min(signal['signal_strength'], 1.0)
             
             return signal
             
         except Exception as e:
-            logger.error(f"Error creating base signal for {symbol}: {str(e)}")
-            return {'symbol': symbol, 'action': 'hold', 'signal_strength': 0.0}
+            logger.error(f"Error creating base signal: {str(e)}")
+            return {'action': 'hold', 'strength': 0.0, 'confidence': 0.0}
     
     def _calculate_portfolio_returns(self, positions: List[Dict]) -> Dict:
-        """Calculate portfolio returns from positions."""
+        """Calculate portfolio returns for quantitative analysis."""
         try:
-            portfolio_returns = {}
+            if not positions:
+                return {'total_return': 0.0, 'positions': 0}
             
+            total_pnl = 0.0
             for position in positions:
-                symbol = position.get('symbol', '')
-                if symbol:
-                    # Calculate position return (simplified)
-                    unrealized_pnl = position.get('unrealizedPnl', 0)
-                    position_value = position.get('positionAmt', 0)
-                    
-                    if position_value != 0:
-                        return_rate = unrealized_pnl / abs(position_value)
-                        portfolio_returns[symbol] = return_rate
+                unrealized_pnl = float(position.get('unrealizedPnl', 0))
+                total_pnl += unrealized_pnl
             
-            return portfolio_returns
+            return {
+                'total_return': total_pnl,
+                'positions': len(positions)
+            }
             
         except Exception as e:
             logger.error(f"Error calculating portfolio returns: {str(e)}")
-            return {}
+            return {'total_return': 0.0, 'positions': 0}
     
     def _get_trend(self, df: pd.DataFrame) -> str:
-        """Determine market trend."""
+        """Get trend direction from dataframe."""
         try:
             if len(df) < 20:
                 return 'neutral'
             
-            # Simple trend calculation
-            short_ma = df['close'].rolling(10).mean().iloc[-1]
-            long_ma = df['close'].rolling(20).mean().iloc[-1]
+            sma_20 = df['close'].rolling(window=20).mean().iloc[-1]
             current_price = df['close'].iloc[-1]
             
-            if current_price > short_ma > long_ma:
-                return 'up'
-            elif current_price < short_ma < long_ma:
-                return 'down'
+            if current_price > sma_20 * 1.02:
+                return 'uptrend'
+            elif current_price < sma_20 * 0.98:
+                return 'downtrend'
             else:
                 return 'neutral'
                 
         except Exception as e:
-            logger.error(f"Error determining trend: {str(e)}")
+            logger.error(f"Error getting trend: {str(e)}")
             return 'neutral'
     
     def _store_signal_history(self, symbol: str, signal: Dict) -> None:
@@ -564,11 +546,11 @@ class EnhancedTradingStrategyWithQuantitative:
                 self.signal_history[symbol] = []
             
             self.signal_history[symbol].append({
-                'timestamp': datetime.now(),
+                'timestamp': datetime.now().isoformat(),
                 'signal': signal
             })
             
-            # Keep only last 100 signals
+            # Keep only last 100 signals per symbol
             if len(self.signal_history[symbol]) > 100:
                 self.signal_history[symbol] = self.signal_history[symbol][-100:]
                 
@@ -578,80 +560,64 @@ class EnhancedTradingStrategyWithQuantitative:
     async def _log_quantitative_analysis(self, symbol: str, signal: Dict, validation: Dict) -> None:
         """Log quantitative analysis results."""
         try:
-            analysis_log = {
+            analysis_entry = {
+                'timestamp': datetime.now().isoformat(),
                 'symbol': symbol,
-                'timestamp': datetime.now(),
                 'signal': signal,
-                'validation': validation,
-                'quantitative_confidence': signal.get('quantitative_confidence', 0.0),
-                'statistical_valid': validation.get('is_valid', False),
-                'sharpe_ratio': validation.get('sharpe_ratio', 0.0),
-                'var_estimate': signal.get('var_estimate', 0.0)
+                'validation': validation
             }
             
-            # Store in history
-            if symbol not in self.quantitative_analysis_history:
-                self.quantitative_analysis_history[symbol] = []
+            self.quantitative_analysis_history[symbol] = analysis_entry
             
-            self.quantitative_analysis_history[symbol].append(analysis_log)
-            
-            # Keep only last 50 analyses
-            if len(self.quantitative_analysis_history[symbol]) > 50:
-                self.quantitative_analysis_history[symbol] = self.quantitative_analysis_history[symbol][-50:]
-            
-            # Log to notification service
-            # if self.notification_service:
-            #     message = f"Quantitative Analysis for {symbol}:\n"
-            #     message += f"Confidence: {signal.get('quantitative_confidence', 0.0):.2f}\n"
-            #     message += f"Valid: {validation.get('is_valid', False)}\n"
-            #     message += f"Sharpe: {validation.get('sharpe_ratio', 0.0):.2f}\n"
-            #     message += f"VaR: {signal.get('var_estimate', 0.0):.4f}"
-                
-            #     await self.notification_service.send_message(message)
-                
+            logger.info(f"Quantitative analysis for {symbol}: "
+                       f"Action={signal.get('action', 'HOLD')}, "
+                       f"Confidence={signal.get('confidence', 0):.3f}, "
+                       f"Validation={validation.get('is_valid', False)}")
+                       
         except Exception as e:
             logger.error(f"Error logging quantitative analysis: {str(e)}")
     
     async def get_quantitative_recommendations(self, symbol: str) -> Dict:
-        """Get quantitative recommendations for a symbol."""
+        """Get quantitative trading recommendations."""
         try:
-            # Get current market data
-            market_data = await self._get_comprehensive_market_data(symbol)
-            
-            # Get current positions
-            positions = await self.binance_service.get_positions()
-            
-            # Get recommendations
-            recommendations = await self.quantitative_integration.get_quantitative_recommendations(
-                symbol, market_data, positions
-            )
-            
+            recommendations = await self.quantitative_system.get_recommendations(symbol)
             return recommendations
             
         except Exception as e:
+            import traceback
+            logger.error(traceback.format_exc())
             logger.error(f"Error getting quantitative recommendations for {symbol}: {str(e)}")
-            return {'error': str(e)}
+            return {}
     
     async def analyze_portfolio_optimization(self, symbols: List[str]) -> Dict:
-        """Analyze portfolio optimization."""
+        """Analyze portfolio optimization opportunities."""
         try:
-            # Get returns data for all symbols
+            # Get historical data for all symbols
             returns_data = {}
+            for symbol in symbols[:10]:  # Limit to first 10 symbols to avoid overload
+                try:
+                    # Get historical data
+                    klines = await self.indicator_service.get_klines(symbol, '1d', limit=100)
+                    if klines and 'close' in klines:
+                        # Calculate returns
+                        prices = pd.Series(klines['close'])
+                        returns = prices.pct_change().dropna()
+                        if len(returns) > 0:
+                            returns_data[symbol] = returns
+                except Exception as e:
+                    logger.warning(f"Could not get data for {symbol}: {str(e)}")
+                    continue
             
-            for symbol in symbols:
-                df = await self.indicator_service.get_historical_data(symbol, '1h', limit=252)
-                if df is not None and not df.empty:
-                    returns = df['close'].pct_change().dropna()
-                    returns_data[symbol] = returns.values
+            if len(returns_data) < 2:
+                return {'error': 'Insufficient data for portfolio optimization'}
             
-            if returns_data:
-                optimization_results = await self.quantitative_integration.get_portfolio_optimization(
-                    symbols, returns_data
-                )
-                return optimization_results
-            else:
-                return {'error': 'No returns data available'}
-                
+            # Convert to DataFrame
+            returns_df = pd.DataFrame(returns_data)
+            
+            # Call optimize_portfolio with proper data
+            optimization = self.quantitative_system.optimize_portfolio(returns_df)
+            return optimization
+            
         except Exception as e:
             logger.error(f"Error analyzing portfolio optimization: {str(e)}")
             return {'error': str(e)}
@@ -659,140 +625,393 @@ class EnhancedTradingStrategyWithQuantitative:
     async def analyze_factor_exposures(self, symbols: List[str]) -> Dict:
         """Analyze factor exposures for portfolio."""
         try:
-            # Get returns data for all symbols
+            # Get historical data for factor analysis
             returns_data = {}
+            for symbol in symbols[:10]:  # Limit to first 10 symbols
+                try:
+                    klines = await self.indicator_service.get_klines(symbol, '1d', limit=100)
+                    if klines and 'close' in klines:
+                        prices = pd.Series(klines['close'])
+                        returns = prices.pct_change().dropna()
+                        if len(returns) > 0:
+                            returns_data[symbol] = returns
+                except Exception as e:
+                    logger.warning(f"Could not get data for {symbol}: {str(e)}")
+                    continue
             
-            for symbol in symbols:
-                df = await self.indicator_service.get_historical_data(symbol, '1h', limit=252)
-                if df is not None and not df.empty:
-                    returns = df['close'].pct_change().dropna()
-                    returns_data[symbol] = returns.values
+            if len(returns_data) < 2:
+                return {'error': 'Insufficient data for factor analysis'}
             
-            if returns_data:
-                factor_results = await self.quantitative_integration.analyze_factor_exposures(
-                    symbols, returns_data
-                )
-                return factor_results
-            else:
-                return {'error': 'No returns data available'}
-                
+            # Convert to DataFrame
+            returns_df = pd.DataFrame(returns_data)
+            
+            # Use factor model directly
+            factor_results = self.quantitative_system.factor_model.build_factor_model(returns_df)
+            return factor_results
+            
         except Exception as e:
             logger.error(f"Error analyzing factor exposures: {str(e)}")
             return {'error': str(e)}
     
     async def check_profit_target(self) -> bool:
-        """Check if profit target has been reached."""
+        """Check if profit target has been reached."""  
         try:
+            # Check if profit target is enabled
+            if not self.config.get('trading', {}).get('enable_check_profit_target', False):
+                return False
+
             # Get current positions
             positions = await self.binance_service.get_positions()
+            
+            if not positions:
+                return False
             
             total_pnl = 0.0
             for position in positions:
                 unrealized_pnl = float(position.get('unrealizedPnl', 0))
                 total_pnl += unrealized_pnl
             
-            # Check if total PnL exceeds profit target
-            profit_target = self.config.get('profit_target', 1000000)  # Default $100
-            return total_pnl >= profit_target
+            # Check against profit target from config
+            profit_target = float(self.config.get('trading', {}).get('profit_target', 0.05))  # 5% default
+            
+            if total_pnl > profit_target:
+                logger.info(f"Profit target reached: {total_pnl:.2%}")
+                return True
+            
+            return False
             
         except Exception as e:
             logger.error(f"Error checking profit target: {str(e)}")
             return False
     
     async def process_trading_signals(self, signals: Dict) -> None:
-        """Process trading signals with WorldQuant-level dynamic confidence thresholds."""
+        """Process trading signals and execute trades for futures trading with HEDGING mode."""
         try:
-            if not signals:
+            if not signals or signals.get('action') == 'hold':
+                logger.info(f"Signal for {signals.get('symbol')} is hold")
                 return
             
-            symbol = signals.get('symbol', '')
+            symbol = signals.get('symbol')
             action = signals.get('action', 'hold')
-            base_confidence = signals.get('quantitative_confidence', 0.0)
             
-            # Get market data and risk metrics for dynamic threshold calculation
-            market_data = signals.get('market_data', {})
-            risk_metrics = signals.get('risk_metrics', {})
+            # Apply quantitative validation
+            market_data = await self._get_comprehensive_market_data(symbol)
+            validation = await self.quantitative_system.validate_signal(signals, market_data)
             
-            # Calculate risk-adjusted confidence
-            adjusted_confidence = self._calculate_risk_adjusted_confidence(signals, risk_metrics)
+            # if not validation.get('is_valid', False):
+            #     logger.info(f"Signal for {symbol} failed quantitative validation")
+            #     return
             
-            # Calculate dynamic confidence threshold based on action type
-            dynamic_threshold = self._calculate_dynamic_confidence_threshold(action, market_data, risk_metrics)
+            logger.info(f"Signal for {symbol} is valid")
             
-            logger.info(f"Processing signal for {symbol}: {action} with "
-                       f"base_confidence={base_confidence:.3f}, "
-                       f"adjusted_confidence={adjusted_confidence:.3f}, "
-                       f"dynamic_threshold={dynamic_threshold:.3f}")
+            # Check confidence threshold
+            confidence = signals.get('confidence', 0)
+            threshold = self._calculate_dynamic_confidence_threshold(action, market_data)
             
-            # Track performance for optimization
-            self._track_confidence_performance(action, adjusted_confidence, dynamic_threshold, market_data, risk_metrics)
-            
-            # Execute only if adjusted confidence meets dynamic threshold
-            if adjusted_confidence < dynamic_threshold:
-                logger.info(f"Signal confidence too low for {symbol}: {adjusted_confidence:.3f} < {dynamic_threshold:.3f}")
-                return
-            
-            # Execute trade based on signal
+            # Execute trade based on signal action
             if action == 'buy':
+                # Open LONG position
                 await self._execute_buy_order(symbol, signals)
+                
             elif action == 'sell':
+                # Open SHORT position
                 await self._execute_sell_order(symbol, signals)
                 
+            elif action == 'close_long':
+                # Close LONG position
+                await self._close_long_position(symbol, signals)
+                
+            elif action == 'close_short':
+                # Close SHORT position
+                await self._close_short_position(symbol, signals)
+                
+            elif action == 'close_all':
+                # Close all positions for this symbol
+                await self._close_long_position(symbol, signals)
+                await self._close_short_position(symbol, signals)
+                
+            else:
+                logger.warning(f"Unknown action '{action}' for {symbol}")
+                return
+            
+            # Track confidence performance
+            await self._track_confidence_performance(
+                action,
+                confidence,
+                threshold,
+                market_data,
+                validation.get('risk_metrics', {})
+            )
+                
         except Exception as e:
+            import traceback
+            logger.error(traceback.format_exc())
             logger.error(f"Error processing trading signals: {str(e)}")
     
     async def _execute_buy_order(self, symbol: str, signals: Dict) -> None:
-        """Execute buy order."""
+        """Execute LONG position order (futures trading with HEDGING mode)."""
         try:
-            position_size = signals.get('optimized_position_size', 0.01)
             current_price = signals.get('current_price', 0.0)
             
-            if current_price > 0:
-                # Calculate quantity
-                account_info = await self.binance_service.get_account_info()
-                balance = float(account_info.get('totalWalletBalance', 0))
-                quantity = (balance * position_size) / current_price
-                
-                # Place order
-                order = await self.binance_service.place_order(
-                    symbol=symbol,
-                    side='BUY',
-                    order_type='MARKET',
-                    amount=quantity
-                )
-                
-                logger.info(f"Buy order placed for {symbol}: {order}")
-                
+            if current_price <= 0:
+                logger.error(f"Invalid current price for {symbol}: {current_price}")
+                return
+            
+            # Calculate position size using risk management
+            risk_per_trade = self.config.get('risk_management', {}).get('risk_per_trade', 0.02)  # 2% risk per trade
+            position_size = await self._calculate_position_size(symbol, risk_per_trade, current_price)
+            
+            if position_size is None:
+                logger.warning(f"Could not calculate position size for {symbol}")
+                return
+            
+            # Calculate stop loss and take profit for LONG position
+            atr = signals.get('atr', current_price * 0.02)  # Default ATR
+            stop_loss = await self._calculate_stop_loss(symbol, "LONG", current_price, atr)
+            take_profit = await self._calculate_take_profit(symbol, "LONG", current_price, stop_loss)
+            
+            # Prepare order parameters for LONG position
+            order_params = {
+                'symbol': symbol,
+                'side': 'BUY',
+                'type': 'MARKET',
+                'positionSide': 'LONG',  # Specify position side for HEDGING mode
+                'amount': position_size
+            }
+            
+            # Add stop loss and take profit if calculated
+            if stop_loss and stop_loss > 0:
+                order_params['stop_loss'] = stop_loss
+                logger.info(f"Stop loss calculated for {symbol} LONG: {stop_loss}")
+            
+            if take_profit and take_profit > current_price:
+                order_params['take_profit'] = take_profit
+                logger.info(f"Take profit calculated for {symbol} LONG: {take_profit}")
+            
+            # Place LONG position order
+            order = await self.binance_service.place_order(order_params)
+            
+            if order:
+                logger.info(f"LONG position opened for {symbol} with size {position_size} and SL/TP: {order}")
+            else:
+                logger.error(f"Failed to place LONG order for {symbol}")
+            
         except Exception as e:
-            logger.error(f"Error executing buy order for {symbol}: {str(e)}")
+            logger.error(f"Error executing LONG order for {symbol}: {str(e)}")
     
     async def _execute_sell_order(self, symbol: str, signals: Dict) -> None:
-        """Execute sell order."""
+        """Execute SHORT position order (futures trading with HEDGING mode)."""
         try:
-            # Get current position
-            positions = await self.binance_service.get_positions()
-            position = None
+            current_price = signals.get('current_price', 0.0)
             
-            for pos in positions:
-                if pos.get('symbol') == symbol:
-                    position = pos
-                    break
+            if current_price <= 0:
+                logger.error(f"Invalid current price for {symbol}: {current_price}")
+                return
             
-            if position and float(position.get('positionAmt', 0)) > 0:
-                quantity = abs(float(position.get('positionAmt', 0)))
-                
-                # Place order
-                order = await self.binance_service.place_order(
-                    symbol=symbol,
-                    side='SELL',
-                    order_type='MARKET',
-                    amount=quantity
-                )
-                
-                logger.info(f"Sell order placed for {symbol}: {order}")
-                
+            # Calculate position size using risk management
+            risk_per_trade = self.config.get('risk_management', {}).get('risk_per_trade', 0.02)  # 2% risk per trade
+            position_size = await self._calculate_position_size(symbol, risk_per_trade, current_price)
+            
+            if position_size is None:
+                logger.warning(f"Could not calculate position size for {symbol}")
+                return
+            
+            # Calculate stop loss and take profit for SHORT position
+            atr = signals.get('atr', current_price * 0.02)  # Default ATR
+            stop_loss = await self._calculate_stop_loss(symbol, "SHORT", current_price, atr)
+            take_profit = await self._calculate_take_profit(symbol, "SHORT", current_price, stop_loss)
+            
+            # Prepare order parameters for SHORT position
+            order_params = {
+                'symbol': symbol,
+                'side': 'SELL',
+                'type': 'MARKET',
+                'positionSide': 'SHORT',  # Specify position side for HEDGING mode
+                'amount': position_size
+            }
+            
+            # Add stop loss and take profit if calculated
+            if stop_loss and stop_loss > current_price:
+                order_params['stop_loss'] = stop_loss
+                logger.info(f"Stop loss calculated for {symbol} SHORT: {stop_loss}")
+            
+            if take_profit and take_profit < current_price:
+                order_params['take_profit'] = take_profit
+                logger.info(f"Take profit calculated for {symbol} SHORT: {take_profit}")
+            
+            # Place SHORT position order
+            order = await self.binance_service.place_order(order_params)
+            
+            if order:
+                logger.info(f"SHORT position opened for {symbol} with size {position_size} and SL/TP: {order}")
+            else:
+                logger.error(f"Failed to place SHORT order for {symbol}")
+            
         except Exception as e:
-            logger.error(f"Error executing sell order for {symbol}: {str(e)}")
+            logger.error(f"Error executing SHORT order for {symbol}: {str(e)}")
+    
+    async def _close_long_position(self, symbol: str, signals: Dict) -> None:
+        """Close LONG position using binance_service.close_position()."""
+        try:
+            # Use the existing close_position method from binance_service
+            success = await self.binance_service.close_position(symbol, 'LONG')
+            
+            if success:
+                logger.info(f"LONG position closed successfully for {symbol}")
+            else:
+                logger.warning(f"Failed to close LONG position for {symbol}")
+            
+        except Exception as e:
+            logger.error(f"Error closing LONG position for {symbol}: {str(e)}")
+    
+    async def _close_short_position(self, symbol: str, signals: Dict) -> None:
+        """Close SHORT position using binance_service.close_position()."""
+        try:
+            # Use the existing close_position method from binance_service
+            success = await self.binance_service.close_position(symbol, 'SHORT')
+            
+            if success:
+                logger.info(f"SHORT position closed successfully for {symbol}")
+            else:
+                logger.warning(f"Failed to close SHORT position for {symbol}")
+            
+        except Exception as e:
+            logger.error(f"Error closing SHORT position for {symbol}: {str(e)}")
+    
+    async def _calculate_stop_loss(self, symbol: str, position_type: str, current_price: float, atr: float) -> float:
+        """Calculate stop loss price based on ATR and market conditions."""
+        try:
+            # Get stop loss multiplier from config
+            stop_loss_multiplier = float(self.config.get('risk_management', {}).get('stop_loss_atr_multiplier', 2.0))
+            
+            # Calculate base stop loss using ATR
+            if is_long_side(position_type):
+                stop_loss = float(current_price) - (float(atr) * stop_loss_multiplier)
+                # For long positions, ensure stop loss is always positive
+                k = stop_loss_multiplier
+                while stop_loss <= 0 and k > 0:  # Add k > 0 check to avoid infinite loop
+                    k = k * 0.8  # Reduce multiplier by 20% each time for smoother adjustment
+                    stop_loss = float(current_price) - (float(atr) * k)
+                    
+                # Set minimum stop loss if still <= 0
+                if stop_loss <= 0:
+                    stop_loss = float(current_price) * 0.02  # Set to 2% of current price as minimum
+            else:
+                stop_loss = float(current_price) + (float(atr) * stop_loss_multiplier/2)
+            
+            # Get market conditions
+            market_conditions = await self._get_market_conditions(symbol)
+            
+            # Adjust stop loss based on volatility
+            volatility = market_conditions.get('volatility', 0.0)  # Default to 0.0 if not present
+            if volatility > 0.02:  # Consider high volatility if > 2%
+                # Increase stop loss distance in high volatility
+                if is_long_side(position_type):
+                    stop_loss = float(current_price) - (float(atr) * stop_loss_multiplier * 1.5)
+                    k = stop_loss_multiplier
+                    while stop_loss <= 0 and k > 0:  # Add k > 0 check to avoid infinite loop
+                        k = k * 0.8  # Reduce multiplier by 20% each time for smoother adjustment
+                        stop_loss = float(current_price) - (float(atr) * k)
+                    
+                    # Set minimum stop loss if still <= 0
+                    if stop_loss <= 0:
+                        stop_loss = float(current_price) * 0.01  # Set to 1% of current price as minimum
+                else:
+                    stop_loss = float(current_price) + (float(atr) * stop_loss_multiplier * 1.5/2)
+            
+
+            # Ensure minimum distance from current price
+            min_distance = float(self.config.get('risk_management', {}).get('min_stop_distance', 0.01))
+            if is_long_side(position_type):
+                # For LONG positions, ensure stop loss is below current price
+                stop_loss = min(stop_loss, float(current_price) * (1 - min_distance))
+            else:
+                # For SHORT positions, ensure stop loss is above current price
+                stop_loss = max(stop_loss, float(current_price) * (1 + min_distance))
+            
+            logger.info(f"Calculated stop loss for {symbol} {position_type.lower()}: {stop_loss} (current price: {current_price})")
+            return stop_loss
+            
+        except Exception as e:
+            logger.error(f"Error calculating stop loss for {symbol}: {str(e)}")
+            return None
+
+    async def _calculate_take_profit(self, symbol: str, position_type: str, current_price: float, stop_loss: float) -> float:
+        """Calculate take profit price based on risk-reward ratio."""
+        try:
+            # Get risk-reward ratio from config
+            risk_reward_ratio = self.config.get('risk_management', {}).get('take_profit_multiplier', 2.0)
+            
+            # Calculate price difference between current price and stop loss
+            price_diff = abs(current_price - stop_loss)
+            
+            # Calculate take profit based on risk-reward ratio
+            if is_long_side(position_type):
+                take_profit = current_price + (price_diff * risk_reward_ratio)
+            else:
+                take_profit = current_price - (price_diff * risk_reward_ratio/8)
+            
+            # Ensure minimum distance from current price
+            min_distance = float(self.config.get('risk_management', {}).get('min_tp_distance', 0.01))
+            if is_long_side(position_type):
+                # For LONG positions, ensure take profit is above current price
+                take_profit = max(take_profit, current_price * (1 + min_distance))
+            else:
+                # For SHORT positions, ensure take profit is below current price
+                take_profit = min(take_profit, current_price * (1.03 - min_distance))
+                
+                # Additional validation for SHORT positions
+                if take_profit <= 0:
+                    # If take profit is negative, set it to a reasonable percentage below current price
+                    take_profit = current_price * 0.5  # 50% below current price
+                elif take_profit >= current_price:
+                    # If take profit is above current price, set it to a reasonable percentage below
+                    take_profit = current_price * 0.9  # 10% below current price
+            
+            logger.info(f"Calculated take profit for {symbol} {position_type.lower()}: {take_profit} (current price: {current_price})")
+            return take_profit
+            
+        except Exception as e:
+            logger.error(f"Error calculating take profit for {symbol}: {str(e)}")
+            return None
+
+    async def _get_market_conditions(self, symbol: str) -> Dict:
+        """Get market conditions for stop loss adjustment."""
+        try:
+            # Get recent price data for volatility calculation
+            klines = await self.indicator_service.get_klines(symbol, '1h', limit=24)
+            if klines is not None and isinstance(klines, dict) and 'close' in klines and len(klines['close']) > 1:
+                # Handle dictionary format with list
+                prices = np.array(klines['close'])
+                
+                if len(prices) > 1:
+                    returns = np.diff(np.log(prices))
+                    volatility = float(np.std(returns) * np.sqrt(252))
+                    
+                    return {
+                        'volatility': volatility,
+                        'price_change_24h': float((prices[-1] / prices[0] - 1) * 100)
+                    }
+            elif klines is not None and hasattr(klines, 'values'):
+                # Handle pandas DataFrame format
+                if len(klines['close']) > 1:
+                    prices = klines['close'].values
+                    returns = np.diff(np.log(prices))
+                    volatility = float(np.std(returns) * np.sqrt(252))
+                    
+                    return {
+                        'volatility': volatility,
+                        'price_change_24h': float((prices[-1] / prices[0] - 1) * 100)
+                    }
+            else:
+                # Fallback to default values
+                logger.warning(f"Unexpected klines format for {symbol}: {type(klines)}")
+            
+            return {'volatility': 0.02, 'price_change_24h': 0.0}
+            
+        except Exception as e:
+            logger.error(f"Error getting market conditions for {symbol}: {str(e)}")
+            return {'volatility': 0.02, 'price_change_24h': 0.0}
     
     async def get_performance_metrics(self) -> Dict:
         """Get comprehensive performance metrics with WorldQuant-level confidence analytics."""
@@ -847,30 +1066,37 @@ class EnhancedTradingStrategyWithQuantitative:
                     )
                 else:
                     metrics['confidence_analytics']['sell_success_rate'] = 0.0
-            else:
-                metrics['confidence_analytics'] = {
-                    'status': 'not_initialized',
-                    'message': 'Confidence performance tracking not yet started'
-                }
+            
+            # Add quantitative system metrics
+            if hasattr(self, 'quantitative_system'):
+                qs_metrics = self.quantitative_system.get_performance_metrics()
+                metrics['quantitative_system'] = qs_metrics
             
             return metrics
             
         except Exception as e:
             logger.error(f"Error getting performance metrics: {str(e)}")
-            return {'error': str(e)}
+            return {}
     
     async def close(self):
-        """Clean up resources."""
+        """Close the strategy and cleanup resources."""
         try:
+            # Close quantitative components
+            if hasattr(self, 'quantitative_integration'):
+                await self.quantitative_integration.close()
+            
+            if hasattr(self, 'quantitative_system'):
+                await self.quantitative_system.close()
+            
             # Clear caches
-            self.data_cache.clear()
             self.signal_history.clear()
             self.quantitative_analysis_history.clear()
+            self.data_cache.clear()
             
-            logger.info("Enhanced Trading Strategy with Quantitative Integration closed")
+            logger.info("Enhanced Trading Strategy with Quantitative Analysis closed")
             
         except Exception as e:
-            logger.error(f"Error closing strategy: {str(e)}") 
+            logger.error(f"Error closing enhanced trading strategy: {str(e)}") 
     
     async def _apply_market_microstructure_analysis(self, symbol: str, signal: Dict, market_data: Dict) -> Dict:
         """Apply market microstructure analysis to signal."""
@@ -885,14 +1111,14 @@ class EnhancedTradingStrategyWithQuantitative:
                 
                 # Adjust signal based on microstructure
                 if bid_ask_spread < 0.001:  # Tight spread
-                    enhanced_signal['signal_strength'] += 0.1
+                    enhanced_signal['strength'] += 0.1
                     enhanced_signal['reasons'].append('tight_spread')
                 
                 if order_imbalance > 0.2:  # Strong buy pressure
-                    enhanced_signal['signal_strength'] += 0.15
+                    enhanced_signal['strength'] += 0.15
                     enhanced_signal['reasons'].append('buy_imbalance')
                 elif order_imbalance < -0.2:  # Strong sell pressure
-                    enhanced_signal['signal_strength'] -= 0.15
+                    enhanced_signal['strength'] -= 0.15
                     enhanced_signal['reasons'].append('sell_imbalance')
             
             # Volume profile analysis
@@ -902,7 +1128,7 @@ class EnhancedTradingStrategyWithQuantitative:
                 
                 # Adjust based on volume profile
                 if volume_profile.get('high_volume_nodes', []):
-                    enhanced_signal['signal_strength'] += 0.05
+                    enhanced_signal['strength'] += 0.05
                     enhanced_signal['reasons'].append('volume_support')
             
             return enhanced_signal
@@ -1039,6 +1265,8 @@ class EnhancedTradingStrategyWithQuantitative:
             return float(abs(drawdown.min()))
             
         except Exception as e:
+            import traceback
+            logger.error(traceback.format_exc())
             logger.error(f"Error calculating max drawdown: {str(e)}")
             return 0.0
     
@@ -1053,7 +1281,7 @@ class EnhancedTradingStrategyWithQuantitative:
             
             # Pairs trading opportunities
             if cointegration_signals.get('cointegrated_pairs'):
-                stat_arb_signal['signal_strength'] += 0.1
+                stat_arb_signal['strength'] += 0.1
                 stat_arb_signal['reasons'].append('statistical_arbitrage')
             
             # Mean reversion analysis
@@ -1062,7 +1290,7 @@ class EnhancedTradingStrategyWithQuantitative:
             
             if mean_reversion.get('is_mean_reverting'):
                 if mean_reversion.get('deviation') > 2:  # Strong deviation
-                    stat_arb_signal['signal_strength'] += 0.15
+                    stat_arb_signal['strength'] += 0.15
                     stat_arb_signal['reasons'].append('mean_reversion_opportunity')
             
             return stat_arb_signal
@@ -1107,7 +1335,9 @@ class EnhancedTradingStrategyWithQuantitative:
             }
             
         except Exception as e:
+            import traceback
             logger.error(f"Error analyzing mean reversion: {str(e)}")
+            logger.error(traceback.format_exc())
             return {'is_mean_reverting': False, 'deviation': 0.0}
     
     async def _apply_momentum_mean_reversion_analysis(self, symbol: str, signal: Dict, market_data: Dict) -> Dict:
@@ -1136,19 +1366,19 @@ class EnhancedTradingStrategyWithQuantitative:
                 
                 # Momentum signal adjustment
                 if short_momentum > 0.01 and medium_momentum > 0.005:
-                    momentum_signal['signal_strength'] += 0.1
+                    momentum_signal['strength'] += 0.1
                     momentum_signal['reasons'].append('positive_momentum')
                 elif short_momentum < -0.01 and medium_momentum < -0.005:
-                    momentum_signal['signal_strength'] -= 0.1
+                    momentum_signal['strength'] -= 0.1
                     momentum_signal['reasons'].append('negative_momentum')
                 
                 # Mean reversion signal
                 if abs(short_momentum) > 0.02 and abs(short_momentum - medium_momentum) > 0.01:
                     if short_momentum > medium_momentum:
-                        momentum_signal['signal_strength'] -= 0.05  # Revert from high
+                        momentum_signal['strength'] -= 0.05  # Revert from high
                         momentum_signal['reasons'].append('momentum_reversion')
                     else:
-                        momentum_signal['signal_strength'] += 0.05  # Revert from low
+                        momentum_signal['strength'] += 0.05  # Revert from low
                         momentum_signal['reasons'].append('momentum_reversion')
             
             return momentum_signal
@@ -1219,8 +1449,12 @@ class EnhancedTradingStrategyWithQuantitative:
         try:
             optimized_signal = signal.copy()
             
-            # Signal strength normalization
-            optimized_signal['signal_strength'] = np.clip(optimized_signal['signal_strength'], -1.0, 1.0)
+            # Preserve current_price
+            current_price = signal.get('current_price', 0.0)
+            
+            # Signal strength normalization - use 'strength' key instead of 'signal_strength'
+            signal_strength = optimized_signal.get('strength', 0.0)
+            optimized_signal['signal_strength'] = np.clip(signal_strength, -1.0, 1.0)
             
             # Confidence calculation
             confidence_factors = [
@@ -1242,6 +1476,9 @@ class EnhancedTradingStrategyWithQuantitative:
             risk_adjustment = 1.0 - abs(optimized_signal.get('var_95', 0.0)) * 10
             optimized_signal['risk_adjusted_strength'] = optimized_signal['signal_strength'] * risk_adjustment
             
+            # Ensure current_price is preserved
+            optimized_signal['current_price'] = current_price
+            
             return optimized_signal
             
         except Exception as e:
@@ -1254,9 +1491,14 @@ class EnhancedTradingStrategyWithQuantitative:
             # Kelly Criterion calculation
             if 'returns' in market_data and len(market_data['returns']) > 30:
                 returns = np.array(market_data['returns'])
-                win_rate = float(np.sum(returns > 0)) / len(returns)
-                avg_win = float(np.mean(returns[returns > 0])) if float(np.sum(returns > 0)) > 0 else 0.001
-                avg_loss = abs(float(np.mean(returns[returns < 0]))) if float(np.sum(returns < 0)) > 0 else 0.001
+                positive_returns_mask = returns > 0
+                negative_returns_mask = returns < 0
+                positive_count = float(np.sum(positive_returns_mask))
+                negative_count = float(np.sum(negative_returns_mask))
+                
+                win_rate = positive_count / len(returns)
+                avg_win = float(np.mean(returns[positive_returns_mask])) if positive_count > 0 else 0.001
+                avg_loss = abs(float(np.mean(returns[negative_returns_mask]))) if negative_count > 0 else 0.001
                 
                 # Kelly fraction
                 kelly_fraction = (win_rate * avg_win - (1 - win_rate) * avg_loss) / avg_win
@@ -1282,7 +1524,9 @@ class EnhancedTradingStrategyWithQuantitative:
             return final_size
             
         except Exception as e:
+            import traceback
             logger.error(f"Error optimizing position size: {str(e)}")
+            logger.error(traceback.format_exc())
             return base_size 
     
     def _calculate_dynamic_thresholds(self, market_data: pd.DataFrame, 
@@ -1453,7 +1697,7 @@ class EnhancedTradingStrategyWithQuantitative:
             
             # Calculate Hurst exponent
             if price_range > 0 and time_range > 0:
-                hurst = np.log(price_range) / np.log(time_range)
+                hurst = float(np.log(price_range) / np.log(time_range))
                 return max(0.1, min(0.9, hurst))  # Bound between 0.1 and 0.9
             else:
                 return 0.5
@@ -1479,14 +1723,16 @@ class EnhancedTradingStrategyWithQuantitative:
                 return {}
             
             # Calculate risk metrics
-            sharpe_ratio = float(np.mean(returns) / np.std(returns) * np.sqrt(252)) if float(np.std(returns)) > 0 else 0
+            returns_std = float(np.std(returns))
+            sharpe_ratio = float(np.mean(returns) / returns_std * np.sqrt(252)) if returns_std > 0 else 0
             var_95 = float(np.percentile(returns, 5))
             max_drawdown = float(self._calculate_max_drawdown(returns))
-            volatility = float(np.std(returns) * np.sqrt(252))
+            volatility = float(returns_std * np.sqrt(252))
             
             # Sortino ratio
             downside_returns = returns[returns < 0]
-            sortino_ratio = float(np.mean(returns) / np.std(downside_returns) * np.sqrt(252)) if len(downside_returns) > 0 and float(np.std(downside_returns)) > 0 else 0
+            downside_std = float(np.std(downside_returns)) if len(downside_returns) > 0 else 0
+            sortino_ratio = float(np.mean(returns) / downside_std * np.sqrt(252)) if len(downside_returns) > 0 and downside_std > 0 else 0
             
             # Calmar ratio
             cumulative_return = float((1 + returns).prod() - 1)
@@ -1527,7 +1773,7 @@ class EnhancedTradingStrategyWithQuantitative:
             base_threshold = base_thresholds.get(action, 0.6)
             
             # Volatility adjustment from config
-            volatility = market_data.get('volatility', 0.02)
+            volatility = market_data.get('volatility', 0.0)
             vol_adjustment = 0.0
             
             vol_adjustments = confidence_config.get('volatility_adjustments', {})
@@ -1606,7 +1852,7 @@ class EnhancedTradingStrategyWithQuantitative:
             risk_adjusted_config = confidence_config.get('risk_adjusted_confidence', {})
             
             base_confidence = signal.get('confidence', 0.0)
-            signal_strength = signal.get('signal_strength', 0.0)
+            signal_strength = signal.get('strength', 0.0)
             
             # Base confidence boost from signal strength using config
             strength_multiplier = risk_adjusted_config.get('strength_boost_multiplier', 0.2)
@@ -1683,37 +1929,209 @@ class EnhancedTradingStrategyWithQuantitative:
             logger.error(f"Error calculating risk-adjusted confidence: {str(e)}")
             return signal.get('confidence', 0.0)
     
-    def _track_confidence_performance(self, action: str, confidence: float, threshold: float, 
-                                    market_data: Dict, risk_metrics: Dict) -> None:
-        """
-        Track confidence threshold performance for optimization.
-        WorldQuant-level performance analytics.
-        """
+    async def _track_confidence_performance(self, action: str, confidence: float, threshold: float, 
+                                          market_data: Dict, risk_metrics: Dict) -> None:
+        """Track confidence performance for optimization."""
         try:
-            if not hasattr(self, 'confidence_performance'):
-                self.confidence_performance = {
-                    'buy': {'executions': 0, 'successes': 0, 'total_pnl': 0.0},
-                    'sell': {'executions': 0, 'successes': 0, 'total_pnl': 0.0},
-                    'thresholds': {
-                        'buy': {'avg_threshold': 0.0, 'count': 0},
-                        'sell': {'avg_threshold': 0.0, 'count': 0}
-                    }
+            # Store performance metrics
+            performance_key = f"confidence_performance_{action}"
+            if performance_key not in self.confidence_performance:
+                self.confidence_performance[performance_key] = {
+                    'total_signals': 0,
+                    'successful_signals': 0,
+                    'confidence_scores': [],
+                    'thresholds_used': []
                 }
             
-            # Track threshold usage
-            if action in ['buy', 'sell']:
-                self.confidence_performance['thresholds'][action]['avg_threshold'] = (
-                    (self.confidence_performance['thresholds'][action]['avg_threshold'] * 
-                     self.confidence_performance['thresholds'][action]['count'] + threshold) /
-                    (self.confidence_performance['thresholds'][action]['count'] + 1)
-                )
-                self.confidence_performance['thresholds'][action]['count'] += 1
+            self.confidence_performance[performance_key]['total_signals'] += 1
+            self.confidence_performance[performance_key]['confidence_scores'].append(confidence)
+            self.confidence_performance[performance_key]['thresholds_used'].append(threshold)
             
-            # Log performance metrics
-            logger.info(f"Confidence performance tracking - Action: {action}, "
-                       f"Confidence: {confidence:.3f}, Threshold: {threshold:.3f}, "
-                       f"Market regime: {market_data.get('market_regime', 'unknown')}, "
-                       f"Volatility: {market_data.get('volatility', 0.0):.4f}")
+            # Track successful signals (you can implement your own success criteria)
+            if confidence > threshold:
+                self.confidence_performance[performance_key]['successful_signals'] += 1
+            
+            logger.debug(f"Tracked confidence performance for {action}: {confidence:.3f} vs {threshold:.3f}")
             
         except Exception as e:
-            logger.error(f"Error tracking confidence performance: {str(e)}") 
+            logger.error(f"Error tracking confidence performance: {str(e)}")
+    
+    async def _calculate_position_size(self, symbol: str, risk_per_trade: float, current_price: float) -> Optional[float]:
+        """Calculate position size based on risk management."""
+        try:
+            if not self.binance_service:
+                logger.error("Binance service not set")
+                return None
+                
+            # Validate inputs
+            if current_price <= 0:
+                logger.error(f"Invalid current price: {current_price}")
+                return None
+                
+            if risk_per_trade <= 0:
+                logger.error(f"Invalid risk per trade: {risk_per_trade}")
+                return None
+                
+            # Get account balance
+            balance = await self.binance_service.get_account_balance()
+            if not balance:
+                logger.error(f"Failed to get balance for {symbol}")
+                return None
+                
+            # Get USDT balance
+            usdt_balance = balance.get('USDT', {}).get('total', 0)
+            logger.info(f"USDT balance: {usdt_balance}")
+            if not usdt_balance or float(usdt_balance) <= 0:
+                logger.error(f"Invalid USDT balance: {usdt_balance}")
+                return None
+                
+            # Get leverage from config
+            leverage = self.config.get('trading', {}).get('leverage', 10)
+            if leverage <= 0:
+                logger.error(f"Invalid leverage: {leverage}")
+                return None
+                
+            # Calculate risk amount in USDT
+            risk_amount = float(usdt_balance) * risk_per_trade
+            
+            # Calculate position size with leverage
+            position_size = (risk_amount * leverage) / current_price
+            
+            # Calculate position notional value
+            position_notional = position_size * current_price
+            
+            # Check minimum notional value (5 USDT)
+            min_notional = 5.0  # Binance minimum notional value
+            if position_notional < min_notional:
+                logger.warning(f"Position notional value {position_notional} below minimum {min_notional} USDT")
+                return None
+                
+            # Calculate maximum position size based on available balance and leverage
+            max_position_size = (float(usdt_balance) * leverage) / current_price
+            
+            # Check if position size exceeds maximum
+            if position_size > max_position_size:
+                logger.warning(f"Position size {position_size} exceeds available balance with leverage")
+                return None
+                
+            return await self._adjust_position_size_by_volatility(symbol, position_size)
+            
+        except Exception as e:
+            logger.error(f"Error calculating position size: {str(e)}")
+            return None
+    
+    async def _adjust_position_size_by_volatility(self, symbol: str, base_size: float) -> float:
+        """Adjust position size based on market volatility"""
+        try:
+            # Get historical klines
+            klines = await self.binance_service.get_klines(
+                symbol=symbol,
+                timeframe='1h',
+                limit=24  # Last 24 hours
+            )
+            
+            if not klines:
+                logger.warning(f"No klines data available for {symbol}")
+                return base_size
+                
+            # Convert to DataFrame - handle different klines formats
+            if isinstance(klines[0], list):
+                # Binance API format: [timestamp, open, high, low, close, volume, ...]
+                # Check actual number of columns in the data
+                if len(klines[0]) >= 6:
+                    # Use only the first 6 columns to avoid column mismatch
+                    df = pd.DataFrame([row[:6] for row in klines], columns=[
+                        'timestamp', 'open', 'high', 'low', 'close', 'volume'
+                    ])
+                else:
+                    logger.warning(f"Unexpected klines format for {symbol}")
+                    return base_size
+            else:
+                # Dictionary format
+                df = pd.DataFrame(klines)
+            
+            # Convert numeric columns
+            numeric_columns = ['open', 'high', 'low', 'close']
+            for col in numeric_columns:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+            # Calculate volatility
+            if 'close' in df.columns and len(df) > 1:
+                df['returns'] = df['close'].pct_change()
+                volatility = df['returns'].std() * np.sqrt(24)  # Annualized volatility
+            else:
+                logger.warning(f"Insufficient data for volatility calculation for {symbol}")
+                return base_size
+            
+            # Get market volatility
+            market_volatility = await self._get_market_volatility()
+            if market_volatility is None:
+                return base_size
+                
+            # Calculate relative volatility
+            relative_vol = volatility / market_volatility
+            
+            # Adjust position size
+            if relative_vol > 2.0:  # Very high volatility
+                adjusted_size = base_size * 0.5
+            elif relative_vol > 1.5:  # High volatility
+                adjusted_size = base_size * 0.75
+            elif relative_vol < 0.5:  # Low volatility
+                adjusted_size = base_size * 1.25
+            else:  # Normal volatility
+                adjusted_size = base_size
+                
+            return max(adjusted_size, base_size * 0.5)  # Never go below 50% of base size
+            
+        except Exception as e:
+            logger.error(f"Error adjusting position size by volatility: {str(e)}")
+            return base_size
+    
+    async def _get_market_volatility(self) -> Optional[float]:
+        """Get market volatility for comparison."""
+        try:
+            # Get BTC volatility as market benchmark
+            btc_klines = await self.binance_service.get_klines(
+                symbol='BTCUSDT',
+                timeframe='1h',
+                limit=24
+            )
+            
+            if not btc_klines:
+                return None
+                
+            # Convert to DataFrame - handle different klines formats
+            if isinstance(btc_klines[0], list):
+                # Binance API format: [timestamp, open, high, low, close, volume, ...]
+                # Check actual number of columns in the data
+                if len(btc_klines[0]) >= 6:
+                    # Use only the first 6 columns to avoid column mismatch
+                    df = pd.DataFrame([row[:6] for row in btc_klines], columns=[
+                        'timestamp', 'open', 'high', 'low', 'close', 'volume'
+                    ])
+                else:
+                    logger.warning("Unexpected BTC klines format")
+                    return None
+            else:
+                # Dictionary format
+                df = pd.DataFrame(btc_klines)
+            
+            # Convert numeric columns
+            numeric_columns = ['open', 'high', 'low', 'close']
+            for col in numeric_columns:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+            # Calculate BTC volatility
+            if 'close' in df.columns and len(df) > 1:
+                df['returns'] = df['close'].pct_change()
+                btc_volatility = df['returns'].std() * np.sqrt(24)  # Annualized volatility
+                return btc_volatility
+            else:
+                logger.warning("Insufficient data for BTC volatility calculation")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error getting market volatility: {str(e)}")
+            return None

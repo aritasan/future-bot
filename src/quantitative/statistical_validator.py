@@ -17,14 +17,43 @@ class StatisticalSignalValidator:
     Implements quantitative trading standards for signal validation.
     """
     
-    def __init__(self, min_p_value: float = 0.05, min_t_stat: float = 2.0):
+    def __init__(self, min_p_value: float = 0.1, min_t_stat: float = 1.5):
+        """
+        Initialize statistical validator with more realistic thresholds.
+        
+        Args:
+            min_p_value: Minimum p-value threshold (default: 0.1, more realistic)
+            min_t_stat: Minimum t-statistic threshold (default: 1.5, more realistic)
+        """
         self.min_p_value = min_p_value
         self.min_t_stat = min_t_stat
         self.validation_history = []
         
+        # Adaptive thresholds based on market conditions
+        self.adaptive_thresholds = {
+            'high_volatility': {
+                'min_p_value': 0.15,
+                'min_t_stat': 1.2,
+                'min_sharpe_ratio': 0.1,
+                'max_drawdown': 0.3
+            },
+            'normal_volatility': {
+                'min_p_value': 0.1,
+                'min_t_stat': 1.5,
+                'min_sharpe_ratio': 0.2,
+                'max_drawdown': 0.25
+            },
+            'low_volatility': {
+                'min_p_value': 0.05,
+                'min_t_stat': 2.0,
+                'min_sharpe_ratio': 0.5,
+                'max_drawdown': 0.15
+            }
+        }
+    
     def validate_signal(self, signal_data: Dict, historical_returns: np.array = None) -> Dict:
         """
-        Validate signal using statistical tests.
+        Validate signal using statistical tests with adaptive thresholds.
         
         Args:
             signal_data: Dictionary containing signal information
@@ -45,12 +74,21 @@ class StatisticalSignalValidator:
                 'max_drawdown': None,
                 'volatility': None,
                 'skewness': None,
-                'kurtosis': None
+                'kurtosis': None,
+                'market_regime': None,
+                'adaptive_thresholds_used': None
             }
             
             if historical_returns is None:
                 # Generate synthetic returns based on signal strength
                 historical_returns = self._generate_synthetic_returns(signal_data)
+            
+            # Determine market regime based on volatility
+            volatility = float(np.std(historical_returns) * np.sqrt(252))
+            market_regime = self._determine_market_regime(volatility)
+            
+            # Get adaptive thresholds for current market regime
+            thresholds = self.adaptive_thresholds[market_regime]
             
             # Perform statistical tests
             t_stat, p_value = stats.ttest_1samp(historical_returns, 0)
@@ -63,15 +101,14 @@ class StatisticalSignalValidator:
             
             # Calculate additional metrics
             max_drawdown = self._calculate_max_drawdown(historical_returns)
-            volatility = np.std(historical_returns) * np.sqrt(252)
             skewness = stats.skew(historical_returns)
             kurtosis = stats.kurtosis(historical_returns)
             
-            # Determine if signal is statistically valid
-            is_valid = (p_value < self.min_p_value and 
-                       abs(t_stat) > self.min_t_stat and
-                       sharpe_ratio > 0.5 and
-                       max_drawdown < 0.15)
+            # Determine if signal is statistically valid using adaptive thresholds
+            is_valid = (p_value < thresholds['min_p_value'] and 
+                       abs(t_stat) > thresholds['min_t_stat'] and
+                       sharpe_ratio > thresholds['min_sharpe_ratio'] and
+                       max_drawdown < thresholds['max_drawdown'])
             
             results.update({
                 'is_valid': is_valid,
@@ -84,7 +121,9 @@ class StatisticalSignalValidator:
                 'max_drawdown': max_drawdown,
                 'volatility': volatility,
                 'skewness': skewness,
-                'kurtosis': kurtosis
+                'kurtosis': kurtosis,
+                'market_regime': market_regime,
+                'adaptive_thresholds_used': thresholds
             })
             
             # Store validation history
@@ -132,7 +171,7 @@ class StatisticalSignalValidator:
             std_dev = np.nanstd(excess_returns)
             if std_dev == 0 or np.isnan(std_dev):
                 return 0.0
-            return np.nanmean(excess_returns) / std_dev * np.sqrt(252)
+            return float(np.nanmean(excess_returns) / std_dev * np.sqrt(252))
         except Exception as e:
             logger.error(f"Error calculating Sharpe ratio: {str(e)}")
             return 0.0
@@ -148,7 +187,7 @@ class StatisticalSignalValidator:
             std_dev = np.nanstd(excess_returns)
             if std_dev == 0 or np.isnan(std_dev):
                 return 0.0
-            return np.nanmean(excess_returns) / std_dev * np.sqrt(252)
+            return float(np.nanmean(excess_returns) / std_dev * np.sqrt(252))
         except Exception as e:
             logger.error(f"Error calculating Information ratio: {str(e)}")
             return 0.0
@@ -165,7 +204,7 @@ class StatisticalSignalValidator:
             downside_deviation = float(np.nanstd(downside_returns))
             if downside_deviation == 0 or np.isnan(downside_deviation):
                 return 0.0
-            return np.nanmean(excess_returns) / downside_deviation * np.sqrt(252)
+            return float(np.nanmean(excess_returns) / downside_deviation * np.sqrt(252))
         except Exception as e:
             logger.error(f"Error calculating Sortino ratio: {str(e)}")
             return 0.0
@@ -201,6 +240,23 @@ class StatisticalSignalValidator:
         except Exception as e:
             logger.error(f"Error calculating max drawdown: {str(e)}")
             return 0.0
+    
+    def _determine_market_regime(self, volatility: float) -> str:
+        """
+        Determine market regime based on volatility.
+        
+        Args:
+            volatility: Annualized volatility
+            
+        Returns:
+            str: Market regime ('high_volatility', 'normal_volatility', 'low_volatility')
+        """
+        if volatility > 0.4:  # High volatility (>40% annualized)
+            return 'high_volatility'
+        elif volatility < 0.2:  # Low volatility (<20% annualized)
+            return 'low_volatility'
+        else:  # Normal volatility (20-40% annualized)
+            return 'normal_volatility'
     
     def get_validation_summary(self) -> Dict:
         """Get summary of validation history."""

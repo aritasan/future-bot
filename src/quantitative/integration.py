@@ -47,6 +47,44 @@ class QuantitativeIntegration:
         self.integration_enabled = self.config.get('quantitative_integration_enabled', True)
         self.analysis_cache = {}
         self.last_analysis_time = {}
+    
+    async def initialize(self) -> bool:
+        """
+        Initialize the quantitative integration system.
+        
+        Returns:
+            bool: True if initialization successful, False otherwise
+        """
+        try:
+            logger.info("Initializing Quantitative Integration...")
+            
+            # Initialize quantitative trading system
+            # Note: QuantitativeTradingSystem doesn't have an initialize method,
+            # so we just verify the components are available
+            if not hasattr(self, 'quantitative_system'):
+                logger.error("Quantitative trading system not available")
+                return False
+            
+            # Verify all components are available
+            required_components = [
+                'risk_manager',
+                'statistical_validator', 
+                'portfolio_optimizer',
+                'market_analyzer',
+                'factor_model'
+            ]
+            
+            for component in required_components:
+                if not hasattr(self.quantitative_system, component):
+                    logger.error(f"Required component {component} not available")
+                    return False
+            
+            logger.info("Quantitative Integration initialized successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error initializing Quantitative Integration: {str(e)}")
+            return False
         
     async def enhance_trading_signal(self, symbol: str, base_signal: Dict, 
                                    market_data: Dict) -> Dict:

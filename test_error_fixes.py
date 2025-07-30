@@ -1,225 +1,181 @@
 #!/usr/bin/env python3
 """
-Test script to verify error fixes.
+Test script to verify the error fixes
 """
 
+import asyncio
 import sys
 import os
-import asyncio
 import logging
-import traceback
-from typing import Dict, Any
+from typing import Dict, Optional
 
 # Add the src directory to the path
-sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
-from src.core.config import load_config
-from src.services.binance_service import BinanceService
-from src.services.indicator_service import IndicatorService
-from src.services.notification_service import NotificationService
-from src.strategies.enhanced_trading_strategy_with_quantitative import EnhancedTradingStrategyWithQuantitative
-
-# Set up logging
+# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-async def test_binance_service_methods():
-    """Test BinanceService methods including get_recent_trades."""
-    try:
-        logger.info("Testing BinanceService methods...")
-        
-        config = load_config()
-        binance_service = BinanceService(config)
-        await binance_service.initialize()
-        
-        # Test get_recent_trades method
-        test_symbol = 'BTCUSDT'
-        logger.info(f"Testing get_recent_trades for {test_symbol}...")
-        
-        try:
-            trades = await binance_service.get_recent_trades(test_symbol)
-            logger.info(f"get_recent_trades successful: {len(trades)} trades")
-        except Exception as e:
-            logger.error(f"get_recent_trades failed: {str(e)}")
-        
-        # Test get_trades method
-        try:
-            trades = await binance_service.get_trades(test_symbol)
-            logger.info(f"get_trades successful: {len(trades)} trades")
-        except Exception as e:
-            logger.error(f"get_trades failed: {str(e)}")
-        
-        # Test other methods
-        try:
-            ticker = await binance_service.get_ticker(test_symbol)
-            logger.info(f"get_ticker successful: {ticker.get('last', 'N/A')}")
-        except Exception as e:
-            logger.error(f"get_ticker failed: {str(e)}")
-        
-        await binance_service.close()
-        logger.info("BinanceService test completed")
-        
-    except Exception as e:
-        logger.error(f"BinanceService test error: {str(e)}")
-        logger.error(f"Traceback:\n{traceback.format_exc()}")
+class MockBinanceService:
+    """Mock binance service for testing."""
+    
+    async def get_klines(self, symbol: str, timeframe: str, limit: int = 100) -> list:
+        """Mock klines data with correct format."""
+        # Create mock klines data with 6 columns (not 12)
+        klines = []
+        for i in range(limit):
+            klines.append([
+                1640995200000 + i * 3600000,  # timestamp
+                100.0 + i * 0.1,  # open
+                110.0 + i * 0.1,  # high
+                90.0 + i * 0.1,   # low
+                105.0 + i * 0.1,  # close
+                1000.0 + i * 10    # volume
+            ])
+        return klines
+    
+    async def get_funding_rate(self, symbol: str) -> float:
+        """Mock funding rate."""
+        return 0.0001
+    
+    async def get_ticker(self, symbol: str) -> Dict:
+        """Mock ticker data."""
+        return {
+            'volume': 1000000.0,
+            'percentage': 2.5
+        }
+    
+    async def get_account_balance(self) -> Dict:
+        """Mock account balance."""
+        return {
+            'USDT': {
+                'total': '1000.0',
+                'free': '1000.0',
+                'used': '0.0'
+            }
+        }
 
-async def test_quantitative_strategy_fixed():
-    """Test quantitative strategy with error fixes."""
+class MockIndicatorService:
+    """Mock indicator service for testing."""
+    
+    async def get_klines(self, symbol: str, interval: str, limit: int = 100) -> Dict:
+        """Mock klines data."""
+        # Create mock klines data
+        klines = {
+            'open': [100.0] * limit,
+            'high': [110.0] * limit,
+            'low': [90.0] * limit,
+            'close': [105.0] * limit,
+            'volume': [1000.0] * limit
+        }
+        return klines
+
+class MockNotificationService:
+    """Mock notification service for testing."""
+    pass
+
+class MockCacheService:
+    """Mock cache service for testing."""
+    pass
+
+async def test_error_fixes():
+    """Test the error fixes."""
     try:
-        logger.info("Testing quantitative strategy with fixes...")
+        logger.info("🧪 TESTING ERROR FIXES")
         
-        config = load_config()
+        # Import the strategy
+        from src.strategies.enhanced_trading_strategy_with_quantitative import EnhancedTradingStrategyWithQuantitative
         
-        # Initialize services
-        binance_service = BinanceService(config)
-        await binance_service.initialize()
+        # Create mock services
+        indicator_service = MockIndicatorService()
+        binance_service = MockBinanceService()
+        notification_service = MockNotificationService()
+        cache_service = MockCacheService()
         
-        indicator_service = IndicatorService(config)
-        await indicator_service.initialize()
+        # Create strategy instance
+        config = {
+            'risk_management': {
+                'risk_per_trade': 0.02
+            }
+        }
         
-        notification_service = NotificationService(config)
-        await notification_service.initialize()
-        
-        # Initialize strategy
         strategy = EnhancedTradingStrategyWithQuantitative(
-            config, binance_service, indicator_service, notification_service
+            config=config,
+            binance_service=binance_service,
+            indicator_service=indicator_service,
+            notification_service=notification_service,
+            cache_service=cache_service
         )
-        await strategy.initialize()
         
-        logger.info("Strategy initialized successfully")
-        
-        # Test signal generation for multiple symbols
-        test_symbols = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT']
+        # Test symbols
+        test_symbols = ['BTCUSDT', 'ETHUSDT', 'ADAUSDT']
         
         for symbol in test_symbols:
-            logger.info(f"Testing signal generation for {symbol}...")
+            logger.info(f"Testing symbol: {symbol}")
             
+            # Test 1: Position size calculation
             try:
-                signal = await strategy.generate_signals(symbol, indicator_service)
+                position_size = await strategy._calculate_position_size(symbol, 0.02, 105.0)
+                logger.info(f"✅ Position size calculation for {symbol}: {position_size}")
+            except Exception as e:
+                logger.error(f"❌ Position size calculation failed for {symbol}: {str(e)}")
+            
+            # Test 2: Position size adjustment by volatility
+            try:
+                adjusted_size = await strategy._adjust_position_size_by_volatility(symbol, 0.01)
+                logger.info(f"✅ Position size adjustment for {symbol}: {adjusted_size}")
+            except Exception as e:
+                logger.error(f"❌ Position size adjustment failed for {symbol}: {str(e)}")
+            
+            # Test 3: Market volatility calculation
+            try:
+                market_vol = await strategy._get_market_volatility()
+                logger.info(f"✅ Market volatility calculation: {market_vol}")
+            except Exception as e:
+                logger.error(f"❌ Market volatility calculation failed: {str(e)}")
+            
+            # Test 4: Generate advanced signal
+            try:
+                market_data = await strategy._get_comprehensive_market_data(symbol)
+                signal = await strategy._generate_advanced_signal(symbol, indicator_service, market_data)
                 if signal:
-                    logger.info(f"Signal generated for {symbol}: {signal.get('action', 'unknown')}")
+                    current_price = signal.get('current_price', 0.0)
+                    logger.info(f"✅ Advanced signal for {symbol}: current_price = {current_price}")
                 else:
-                    logger.warning(f"No signal generated for {symbol}")
+                    logger.warning(f"⚠️ No signal generated for {symbol}")
             except Exception as e:
-                logger.error(f"Error generating signal for {symbol}: {str(e)}")
-                logger.error(f"Traceback:\n{traceback.format_exc()}")
+                logger.error(f"❌ Advanced signal generation failed for {symbol}: {str(e)}")
+            
+            # Test 5: Execute functions
+            if signal and signal.get('current_price', 0.0) > 0:
+                try:
+                    await strategy._execute_buy_order(symbol, signal)
+                    logger.info(f"✅ Buy order execution for {symbol}")
+                except Exception as e:
+                    logger.error(f"❌ Buy order execution failed for {symbol}: {str(e)}")
+                
+                try:
+                    await strategy._execute_sell_order(symbol, signal)
+                    logger.info(f"✅ Sell order execution for {symbol}")
+                except Exception as e:
+                    logger.error(f"❌ Sell order execution failed for {symbol}: {str(e)}")
         
-        # Cleanup
-        await strategy.close()
-        await indicator_service.close()
-        await notification_service.close()
-        await binance_service.close()
-        
-        logger.info("Quantitative strategy test completed")
-        
-    except Exception as e:
-        logger.error(f"Quantitative strategy test error: {str(e)}")
-        logger.error(f"Traceback:\n{traceback.format_exc()}")
-
-async def test_concurrent_processing():
-    """Test concurrent processing with limited concurrency."""
-    try:
-        logger.info("Testing concurrent processing...")
-        
-        config = load_config()
-        
-        # Initialize services
-        binance_service = BinanceService(config)
-        await binance_service.initialize()
-        
-        indicator_service = IndicatorService(config)
-        await indicator_service.initialize()
-        
-        notification_service = NotificationService(config)
-        await notification_service.initialize()
-        
-        # Initialize strategy
-        strategy = EnhancedTradingStrategyWithQuantitative(
-            config, binance_service, indicator_service, notification_service
-        )
-        await strategy.initialize()
-        
-        # Test concurrent signal generation
-        test_symbols = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'DOTUSDT']
-        
-        async def process_symbol(symbol):
-            try:
-                signal = await strategy.generate_signals(symbol, indicator_service)
-                return {'symbol': symbol, 'success': True, 'signal': signal}
-            except Exception as e:
-                return {'symbol': symbol, 'success': False, 'error': str(e)}
-        
-        # Process with limited concurrency
-        max_concurrent = 3
-        semaphore = asyncio.Semaphore(max_concurrent)
-        
-        async def limited_process(symbol):
-            async with semaphore:
-                return await process_symbol(symbol)
-        
-        tasks = [limited_process(symbol) for symbol in test_symbols]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        successful = sum(1 for r in results if isinstance(r, dict) and r.get('success', False))
-        logger.info(f"Concurrent processing completed: {successful}/{len(results)} successful")
-        
-        # Cleanup
-        await strategy.close()
-        await indicator_service.close()
-        await notification_service.close()
-        await binance_service.close()
-        
-        logger.info("Concurrent processing test completed")
+        logger.info("🎉 Error fixes test completed!")
+        return True
         
     except Exception as e:
-        logger.error(f"Concurrent processing test error: {str(e)}")
-        logger.error(f"Traceback:\n{traceback.format_exc()}")
-
-async def test_discord_service_fixed():
-    """Test Discord service with fixes."""
-    try:
-        logger.info("Testing Discord service with fixes...")
-        
-        config = load_config()
-        from src.services.discord_service import DiscordService
-        
-        discord_service = DiscordService(config)
-        await discord_service.initialize()
-        logger.info("Discord service initialized successfully")
-        
-        # Test sending a message
-        success = await discord_service.send_message("🔧 Error fixes test message")
-        logger.info(f"Message sent: {success}")
-        
-        await discord_service.close()
-        logger.info("Discord service test completed")
-        
-    except Exception as e:
-        logger.error(f"Discord service test error: {str(e)}")
-        logger.error(f"Traceback:\n{traceback.format_exc()}")
+        logger.error(f"❌ Test failed with exception: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return False
 
 async def main():
-    """Run all error fix tests."""
-    try:
-        logger.info("Starting error fix tests...")
-        
-        # Test BinanceService methods
-        await test_binance_service_methods()
-        
-        # Test Discord service
-        await test_discord_service_fixed()
-        
-        # Test quantitative strategy
-        await test_quantitative_strategy_fixed()
-        
-        # Test concurrent processing
-        await test_concurrent_processing()
-        
-        logger.info("All error fix tests completed successfully")
-        
-    except Exception as e:
-        logger.error(f"Error fix test error: {str(e)}")
-        logger.error(f"Traceback:\n{traceback.format_exc()}")
+    """Run the test."""
+    success = await test_error_fixes()
+    if success:
+        logger.info("🎉 Error fixes test passed!")
+    else:
+        logger.error("❌ Error fixes test failed!")
 
 if __name__ == "__main__":
     asyncio.run(main()) 

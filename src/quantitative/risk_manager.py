@@ -406,7 +406,7 @@ class RiskManager:
             position_risk = position_results.get('final_position', 0.0)
             
             # Simple portfolio risk calculation
-            portfolio_risk = np.sqrt(var_risk**2 + position_risk**2)
+            portfolio_risk = float(np.sqrt(var_risk**2 + position_risk**2))
             return portfolio_risk
         except Exception as e:
             logger.error(f"Error calculating portfolio risk: {str(e)}")

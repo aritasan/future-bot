@@ -918,4 +918,45 @@ class IndicatorService:
             return df
         except Exception as e:
             logger.error(f"Error calculating Williams %R: {str(e)}")
-            return df 
+            return df
+
+    async def get_klines(self, symbol: str, timeframe: str = '5m', limit: int = 100) -> Optional[Dict]:
+        """Get klines data for a symbol.
+        
+        Args:
+            symbol: Trading pair symbol
+            timeframe: Timeframe (1m, 5m, 15m, 1h, 4h, 1d)
+            limit: Number of candles to fetch
+            
+        Returns:
+            Optional[Dict]: Klines data with OHLCV information
+        """
+        try:
+            if not self._is_initialized:
+                logger.error("Indicator service not initialized")
+                return None
+                
+            if self._is_closed:
+                logger.error("Indicator service is closed")
+                return None
+            
+            # Get historical data
+            df = await self.get_historical_data(symbol, timeframe, limit)
+            if df is None or df.empty:
+                logger.warning(f"Could not get data for {symbol}: No data available")
+                return None
+            
+            # Convert DataFrame to dictionary format
+            klines_data = {
+                'open': df['open'].tolist(),
+                'high': df['high'].tolist(),
+                'low': df['low'].tolist(),
+                'close': df['close'].tolist(),
+                'volume': df['volume'].tolist() if 'volume' in df.columns else [0] * len(df)
+            }
+            
+            return klines_data
+            
+        except Exception as e:
+            logger.error(f"Error getting klines for {symbol}: {str(e)}")
+            return None 

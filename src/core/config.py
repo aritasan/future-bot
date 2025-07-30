@@ -137,6 +137,7 @@ def load_config() -> Dict[str, Any]:
                 }
             },
             'trading': {
+                'enable_check_profit_target': os.getenv('ENABLE_CHECK_PROFIT_TARGET', 'false').lower() == 'true',
                 'min_volume': 1000000,
                 'min_volatility': 0.02,
                 'max_drawdown': MAX_DRAWDOWN,

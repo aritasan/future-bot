@@ -81,8 +81,8 @@ def signal_handler(signum, frame):
 async def process_symbol_with_quantitative(
     symbol: str,
     binance_service: BinanceService,
-    telegram_service: TelegramService,
-    discord_service: DiscordService,
+    telegram_service: Optional[TelegramService],
+    discord_service: Optional[DiscordService],
     health_monitor: HealthMonitor,
     strategy: EnhancedTradingStrategyWithQuantitative,
     indicator_service: IndicatorService,
@@ -92,105 +92,71 @@ async def process_symbol_with_quantitative(
     try:
         logger.info(f"Starting quantitative trading for symbol: {symbol}")
         
-        # Main trading loop
-        while is_running:
-            try:
-                # Check if trading is paused
-                if (telegram_service is not None and telegram_service.is_trading_paused()):
-                    await telegram_service.wait_for_trading_resume()
-                    continue
-                
-                if (discord_service is not None and discord_service.is_trading_paused()):
-                    await discord_service.wait_for_trading_resume()
-                    continue
+        # Check if trading is paused
+        if (telegram_service is not None and telegram_service.is_trading_paused()):
+            logger.info(f"Trading paused for {symbol}, skipping")
+            return
+        
+        if (discord_service is not None and discord_service.is_trading_paused()):
+            logger.info(f"Trading paused for {symbol}, skipping")
+            return
 
-                # Check profit target
-                if await strategy.check_profit_target():
-                    # Pause trading through both services
-                    if telegram_service:
-                        await telegram_service.pause_trading()
-                    if discord_service:
-                        await discord_service.pause_trading()
-                    
-                    logger.info(f"Profit target reached for {symbol}, pausing trading")
-                    # Use wait_for with shutdown event instead of sleep
-                    try:
-                        await asyncio.wait_for(shutdown_event.wait(), timeout=300)  # 5 minutes
-                        if shutdown_event.is_set():
-                            break
-                    except asyncio.TimeoutError:
-                        continue
+        # Check profit target
+        if await strategy.check_profit_target():
+            logger.info(f"Profit target reached, skipping {symbol}")
+            return
 
-                # Check cache for existing signals
-                cached_signals = await cache_service.get_market_data(symbol, "5m")
-                if cached_signals:
-                    logger.info(f"Using cached signals for {symbol}")
-                    signals = cached_signals
-                else:
-                    # Generate signals with quantitative analysis
-                    signals = await asyncio.wait_for(strategy.generate_signals(symbol, indicator_service), timeout=60)
-                    
-                    # Cache the signals
-                    if signals:
-                        await cache_service.cache_market_data(symbol, "5m", signals, ttl=300)  # 5 minutes TTL
-                
-                if signals:
-                    logger.info(f"Generated quantitative signals for {symbol}: {signals}")
-                    
-                    # Process signals
-                    await asyncio.wait_for(strategy.process_trading_signals(signals), timeout=60)
-                    
-                    # Get quantitative recommendations
-                    recommendations = await asyncio.wait_for(strategy.get_quantitative_recommendations(symbol), timeout=60)
-                    if recommendations and 'error' not in recommendations:
-                        logger.info(f"Quantitative recommendations for {symbol}: {recommendations}")
-                        # Cache recommendations
-                        await cache_service.cache_analysis(symbol, "quantitative_recommendations", recommendations, ttl=600)  # 10 minutes TTL
-                    
-                    # Send notifications if significant
-                    if signals.get('quantitative_confidence', 0) > 0.7:
-                        await asyncio.wait_for(send_quantitative_notification(
-                            symbol, signals, recommendations, telegram_service, discord_service
-                        ), timeout=60)
-                
-                # Health check
-                if health_monitor:
-                    await asyncio.wait_for(health_monitor.check_health(), timeout=30)
-                
-                # Wait before next iteration - use wait_for with shutdown event
-                try:
-                    await asyncio.wait_for(shutdown_event.wait(), timeout=60)  # 1 minute interval
-                    if shutdown_event.is_set():
-                        break
-                except asyncio.TimeoutError:
-                    continue
-                
-            except asyncio.CancelledError:
-                logger.info(f"Task for {symbol} received cancellation.")
-                raise
-            except Exception as e:
-                logger.error(f"Error in quantitative trading loop for {symbol}: {str(e)}")
-                import traceback
-                logger.error(f"Traceback for {symbol}:\n{traceback.format_exc()}")
-                try:
-                    await asyncio.wait_for(shutdown_event.wait(), timeout=60)
-                    if shutdown_event.is_set():
-                        break
-                except asyncio.CancelledError:
-                    raise
-                
+        # Check cache for existing signals
+        cached_signals = await cache_service.get_market_data(symbol, "5m")
+        if cached_signals:
+            logger.info(f"Using cached signals for {symbol}")
+            signals = cached_signals
+        else:
+            # Generate signals with quantitative analysis
+            signals = await asyncio.wait_for(strategy.generate_signals(symbol, indicator_service), timeout=60)
+            
+            # Cache the signals
+            if signals:
+                await cache_service.cache_market_data(symbol, "5m", signals, ttl=300)  # 5 minutes TTL
+        
+        if signals:
+            logger.info(f"Generated quantitative signals for {symbol}: {signals}")
+            
+            # Process signals
+            await asyncio.wait_for(strategy.process_trading_signals(signals), timeout=60)
+            
+            # Get quantitative recommendations
+            recommendations = await asyncio.wait_for(strategy.get_quantitative_recommendations(symbol), timeout=60)
+            if recommendations and 'error' not in recommendations:
+                logger.info(f"Quantitative recommendations for {symbol}: {recommendations}")
+                # Cache recommendations
+                await cache_service.cache_analysis(symbol, "quantitative_recommendations", recommendations, ttl=600)  # 10 minutes TTL
+            
+            # Send notifications if significant
+            if signals.get('quantitative_confidence', 0) > 0.7:
+                await asyncio.wait_for(send_quantitative_notification(
+                    symbol, signals, recommendations, telegram_service, discord_service
+                ), timeout=60)
+        
+        # Health check
+        if health_monitor:
+            await asyncio.wait_for(health_monitor.check_health(), timeout=30)
+        
+        logger.info(f"Completed processing for {symbol}")
+        
     except asyncio.CancelledError:
-        logger.info(f"process_symbol_with_quantitative for {symbol} cancelled.")
+        logger.info(f"Processing cancelled for {symbol}")
         raise
     except Exception as e:
-        logger.error(f"Fatal error in quantitative trading for {symbol}: {str(e)}")
+        logger.error(f"Error processing symbol {symbol}: {str(e)}")
+        raise
 
 async def send_quantitative_notification(
     symbol: str, 
     signals: Dict, 
     recommendations: Dict,
-    telegram_service: TelegramService,
-    discord_service: DiscordService
+    telegram_service: Optional[TelegramService],
+    discord_service: Optional[DiscordService]
 ) -> None:
     """Send quantitative analysis notifications."""
     try:
@@ -251,7 +217,6 @@ async def run_portfolio_analysis(
                     # Analyze portfolio optimization
                     optimization_results = await asyncio.wait_for(strategy.analyze_portfolio_optimization(symbols), timeout=120)
                     if optimization_results and 'error' not in optimization_results:
-                        logger.info(f"Portfolio optimization results: {optimization_results}")
                         # Cache optimization results
                         await cache_service.cache_portfolio_analysis("optimization", optimization_results, ttl=3600)  # 1 hour TTL
                 
@@ -269,7 +234,6 @@ async def run_portfolio_analysis(
                 
                 # Get performance metrics
                 metrics = await asyncio.wait_for(strategy.get_performance_metrics(), timeout=60)
-                logger.info(f"Performance metrics: {metrics}")
                 # Cache performance metrics
                 await cache_service.cache_performance_metrics(metrics, ttl=1800)  # 30 minutes TTL
                 
@@ -505,20 +469,29 @@ async def main():
             processed_count = 0
             total_symbols = len(symbols)
             
-            async def process_symbol_with_semaphore(symbol):
+            async def process_symbol_batch(symbol_batch: List[str]):
+                """Process a batch of symbols."""
                 nonlocal processed_count
                 async with semaphore:
-                    processed_count += 1
-                    logger.info(f"Processing symbol {processed_count}/{total_symbols}: {symbol}")
-                    return await process_symbol_with_quantitative(
-                        symbol, binance_service, telegram_service, discord_service,
-                        health_monitor, strategy, indicator_service, cache_service
-                    )
+                    for symbol in symbol_batch:
+                        processed_count += 1
+                        logger.info(f"Processing symbol {processed_count}/{total_symbols}: {symbol}")
+                        try:
+                            await process_symbol_with_quantitative(
+                                symbol, binance_service, telegram_service, discord_service,
+                                health_monitor, strategy, indicator_service, cache_service
+                            )
+                        except Exception as e:
+                            logger.error(f"Error processing symbol {symbol}: {str(e)}")
             
-            logger.info(f"Starting processing of {total_symbols} symbols with max {max_concurrent_tasks} concurrent tasks")
+            logger.info(f"Starting processing of {total_symbols} symbols with max {max_concurrent_tasks} concurrent batches")
             
-            for symbol in symbols:
-                task = asyncio.create_task(process_symbol_with_semaphore(symbol))
+            # Process symbols in batches
+            batch_size = max_concurrent_tasks
+            symbol_batches = [symbols[i:i + batch_size] for i in range(0, len(symbols), batch_size)]
+            
+            for batch in symbol_batches:
+                task = asyncio.create_task(process_symbol_batch(batch))
                 tasks.append(task)
             
             # Start portfolio analysis task

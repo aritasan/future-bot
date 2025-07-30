@@ -43,6 +43,8 @@ class FactorModel:
             
             # PCA-based factor analysis
             pca_results = self._perform_pca_analysis(returns_df)
+            if 'error' in pca_results:
+                return pca_results  # Return error immediately
             results['pca_factors'] = pca_results
             
             # Multi-factor model
@@ -72,6 +74,15 @@ class FactorModel:
     def _perform_pca_analysis(self, returns_data: pd.DataFrame) -> Dict:
         """Perform PCA-based factor analysis."""
         try:
+            # Ensure returns_data is a DataFrame
+            if not isinstance(returns_data, pd.DataFrame):
+                if isinstance(returns_data, dict):
+                    returns_data = pd.DataFrame(returns_data)
+                elif isinstance(returns_data, list):
+                    return {'error': 'Returns data is a list, expected DataFrame'}
+                else:
+                    return {'error': f'Invalid returns data type: {type(returns_data)}'}
+            
             # Check if we have valid data
             if returns_data.empty or len(returns_data.columns) == 0:
                 return {'error': 'No valid returns data for PCA analysis'}

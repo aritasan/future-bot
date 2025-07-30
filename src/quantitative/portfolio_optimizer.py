@@ -56,6 +56,15 @@ class PortfolioOptimizer:
     def _markowitz_optimization(self, returns: pd.DataFrame, constraints: Dict = None) -> Dict:
         """Markowitz mean-variance optimization."""
         try:
+            # Ensure returns is a DataFrame
+            if not isinstance(returns, pd.DataFrame):
+                if isinstance(returns, dict):
+                    returns = pd.DataFrame(returns)
+                elif isinstance(returns, list):
+                    return {'error': 'Returns data is a list, expected DataFrame', 'optimization_success': False}
+                else:
+                    return {'error': f'Invalid returns data type: {type(returns)}', 'optimization_success': False}
+            
             # Calculate expected returns and covariance matrix
             expected_returns = returns.mean() * 252  # Annualized
             cov_matrix = returns.cov() * 252  # Annualized
@@ -117,7 +126,7 @@ class PortfolioOptimizer:
                 optimal_weights = result.x
                 portfolio_return = np.dot(optimal_weights, expected_returns)
                 portfolio_variance = result.fun
-                portfolio_volatility = np.sqrt(portfolio_variance)
+                portfolio_volatility = float(np.sqrt(portfolio_variance))
                 sharpe_ratio = (portfolio_return - self.risk_free_rate) / portfolio_volatility if portfolio_volatility > 0 else 0
                 
                 results = {
@@ -201,7 +210,7 @@ class PortfolioOptimizer:
             
             # Define objective function (minimize risk contribution dispersion)
             def objective(weights):
-                portfolio_vol = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
+                portfolio_vol = float(np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights))))
                 risk_contributions = weights * np.dot(cov_matrix, weights) / portfolio_vol
                 return np.sum((risk_contributions - np.mean(risk_contributions))**2)
             
@@ -260,7 +269,7 @@ class PortfolioOptimizer:
             # Define objective function (negative Sharpe ratio to minimize)
             def objective(weights):
                 portfolio_return = np.dot(weights, expected_returns)
-                portfolio_volatility = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
+                portfolio_volatility = float(np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights))))
                 return -(portfolio_return - self.risk_free_rate) / portfolio_volatility
             
             # Constraints
@@ -282,7 +291,7 @@ class PortfolioOptimizer:
             if result.success:
                 optimal_weights = result.x
                 portfolio_return = np.dot(optimal_weights, expected_returns)
-                portfolio_volatility = np.sqrt(np.dot(optimal_weights.T, np.dot(cov_matrix, optimal_weights)))
+                portfolio_volatility = float(np.sqrt(np.dot(optimal_weights.T, np.dot(cov_matrix, optimal_weights))))
                 sharpe_ratio = -result.fun  # Convert back to positive
                 
                 results = {
@@ -336,7 +345,7 @@ class PortfolioOptimizer:
                 optimal_weights = result.x
                 portfolio_return = np.dot(optimal_weights, custom_returns)
                 portfolio_variance = result.fun
-                portfolio_volatility = np.sqrt(portfolio_variance)
+                portfolio_volatility = float(np.sqrt(portfolio_variance))
                 sharpe_ratio = (portfolio_return - self.risk_free_rate) / portfolio_volatility
                 
                 return {
