@@ -212,6 +212,9 @@ class EnhancedTradingStrategyWithQuantitative:
             # Apply correlation analysis
             signal = await self._apply_correlation_analysis(symbol, signal, market_data)
             
+            # Apply factor model analysis
+            signal = await self._apply_factor_model_analysis(symbol, signal, market_data)
+            
             # Optimize final signal
             signal = await self._optimize_final_signal(symbol, signal, market_data)
             
@@ -220,6 +223,211 @@ class EnhancedTradingStrategyWithQuantitative:
         except Exception as e:
             logger.error(f"Error applying quantitative analysis for {symbol}: {str(e)}")
             return signal
+    
+    async def _apply_factor_model_analysis(self, symbol: str, signal: Dict, market_data: Dict) -> Dict:
+        """Apply factor model analysis to signal."""
+        try:
+            # Get comprehensive market data for factor analysis
+            comprehensive_data = await self._get_comprehensive_market_data(symbol)
+            
+            if not comprehensive_data:
+                logger.warning(f"No comprehensive data available for factor analysis on {symbol}")
+                return signal
+            
+            # Calculate factor exposures for the symbol
+            symbols = [symbol]
+            factor_exposures = await self.quantitative_system.factor_model.calculate_factor_exposures(
+                symbols, comprehensive_data
+            )
+            
+            if symbol in factor_exposures:
+                symbol_factors = factor_exposures[symbol]
+                
+                # Add factor exposures to signal
+                signal['factor_exposures'] = symbol_factors
+                
+                # Calculate factor-adjusted confidence
+                factor_adjusted_confidence = self._calculate_factor_adjusted_confidence(
+                    signal.get('confidence', 0), symbol_factors
+                )
+                signal['factor_adjusted_confidence'] = factor_adjusted_confidence
+                
+                # Apply factor-based signal adjustment
+                signal = self._adjust_signal_by_factors(signal, symbol_factors)
+                
+                logger.info(f"Factor analysis applied to {symbol}: {len(symbol_factors)} factors")
+            else:
+                logger.warning(f"No factor exposures calculated for {symbol}")
+            
+            return signal
+            
+        except Exception as e:
+            logger.error(f"Error applying factor model analysis for {symbol}: {str(e)}")
+            return signal
+    
+    def _calculate_factor_adjusted_confidence(self, base_confidence: float, factor_exposures: Dict[str, float]) -> float:
+        """Calculate factor-adjusted confidence score."""
+        try:
+            if not factor_exposures:
+                return base_confidence
+            
+            # Define factor weights for confidence adjustment
+            factor_weights = {
+                'market': 0.2,      # Market factor weight
+                'size': 0.15,       # Size factor weight
+                'value': 0.15,      # Value factor weight
+                'momentum': 0.2,    # Momentum factor weight
+                'volatility': 0.15, # Volatility factor weight
+                'liquidity': 0.15  # Liquidity factor weight
+            }
+            
+            # Calculate factor adjustment
+            factor_adjustment = 0.0
+            
+            for factor_name, exposure in factor_exposures.items():
+                if factor_name in factor_weights:
+                    weight = factor_weights[factor_name]
+                    # Normalize exposure to [-1, 1] and apply weight
+                    normalized_exposure = np.clip(exposure, -1, 1)
+                    factor_adjustment += weight * normalized_exposure
+            
+            # Apply factor adjustment to base confidence
+            adjusted_confidence = base_confidence + (factor_adjustment * 0.1)  # 10% adjustment max
+            
+            # Ensure confidence is within [0, 1] range
+            adjusted_confidence = max(0.0, min(1.0, adjusted_confidence))
+            
+            return adjusted_confidence
+            
+        except Exception as e:
+            logger.error(f"Error calculating factor-adjusted confidence: {str(e)}")
+            return base_confidence
+    
+    def _adjust_signal_by_factors(self, signal: Dict, factor_exposures: Dict[str, float]) -> Dict:
+        """Adjust signal based on factor exposures."""
+        try:
+            if not factor_exposures:
+                return signal
+            
+            # Get current signal action
+            current_action = signal.get('action', 'hold')
+            
+            # Factor-based action adjustments
+            action_adjustments = {
+                'market': {
+                    'positive': 'buy',    # High market exposure -> buy
+                    'negative': 'sell'    # Low market exposure -> sell
+                },
+                'momentum': {
+                    'positive': 'buy',    # High momentum -> buy
+                    'negative': 'sell'    # Low momentum -> sell
+                },
+                'value': {
+                    'positive': 'buy',    # High value -> buy
+                    'negative': 'sell'    # Low value -> sell
+                },
+                'volatility': {
+                    'positive': 'sell',   # High volatility -> sell
+                    'negative': 'buy'     # Low volatility -> buy
+                }
+            }
+            
+            # Calculate factor-based action score
+            action_scores = {'buy': 0, 'sell': 0, 'hold': 0}
+            
+            for factor_name, exposure in factor_exposures.items():
+                if factor_name in action_adjustments:
+                    if exposure > 0.1:  # Positive exposure threshold
+                        action = action_adjustments[factor_name]['positive']
+                        action_scores[action] += abs(exposure)
+                    elif exposure < -0.1:  # Negative exposure threshold
+                        action = action_adjustments[factor_name]['negative']
+                        action_scores[action] += abs(exposure)
+                    else:
+                        action_scores['hold'] += 1
+            
+            # Determine factor-adjusted action
+            if action_scores['buy'] > action_scores['sell'] and action_scores['buy'] > action_scores['hold']:
+                signal['factor_adjusted_action'] = 'buy'
+            elif action_scores['sell'] > action_scores['buy'] and action_scores['sell'] > action_scores['hold']:
+                signal['factor_adjusted_action'] = 'sell'
+            else:
+                signal['factor_adjusted_action'] = 'hold'
+            
+            # Add factor analysis summary
+            signal['factor_analysis'] = {
+                'factor_exposures': factor_exposures,
+                'action_scores': action_scores,
+                'factor_adjusted_action': signal.get('factor_adjusted_action', current_action)
+            }
+            
+            return signal
+            
+        except Exception as e:
+            logger.error(f"Error adjusting signal by factors: {str(e)}")
+            return signal
+    
+    async def analyze_portfolio_factor_exposures(self, symbols: List[str]) -> Dict[str, Any]:
+        """Analyze portfolio factor exposures."""
+        try:
+            logger.info(f"Analyzing portfolio factor exposures for {len(symbols)} symbols")
+            
+            # Get comprehensive market data for all symbols
+            all_market_data = {}
+            
+            for symbol in symbols:
+                market_data = await self._get_comprehensive_market_data(symbol)
+                if market_data:
+                    all_market_data[symbol] = market_data
+            
+            if not all_market_data:
+                logger.warning("No market data available for factor analysis")
+                return {}
+            
+            # Calculate factor exposures
+            factor_exposures = await self.quantitative_system.factor_model.calculate_factor_exposures(
+                symbols, all_market_data
+            )
+            
+            # Perform risk attribution analysis
+            risk_attribution = await self.quantitative_system.factor_model.perform_risk_attribution_analysis(
+                symbols, all_market_data
+            )
+            
+            # Analyze sector risk exposure
+            sector_analysis = await self.quantitative_system.factor_model.analyze_sector_risk_exposure(symbols)
+            
+            # Analyze geographic risk exposure
+            geographic_analysis = await self.quantitative_system.factor_model.analyze_geographic_risk_exposure(symbols)
+            
+            # Compile comprehensive analysis
+            portfolio_analysis = {
+                'factor_exposures': factor_exposures,
+                'risk_attribution': risk_attribution,
+                'sector_analysis': sector_analysis,
+                'geographic_analysis': geographic_analysis,
+                'summary': {
+                    'total_symbols': len(symbols),
+                    'total_factors': len(self.quantitative_system.factor_model.factors),
+                    'diversification_score': risk_attribution.get('diversification_score', 0.0),
+                    'total_factor_risk': risk_attribution.get('total_factor_risk', 0.0)
+                }
+            }
+            
+            logger.info("Portfolio factor analysis completed")
+            return portfolio_analysis
+            
+        except Exception as e:
+            logger.error(f"Error analyzing portfolio factor exposures: {str(e)}")
+            return {}
+    
+    async def get_factor_model_summary(self) -> Dict[str, Any]:
+        """Get factor model summary."""
+        try:
+            return await self.quantitative_system.factor_model.get_factor_summary()
+        except Exception as e:
+            logger.error(f"Error getting factor model summary: {str(e)}")
+            return {}
     
     async def _calculate_advanced_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """Calculate advanced technical indicators."""

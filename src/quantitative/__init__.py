@@ -15,7 +15,7 @@ from .statistical_validator import StatisticalValidator
 from .portfolio_optimizer import PortfolioOptimizer
 from .market_microstructure import MarketMicrostructureAnalyzer
 from .backtesting_engine import AdvancedBacktestingEngine
-from .factor_model import FactorModel
+from .factor_model import WorldQuantFactorModel
 from .quantitative_trading_system import QuantitativeTradingSystem
 
 __all__ = [
@@ -26,6 +26,6 @@ __all__ = [
     'PortfolioOptimizer',
     'MarketMicrostructureAnalyzer',
     'AdvancedBacktestingEngine',
-    'FactorModel',
+    'WorldQuantFactorModel',
     'QuantitativeTradingSystem'
 ] 
