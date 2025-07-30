@@ -156,6 +156,50 @@ def load_config() -> Dict[str, Any]:
                     "volume_ratio": 1.2,  # Minimum volume ratio required
                     "volatility_ratio": 1.5,  # Maximum volatility ratio allowed
                     "correlation_threshold": 0.7  # Minimum correlation with BTC required
+                },
+                "confidence_thresholds": {
+                    "buy_base": 0.45,      # Base threshold for BUY actions (lower for more opportunities)
+                    "sell_base": 0.65,     # Base threshold for SELL actions (higher for risk management)
+                    "hold_base": 0.35,     # Base threshold for HOLD actions
+                    "volatility_adjustments": {
+                        "high_volatility": 0.1,    # Increase threshold in high volatility
+                        "low_volatility": -0.05    # Decrease threshold in low volatility
+                    },
+                    "regime_adjustments": {
+                        "trending": -0.05,          # Lower threshold in trending markets
+                        "mean_reverting": 0.05,     # Higher threshold in mean-reverting markets
+                        "high_volatility": 0.08    # Much higher threshold in high volatility
+                    },
+                    "risk_adjustments": {
+                        "sharpe_ratio_good": -0.05,  # Lower threshold for good performance
+                        "sharpe_ratio_poor": 0.05,   # Higher threshold for poor performance
+                        "var_high_risk": 0.03,       # Higher threshold for high VaR
+                        "var_low_risk": -0.02,       # Lower threshold for low VaR
+                        "drawdown_high": 0.02        # Higher threshold for high drawdown
+                    },
+                    "bounds": {
+                        "min_threshold": 0.25,       # Minimum allowed threshold
+                        "max_threshold": 0.85        # Maximum allowed threshold
+                    },
+                    "risk_adjusted_confidence": {
+                        "strength_boost_multiplier": 0.2,  # Multiplier for signal strength boost
+                        "max_strength_boost": 0.1,         # Maximum strength boost
+                        "sharpe_ratio_boost": 0.05,        # Boost for good Sharpe ratio
+                        "sharpe_ratio_penalty": -0.05,     # Penalty for poor Sharpe ratio
+                        "var_low_risk_boost": 0.03,        # Boost for low VaR
+                        "var_high_risk_penalty": -0.03,    # Penalty for high VaR
+                        "drawdown_penalty": -0.02,         # Penalty for high drawdown
+                        "low_volatility_boost": 0.02,      # Boost for low volatility
+                        "high_volatility_penalty": -0.02,  # Penalty for high volatility
+                        "volume_profile_boost": 0.02,      # Boost for valid volume profile
+                        "order_flow_bullish_boost": 0.03,  # Boost for bullish order flow
+                        "order_flow_bearish_penalty": -0.03, # Penalty for bearish order flow
+                        "liquidity_boost": 0.01,           # Boost for adequate liquidity
+                        "confidence_bounds": {
+                            "min_confidence": 0.05,        # Minimum confidence
+                            "max_confidence": 0.95         # Maximum confidence
+                        }
+                    }
                 }
             },
             'risk_management': {

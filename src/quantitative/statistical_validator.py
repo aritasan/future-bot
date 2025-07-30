@@ -126,7 +126,7 @@ class StatisticalSignalValidator:
     def _calculate_sharpe_ratio(self, returns: np.array, risk_free_rate: float = 0.0) -> float:
         """Calculate Sharpe ratio."""
         try:
-            if returns is None or len(returns) < 2 or bool(np.all(np.isnan(returns))) or np.nanstd(returns) == 0:
+            if returns is None or len(returns) < 2 or bool(np.all(np.isnan(returns))) or float(np.nanstd(returns)) == 0:
                 return 0.0
             excess_returns = returns - risk_free_rate/252
             std_dev = np.nanstd(excess_returns)
@@ -160,7 +160,7 @@ class StatisticalSignalValidator:
                 return 0.0
             excess_returns = returns - risk_free_rate/252
             downside_returns = excess_returns[excess_returns < 0]
-            if len(downside_returns) == 0 or np.all(np.isnan(downside_returns)):
+            if len(downside_returns) == 0 or bool(np.all(np.isnan(downside_returns))):
                 return 0.0
             downside_deviation = float(np.nanstd(downside_returns))
             if downside_deviation == 0 or np.isnan(downside_deviation):
