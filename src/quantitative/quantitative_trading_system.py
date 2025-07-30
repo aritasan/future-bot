@@ -9,6 +9,7 @@ from .portfolio_optimizer import PortfolioOptimizer
 from .market_microstructure import MarketMicrostructureAnalyzer
 from .backtesting_engine import AdvancedBacktestingEngine
 from .factor_model import WorldQuantFactorModel
+from .ml_ensemble import WorldQuantMLEnsemble
 import logging
 import numpy as np
 import pandas as pd
@@ -42,6 +43,7 @@ class QuantitativeTradingSystem:
         self.market_microstructure = MarketMicrostructureAnalyzer(config)
         self.backtesting_engine = AdvancedBacktestingEngine(config)
         self.factor_model = WorldQuantFactorModel(config)
+        self.ml_ensemble = WorldQuantMLEnsemble(config)
         
         # Performance tracking
         self.performance_metrics = {}

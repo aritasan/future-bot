@@ -215,6 +215,9 @@ class EnhancedTradingStrategyWithQuantitative:
             # Apply factor model analysis
             signal = await self._apply_factor_model_analysis(symbol, signal, market_data)
             
+            # Apply machine learning analysis
+            signal = await self._apply_machine_learning_analysis(symbol, signal, market_data)
+            
             # Optimize final signal
             signal = await self._optimize_final_signal(symbol, signal, market_data)
             
@@ -2520,4 +2523,255 @@ class EnhancedTradingStrategyWithQuantitative:
             
         except Exception as e:
             logger.error(f"Error getting statistical validation summary: {str(e)}")
+            return {}
+    
+    async def _apply_machine_learning_analysis(self, symbol: str, signal: Dict, market_data: Dict) -> Dict:
+        """Apply machine learning analysis to signal."""
+        try:
+            # Get comprehensive market data for ML analysis
+            comprehensive_data = await self._get_comprehensive_market_data(symbol)
+            
+            if not comprehensive_data:
+                logger.warning(f"No comprehensive data available for ML analysis on {symbol}")
+                return signal
+            
+            # Convert market data to DataFrame
+            df = self._convert_market_data_to_dataframe(comprehensive_data)
+            
+            if df.empty:
+                logger.warning(f"Empty DataFrame for ML analysis on {symbol}")
+                return signal
+            
+            # Engineer features
+            df_features = self.quantitative_system.ml_ensemble.engineer_features(df)
+            
+            if df_features.empty:
+                logger.warning(f"No features available for ML analysis on {symbol}")
+                return signal
+            
+            # Make ML predictions
+            ml_predictions = await self.quantitative_system.ml_ensemble.predict_ensemble(df_features)
+            
+            if ml_predictions:
+                # Add ML predictions to signal
+                signal['ml_predictions'] = {
+                    'ensemble_prediction': float(ml_predictions['ensemble_prediction'][-1]) if len(ml_predictions['ensemble_prediction']) > 0 else 0.0,
+                    'confidence': float(ml_predictions['confidence'][-1]) if len(ml_predictions['confidence']) > 0 else 0.0,
+                    'individual_predictions': {
+                        model: float(pred[-1]) if len(pred) > 0 else 0.0
+                        for model, pred in ml_predictions['individual_predictions'].items()
+                    }
+                }
+                
+                # Adjust signal based on ML predictions
+                signal = self._adjust_signal_by_ml_predictions(signal, ml_predictions)
+                
+                logger.info(f"ML analysis applied to {symbol}: ensemble_prediction={signal['ml_predictions']['ensemble_prediction']:.4f}, confidence={signal['ml_predictions']['confidence']:.3f}")
+            else:
+                logger.warning(f"No ML predictions available for {symbol}")
+            
+            return signal
+            
+        except Exception as e:
+            logger.error(f"Error applying machine learning analysis for {symbol}: {str(e)}")
+            return signal
+    
+    def _convert_market_data_to_dataframe(self, market_data: Dict) -> pd.DataFrame:
+        """Convert market data to DataFrame for ML analysis."""
+        try:
+            if not market_data or 'klines' not in market_data:
+                return pd.DataFrame()
+            
+            klines = market_data['klines']
+            
+            # Convert klines to DataFrame
+            df = pd.DataFrame(klines, columns=[
+                'timestamp', 'open', 'high', 'low', 'close', 'volume'
+            ])
+            
+            # Convert to numeric
+            for col in ['open', 'high', 'low', 'close', 'volume']:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+            # Remove any rows with NaN values
+            df = df.dropna()
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error converting market data to DataFrame: {str(e)}")
+            return pd.DataFrame()
+    
+    def _adjust_signal_by_ml_predictions(self, signal: Dict, ml_predictions: Dict) -> Dict:
+        """Adjust signal based on ML predictions."""
+        try:
+            if not ml_predictions or 'ensemble_prediction' not in ml_predictions:
+                return signal
+            
+            ensemble_pred = ml_predictions['ensemble_prediction']
+            confidence = ml_predictions['confidence']
+            
+            if len(ensemble_pred) == 0:
+                return signal
+            
+            # Get latest prediction
+            latest_pred = ensemble_pred[-1]
+            latest_confidence = confidence[-1] if len(confidence) > 0 else 0.5
+            
+            # Adjust signal based on ML prediction
+            current_action = signal.get('action', 'hold')
+            current_confidence = signal.get('confidence', 0.5)
+            
+            # ML-based action adjustment
+            if latest_pred > 0.01:  # Positive prediction threshold
+                ml_adjusted_action = 'buy'
+            elif latest_pred < -0.01:  # Negative prediction threshold
+                ml_adjusted_action = 'sell'
+            else:
+                ml_adjusted_action = 'hold'
+            
+            # Adjust confidence based on ML confidence
+            ml_adjusted_confidence = current_confidence * 0.7 + latest_confidence * 0.3
+            ml_adjusted_confidence = max(0.0, min(1.0, ml_adjusted_confidence))
+            
+            # Add ML analysis to signal
+            signal['ml_analysis'] = {
+                'ml_adjusted_action': ml_adjusted_action,
+                'ml_adjusted_confidence': ml_adjusted_confidence,
+                'prediction_strength': abs(latest_pred),
+                'prediction_direction': 'positive' if latest_pred > 0 else 'negative',
+                'model_agreement': self._calculate_model_agreement(ml_predictions)
+            }
+            
+            # Update signal with ML adjustments
+            if ml_adjusted_confidence > current_confidence:
+                signal['action'] = ml_adjusted_action
+                signal['confidence'] = ml_adjusted_confidence
+            
+            return signal
+            
+        except Exception as e:
+            logger.error(f"Error adjusting signal by ML predictions: {str(e)}")
+            return signal
+    
+    def _calculate_model_agreement(self, ml_predictions: Dict) -> float:
+        """Calculate agreement among individual models."""
+        try:
+            individual_predictions = ml_predictions.get('individual_predictions', {})
+            
+            if not individual_predictions:
+                return 0.0
+            
+            # Get predictions from all models
+            predictions = list(individual_predictions.values())
+            
+            if len(predictions) < 2:
+                return 1.0
+            
+            # Calculate agreement (lower std = higher agreement)
+            prediction_std = np.std(predictions)
+            agreement = 1.0 / (1.0 + prediction_std)
+            
+            return float(agreement)
+            
+        except Exception as e:
+            logger.error(f"Error calculating model agreement: {str(e)}")
+            return 0.0
+    
+    async def train_ml_models(self, symbols: List[str]) -> Dict[str, Any]:
+        """Train ML models for all symbols."""
+        try:
+            logger.info(f"Training ML models for {len(symbols)} symbols")
+            
+            training_results = {}
+            
+            for symbol in symbols[:5]:  # Limit to first 5 symbols for performance
+                try:
+                    # Get market data
+                    market_data = await self._get_comprehensive_market_data(symbol)
+                    
+                    if not market_data:
+                        logger.warning(f"No market data available for ML training on {symbol}")
+                        continue
+                    
+                    # Convert to DataFrame
+                    df = self._convert_market_data_to_dataframe(market_data)
+                    
+                    if df.empty:
+                        logger.warning(f"Empty DataFrame for ML training on {symbol}")
+                        continue
+                    
+                    # Engineer features
+                    df_features = self.quantitative_system.ml_ensemble.engineer_features(df)
+                    
+                    if df_features.empty:
+                        logger.warning(f"No features available for ML training on {symbol}")
+                        continue
+                    
+                    # Train models
+                    symbol_results = await self.quantitative_system.ml_ensemble.train_ensemble(df_features)
+                    
+                    if symbol_results:
+                        training_results[symbol] = symbol_results
+                        logger.info(f"ML training completed for {symbol}")
+                    else:
+                        logger.warning(f"ML training failed for {symbol}")
+                        
+                except Exception as e:
+                    logger.error(f"Error training ML models for {symbol}: {str(e)}")
+                    continue
+            
+            logger.info(f"ML training completed for {len(training_results)} symbols")
+            return training_results
+            
+        except Exception as e:
+            logger.error(f"Error training ML models: {str(e)}")
+            return {}
+    
+    async def get_ml_model_interpretability(self, symbol: str, model_name: str = 'random_forest') -> Dict[str, Any]:
+        """Get ML model interpretability for a symbol."""
+        try:
+            # Get market data
+            market_data = await self._get_comprehensive_market_data(symbol)
+            
+            if not market_data:
+                logger.warning(f"No market data available for ML interpretability on {symbol}")
+                return {}
+            
+            # Convert to DataFrame
+            df = self._convert_market_data_to_dataframe(market_data)
+            
+            if df.empty:
+                logger.warning(f"Empty DataFrame for ML interpretability on {symbol}")
+                return {}
+            
+            # Engineer features
+            df_features = self.quantitative_system.ml_ensemble.engineer_features(df)
+            
+            if df_features.empty:
+                logger.warning(f"No features available for ML interpretability on {symbol}")
+                return {}
+            
+            # Get interpretability
+            interpretability = self.quantitative_system.ml_ensemble.get_model_interpretability(
+                df_features, model_name
+            )
+            
+            if interpretability:
+                logger.info(f"ML interpretability analysis completed for {symbol}")
+                return interpretability
+            else:
+                logger.warning(f"ML interpretability analysis failed for {symbol}")
+                return {}
+                
+        except Exception as e:
+            logger.error(f"Error getting ML model interpretability for {symbol}: {str(e)}")
+            return {}
+    
+    async def get_ml_summary(self) -> Dict[str, Any]:
+        """Get ML ensemble summary."""
+        try:
+            return await self.quantitative_system.ml_ensemble.get_ml_summary()
+        except Exception as e:
+            logger.error(f"Error getting ML summary: {str(e)}")
             return {}
