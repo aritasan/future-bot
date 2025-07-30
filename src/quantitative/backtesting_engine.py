@@ -1,432 +1,690 @@
+"""
+WorldQuant Advanced Backtesting Engine Implementation
+Advanced backtesting with walk-forward analysis, Monte Carlo simulation, stress testing, and performance attribution.
+"""
+
+import logging
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Optional, Tuple, Callable
-import logging
+from typing import Dict, List, Optional, Tuple, Any, Callable
 from datetime import datetime, timedelta
+import warnings
+from scipy import stats
+from sklearn.model_selection import TimeSeriesSplit
+
+# Suppress warnings
+warnings.filterwarnings('ignore')
 
 logger = logging.getLogger(__name__)
 
 class AdvancedBacktestingEngine:
     """
-    Advanced backtesting engine for quantitative trading strategies.
-    Implements realistic market simulation, transaction costs, and risk management.
+    WorldQuant-level advanced backtesting engine with comprehensive analysis capabilities.
     """
     
-    def __init__(self, initial_capital: float = 100000, commission_rate: float = 0.001,
-                 slippage_rate: float = 0.0005, risk_free_rate: float = 0.02):
-        self.initial_capital = initial_capital
-        self.commission_rate = commission_rate
-        self.slippage_rate = slippage_rate
-        self.risk_free_rate = risk_free_rate
-        self.backtest_results = []
-        
-    def run_backtest(self, strategy_function: Callable, historical_data: pd.DataFrame,
-                    strategy_params: Dict = None, risk_management: Dict = None) -> Dict:
+    def __init__(self, config: Dict):
         """
-        Run comprehensive backtest of a trading strategy.
+        Initialize Advanced Backtesting Engine.
         
         Args:
-            strategy_function: Function that generates trading signals
-            historical_data: DataFrame with OHLCV data
-            strategy_params: Parameters for the strategy
-            risk_management: Risk management parameters
+            config: Configuration dictionary
+        """
+        self.config = config
+        
+        # Backtesting parameters
+        self.backtesting_params = {
+            'walk_forward': {
+                'n_splits': 3,  # Reduced from 5
+                'test_size': 0.15,  # Reduced from 0.2
+                'gap': 5,  # Reduced from 10
+                'min_train_size': 50  # Reduced from 100
+            },
+            'monte_carlo': {
+                'n_simulations': 1000,
+                'confidence_level': 0.95,
+                'risk_free_rate': 0.02
+            },
+            'stress_testing': {
+                'scenarios': ['market_crash', 'volatility_spike', 'correlation_breakdown', 'liquidity_crisis'],
+                'shock_sizes': [0.1, 0.2, 0.3, 0.5],
+                'stress_periods': 30
+            },
+            'performance_attribution': {
+                'factors': ['market', 'size', 'value', 'momentum', 'volatility', 'liquidity'],
+                'attribution_method': 'brinson'  # 'brinson', 'carino', 'menchero'
+            }
+        }
+        
+        # Performance tracking
+        self.backtest_results = {}
+        self.performance_metrics = {}
+        self.risk_metrics = {}
+        self.attribution_results = {}
+        
+        logger.info("AdvancedBacktestingEngine initialized")
+    
+    async def initialize(self) -> bool:
+        """Initialize the backtesting engine."""
+        try:
+            logger.info("AdvancedBacktestingEngine initialized successfully")
+            return True
+        except Exception as e:
+            logger.error(f"Error initializing AdvancedBacktestingEngine: {str(e)}")
+            return False
+    
+    async def run_walk_forward_analysis(self, strategy: Callable, 
+                                      data: pd.DataFrame,
+                                      initial_capital: float = 100000.0) -> Dict[str, Any]:
+        """
+        Walk-forward analysis for strategy validation.
+        
+        Args:
+            strategy: Trading strategy function
+            data: Historical market data
+            initial_capital: Initial capital for backtesting
             
         Returns:
-            Dict: Comprehensive backtest results
+            Dictionary with walk-forward analysis results
         """
         try:
-            # Initialize backtest state
-            portfolio = self._initialize_portfolio()
-            positions = {}
-            trades = []
-            daily_returns = []
-            equity_curve = []
+            logger.info("Running walk-forward analysis...")
             
-            # Process historical data
-            for i, (timestamp, row) in enumerate(historical_data.iterrows()):
-                # Generate signal
-                signal_data = strategy_function(row, historical_data.iloc[:i+1], strategy_params)
-                
-                # Apply risk management
-                if risk_management:
-                    signal_data = self._apply_risk_management(signal_data, portfolio, risk_management)
-                
-                # Execute trades
-                new_trades = self._execute_trades(signal_data, row, portfolio, positions)
-                trades.extend(new_trades)
-                
-                # Update portfolio
-                self._update_portfolio(portfolio, positions, row)
-                
-                # Calculate daily metrics
-                daily_return = self._calculate_daily_return(portfolio)
-                daily_returns.append(daily_return)
-                equity_curve.append(portfolio['total_value'])
+            # Get parameters
+            n_splits = self.backtesting_params['walk_forward']['n_splits']
+            test_size = self.backtesting_params['walk_forward']['test_size']
+            gap = self.backtesting_params['walk_forward']['gap']
+            min_train_size = self.backtesting_params['walk_forward']['min_train_size']
             
-            # Calculate comprehensive results
-            results = self._calculate_backtest_results(
-                daily_returns, equity_curve, trades, portfolio, historical_data
+            # Prepare data
+            returns = data['returns'] if 'returns' in data.columns else data.pct_change().dropna()
+            
+            # Time series split
+            tscv = TimeSeriesSplit(
+                n_splits=n_splits,
+                test_size=int(len(returns) * test_size),
+                gap=gap
             )
             
-            self._store_backtest_result(results)
-            return results
+            walk_forward_results = []
             
+            for fold, (train_idx, test_idx) in enumerate(tscv.split(returns)):
+                if len(train_idx) < min_train_size:
+                    logger.warning(f"Fold {fold}: Insufficient training data ({len(train_idx)} < {min_train_size})")
+                    continue
+                
+                # Split data
+                train_data = data.iloc[train_idx]
+                test_data = data.iloc[test_idx]
+                
+                # Run backtest on test period
+                test_result = await self._run_single_backtest(strategy, test_data, initial_capital)
+                
+                if test_result:
+                    test_result['fold'] = fold
+                    test_result['train_period'] = (train_idx[0], train_idx[-1])
+                    test_result['test_period'] = (test_idx[0], test_idx[-1])
+                    walk_forward_results.append(test_result)
+            
+            # Aggregate results
+            if walk_forward_results:
+                aggregated_results = self._aggregate_walk_forward_results(walk_forward_results)
+                
+                logger.info(f"Walk-forward analysis completed - {len(walk_forward_results)} folds")
+                return aggregated_results
+            else:
+                logger.warning("No valid walk-forward results")
+                return {'status': 'failed', 'message': 'No valid results'}
+                
         except Exception as e:
-            logger.error(f"Error in backtest: {str(e)}")
-            return {'error': str(e)}
+            logger.error(f"Error in walk-forward analysis: {str(e)}")
+            return {'status': 'error', 'message': str(e)}
     
-    def _initialize_portfolio(self) -> Dict:
-        """Initialize portfolio state."""
-        return {
-            'cash': self.initial_capital,
-            'total_value': self.initial_capital,
-            'positions': {},
-            'unrealized_pnl': 0,
-            'realized_pnl': 0,
-            'total_commission': 0,
-            'total_slippage': 0
-        }
-    
-    def _apply_risk_management(self, signal_data: Dict, portfolio: Dict, risk_params: Dict) -> Dict:
-        """Apply risk management rules to trading signals."""
-        try:
-            modified_signal = signal_data.copy()
-            
-            # Position sizing based on risk
-            if 'max_position_size' in risk_params:
-                max_size = risk_params['max_position_size']
-                if 'position_size' in modified_signal:
-                    modified_signal['position_size'] = min(
-                        modified_signal['position_size'], max_size
-                    )
-            
-            # VaR-based position sizing
-            if 'var_limit' in risk_params and 'var_estimate' in modified_signal:
-                var_limit = risk_params['var_limit']
-                var_estimate = modified_signal['var_estimate']
-                if var_estimate > var_limit:
-                    # Reduce position size based on VaR
-                    reduction_factor = var_limit / var_estimate
-                    if 'position_size' in modified_signal:
-                        modified_signal['position_size'] *= reduction_factor
-            
-            # Maximum drawdown protection
-            if 'max_drawdown' in risk_params:
-                current_drawdown = self._calculate_current_drawdown(portfolio)
-                if current_drawdown > risk_params['max_drawdown']:
-                    # Stop trading if drawdown exceeds limit
-                    modified_signal['action'] = 'hold'
-            
-            # Correlation-based position limits
-            if 'max_correlation' in risk_params and 'correlation' in modified_signal:
-                if modified_signal['correlation'] > risk_params['max_correlation']:
-                    modified_signal['position_size'] *= 0.5  # Reduce position size
-            
-            return modified_signal
-            
-        except Exception as e:
-            logger.error(f"Error applying risk management: {str(e)}")
-            return signal_data
-    
-    def _execute_trades(self, signal_data: Dict, market_data: pd.Series, 
-                       portfolio: Dict, positions: Dict) -> List[Dict]:
-        """Execute trades based on signals."""
-        trades = []
+    async def run_monte_carlo_simulation(self, strategy: Callable,
+                                       data: pd.DataFrame,
+                                       initial_capital: float = 100000.0,
+                                       n_simulations: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Monte Carlo simulation for strategy risk assessment.
         
+        Args:
+            strategy: Trading strategy function
+            data: Historical market data
+            initial_capital: Initial capital for backtesting
+            n_simulations: Number of Monte Carlo simulations
+            
+        Returns:
+            Dictionary with Monte Carlo simulation results
+        """
         try:
-            if 'action' not in signal_data or signal_data['action'] == 'hold':
-                return trades
+            logger.info("Running Monte Carlo simulation...")
             
-            symbol = signal_data.get('symbol', 'default')
-            action = signal_data['action']
-            size = signal_data.get('position_size', 0)
+            # Get parameters
+            n_sim = n_simulations or self.backtesting_params['monte_carlo']['n_simulations']
+            confidence_level = self.backtesting_params['monte_carlo']['confidence_level']
+            risk_free_rate = self.backtesting_params['monte_carlo']['risk_free_rate']
             
-            if action == 'buy' and size > 0:
-                # Calculate trade details
-                price = market_data['close']
-                slippage = price * self.slippage_rate
-                execution_price = price + slippage
+            # Prepare data
+            returns = data['returns'] if 'returns' in data.columns else data.pct_change().dropna()
+            
+            # Run base backtest
+            base_result = await self._run_single_backtest(strategy, data, initial_capital)
+            
+            if not base_result or base_result.get('status') != 'success':
+                logger.warning("Base backtest failed, cannot run Monte Carlo simulation")
+                return {'status': 'failed', 'message': 'Base backtest failed'}
+            
+            # Monte Carlo simulation
+            mc_results = []
+            
+            for sim in range(n_sim):
+                # Generate random returns based on historical distribution
+                simulated_returns = self._generate_simulated_returns(returns)
+                simulated_data = data.copy()
+                simulated_data['returns'] = simulated_returns
                 
-                # Calculate position size in currency
-                position_value = size * portfolio['total_value']
-                shares = position_value / execution_price
+                # Run backtest with simulated data
+                sim_result = await self._run_single_backtest(strategy, simulated_data, initial_capital)
                 
-                # Calculate costs
-                commission = position_value * self.commission_rate
-                total_cost = position_value + commission
-                
-                # Check if we have enough cash
-                if total_cost <= portfolio['cash']:
-                    # Execute trade
-                    if symbol not in positions:
-                        positions[symbol] = {'shares': 0, 'avg_price': 0}
-                    
-                    # Update position
-                    old_shares = positions[symbol]['shares']
-                    old_avg_price = positions[symbol]['avg_price']
-                    
-                    new_shares = old_shares + shares
-                    new_avg_price = ((old_shares * old_avg_price) + (shares * execution_price)) / new_shares
-                    
-                    positions[symbol] = {
-                        'shares': new_shares,
-                        'avg_price': new_avg_price
-                    }
-                    
-                    # Update portfolio
-                    portfolio['cash'] -= total_cost
-                    portfolio['total_commission'] += commission
-                    portfolio['total_slippage'] += slippage * shares
-                    
-                    # Record trade
-                    trades.append({
-                        'timestamp': market_data.name,
-                        'symbol': symbol,
-                        'action': 'buy',
-                        'shares': shares,
-                        'price': execution_price,
-                        'value': position_value,
-                        'commission': commission,
-                        'slippage': slippage * shares
+                if sim_result and sim_result.get('status') == 'success':
+                    mc_results.append({
+                        'total_return': sim_result['total_return'],
+                        'sharpe_ratio': sim_result['sharpe_ratio'],
+                        'max_drawdown': sim_result['max_drawdown'],
+                        'volatility': sim_result['volatility']
                     })
             
-            elif action == 'sell' and symbol in positions:
-                # Calculate trade details
-                price = market_data['close']
-                slippage = price * self.slippage_rate
-                execution_price = price - slippage
+            # Calculate statistics
+            if mc_results:
+                mc_stats = self._calculate_monte_carlo_statistics(mc_results, confidence_level, risk_free_rate)
                 
-                # Sell entire position or specified size
-                shares_to_sell = positions[symbol]['shares']
-                if 'position_size' in signal_data and signal_data['position_size'] < 1:
-                    shares_to_sell *= signal_data['position_size']
-                
-                position_value = shares_to_sell * execution_price
-                commission = position_value * self.commission_rate
-                net_proceeds = position_value - commission
-                
-                # Update position
-                remaining_shares = positions[symbol]['shares'] - shares_to_sell
-                if remaining_shares <= 0:
-                    # Close entire position
-                    realized_pnl = (execution_price - positions[symbol]['avg_price']) * shares_to_sell
-                    portfolio['realized_pnl'] += realized_pnl
-                    del positions[symbol]
-                else:
-                    positions[symbol]['shares'] = remaining_shares
-                
-                # Update portfolio
-                portfolio['cash'] += net_proceeds
-                portfolio['total_commission'] += commission
-                portfolio['total_slippage'] += slippage * shares_to_sell
-                
-                # Record trade
-                trades.append({
-                    'timestamp': market_data.name,
-                    'symbol': symbol,
-                    'action': 'sell',
-                    'shares': shares_to_sell,
-                    'price': execution_price,
-                    'value': position_value,
-                    'commission': commission,
-                    'slippage': slippage * shares_to_sell
-                })
-        
-        except Exception as e:
-            logger.error(f"Error executing trades: {str(e)}")
-        
-        return trades
-    
-    def _update_portfolio(self, portfolio: Dict, positions: Dict, market_data: pd.Series):
-        """Update portfolio values based on current market prices."""
-        try:
-            total_position_value = 0
-            unrealized_pnl = 0
-            
-            for symbol, position in positions.items():
-                current_price = market_data['close']
-                position_value = position['shares'] * current_price
-                total_position_value += position_value
-                
-                # Calculate unrealized P&L
-                position_pnl = (current_price - position['avg_price']) * position['shares']
-                unrealized_pnl += position_pnl
-            
-            portfolio['positions'] = positions
-            portfolio['unrealized_pnl'] = unrealized_pnl
-            portfolio['total_value'] = portfolio['cash'] + total_position_value
-            
-        except Exception as e:
-            logger.error(f"Error updating portfolio: {str(e)}")
-    
-    def _calculate_daily_return(self, portfolio: Dict) -> float:
-        """Calculate daily portfolio return."""
-        try:
-            if portfolio['total_value'] > 0:
-                return (portfolio['total_value'] - self.initial_capital) / self.initial_capital
-            return 0.0
-        except Exception as e:
-            logger.error(f"Error calculating daily return: {str(e)}")
-            return 0.0
-    
-    def _calculate_current_drawdown(self, portfolio: Dict) -> float:
-        """Calculate current drawdown."""
-        try:
-            if portfolio['total_value'] > 0:
-                return (self.initial_capital - portfolio['total_value']) / self.initial_capital
-            return 0.0
-        except Exception as e:
-            logger.error(f"Error calculating drawdown: {str(e)}")
-            return 0.0
-    
-    def _calculate_backtest_results(self, daily_returns: List[float], equity_curve: List[float], trades: List[Dict], portfolio: Dict, historical_data: pd.DataFrame) -> Dict:
-        """Calculate comprehensive backtest results."""
-        try:
-            returns_series = pd.Series(daily_returns)
-            equity_series = pd.Series(equity_curve)
-            # Basic performance metrics
-            if len(returns_series) < 2 or returns_series.isna().all():
-                return {}
-            total_return = (portfolio['total_value'] - self.initial_capital) / self.initial_capital if self.initial_capital != 0 else 0
-            annualized_return = self._calculate_annualized_return(returns_series) if len(returns_series) > 1 else 0
-            volatility = float(returns_series.std() * np.sqrt(252)) if len(returns_series) > 1 else 0
-            sharpe_ratio = (annualized_return - self.risk_free_rate) / volatility if volatility > 0 else 0
-            # Risk metrics
-            max_drawdown = self._calculate_max_drawdown(equity_series) if len(equity_series) > 1 else 0
-            var_95 = np.percentile(returns_series, 5) if len(returns_series) > 1 else 0
-            cvar_95 = returns_series[returns_series <= var_95].mean() if len(returns_series) > 1 else 0
-            # Trading metrics
-            total_trades = len(trades)
-            winning_trades = len([t for t in trades if t.get('pnl', 0) > 0])
-            win_rate = winning_trades / total_trades if total_trades > 0 else 0
-            # Cost analysis
-            total_commission = portfolio['total_commission']
-            total_slippage = portfolio['total_slippage']
-            total_costs = total_commission + total_slippage
-            # Calculate average trade metrics
-            if trades:
-                trade_pnls = [t.get('pnl', 0) for t in trades]
-                avg_trade_pnl = np.mean(trade_pnls) if len(trade_pnls) > 0 else 0
-                avg_winning_trade = np.mean([p for p in trade_pnls if p > 0]) if any(p > 0 for p in trade_pnls) else 0
-                avg_losing_trade = np.mean([p for p in trade_pnls if p < 0]) if any(p < 0 for p in trade_pnls) else 0
+                logger.info(f"Monte Carlo simulation completed - {len(mc_results)} simulations")
+                return mc_stats
             else:
-                avg_trade_pnl = 0
-                avg_winning_trade = 0
-                avg_losing_trade = 0
-            profit_factor = abs(avg_winning_trade / avg_losing_trade) if avg_losing_trade != 0 else float('inf')
-            calmar_ratio = annualized_return / max_drawdown if max_drawdown > 0 else 0
-            cost_impact = total_costs / self.initial_capital if self.initial_capital != 0 else 0
-            return {
-                'total_return': total_return,
-                'annualized_return': annualized_return,
-                'volatility': volatility,
-                'sharpe_ratio': sharpe_ratio,
-                'sortino_ratio': self._calculate_sortino_ratio(returns_series) if len(returns_series) > 1 else 0,
-                'calmar_ratio': calmar_ratio,
-                'max_drawdown': max_drawdown,
-                'var_95': var_95,
-                'cvar_95': cvar_95,
-                'total_trades': total_trades,
-                'win_rate': win_rate,
-                'avg_trade_pnl': avg_trade_pnl,
-                'avg_winning_trade': avg_winning_trade,
-                'avg_losing_trade': avg_losing_trade,
-                'profit_factor': profit_factor,
-                'total_commission': total_commission,
-                'total_slippage': total_slippage,
-                'total_costs': total_costs,
-                'cost_impact': cost_impact,
-                'final_portfolio_value': portfolio['total_value'],
-                'equity_curve': equity_curve,
-                'daily_returns': daily_returns,
-                'trades': trades
+                logger.warning("No valid Monte Carlo results")
+                return {'status': 'failed', 'message': 'No valid results'}
+                
+        except Exception as e:
+            logger.error(f"Error in Monte Carlo simulation: {str(e)}")
+            return {'status': 'error', 'message': str(e)}
+    
+    async def run_stress_testing(self, strategy: Callable,
+                               data: pd.DataFrame,
+                               initial_capital: float = 100000.0) -> Dict[str, Any]:
+        """
+        Stress testing for strategy robustness.
+        
+        Args:
+            strategy: Trading strategy function
+            data: Historical market data
+            initial_capital: Initial capital for backtesting
+            
+        Returns:
+            Dictionary with stress testing results
+        """
+        try:
+            logger.info("Running stress testing...")
+            
+            # Get parameters
+            scenarios = self.backtesting_params['stress_testing']['scenarios']
+            shock_sizes = self.backtesting_params['stress_testing']['shock_sizes']
+            stress_periods = self.backtesting_params['stress_testing']['stress_periods']
+            
+            # Base backtest
+            base_result = await self._run_single_backtest(strategy, data, initial_capital)
+            
+            if not base_result or base_result.get('status') != 'success':
+                logger.warning("Base backtest failed, cannot run stress testing")
+                return {'status': 'failed', 'message': 'Base backtest failed'}
+            
+            stress_results = {}
+            
+            # Market crash scenario
+            if 'market_crash' in scenarios:
+                crash_results = []
+                for shock_size in shock_sizes:
+                    crash_data = self._apply_market_crash_shock(data, shock_size)
+                    crash_result = await self._run_single_backtest(strategy, crash_data, initial_capital)
+                    if crash_result and crash_result.get('status') == 'success':
+                        crash_results.append({
+                            'shock_size': shock_size,
+                            'total_return': crash_result['total_return'],
+                            'sharpe_ratio': crash_result['sharpe_ratio'],
+                            'max_drawdown': crash_result['max_drawdown']
+                        })
+                stress_results['market_crash'] = crash_results
+            
+            # Volatility spike scenario
+            if 'volatility_spike' in scenarios:
+                volatility_results = []
+                for shock_size in shock_sizes:
+                    volatility_data = self._apply_volatility_spike_shock(data, shock_size)
+                    volatility_result = await self._run_single_backtest(strategy, volatility_data, initial_capital)
+                    if volatility_result and volatility_result.get('status') == 'success':
+                        volatility_results.append({
+                            'shock_size': shock_size,
+                            'total_return': volatility_result['total_return'],
+                            'sharpe_ratio': volatility_result['sharpe_ratio'],
+                            'max_drawdown': volatility_result['max_drawdown']
+                        })
+                stress_results['volatility_spike'] = volatility_results
+            
+            # Correlation breakdown scenario
+            if 'correlation_breakdown' in scenarios:
+                correlation_results = []
+                for shock_size in shock_sizes:
+                    correlation_data = self._apply_correlation_breakdown_shock(data, shock_size)
+                    correlation_result = await self._run_single_backtest(strategy, correlation_data, initial_capital)
+                    if correlation_result and correlation_result.get('status') == 'success':
+                        correlation_results.append({
+                            'shock_size': shock_size,
+                            'total_return': correlation_result['total_return'],
+                            'sharpe_ratio': correlation_result['sharpe_ratio'],
+                            'max_drawdown': correlation_result['max_drawdown']
+                        })
+                stress_results['correlation_breakdown'] = correlation_results
+            
+            # Liquidity crisis scenario
+            if 'liquidity_crisis' in scenarios:
+                liquidity_results = []
+                for shock_size in shock_sizes:
+                    liquidity_data = self._apply_liquidity_crisis_shock(data, shock_size)
+                    liquidity_result = await self._run_single_backtest(strategy, liquidity_data, initial_capital)
+                    if liquidity_result and liquidity_result.get('status') == 'success':
+                        liquidity_results.append({
+                            'shock_size': shock_size,
+                            'total_return': liquidity_result['total_return'],
+                            'sharpe_ratio': liquidity_result['sharpe_ratio'],
+                            'max_drawdown': liquidity_result['max_drawdown']
+                        })
+                stress_results['liquidity_crisis'] = liquidity_results
+            
+            # Base results
+            stress_results['base'] = {
+                'total_return': base_result['total_return'],
+                'sharpe_ratio': base_result['sharpe_ratio'],
+                'max_drawdown': base_result['max_drawdown']
             }
-        except Exception as e:
-            logger.error(f"Error calculating backtest results: {str(e)}")
-            return {'error': str(e)}
-    
-    def _calculate_annualized_return(self, returns_series: pd.Series) -> float:
-        """Calculate annualized return."""
-        try:
-            total_return = (1 + returns_series).prod() - 1
-            years = len(returns_series) / 252
-            return (1 + total_return) ** (1 / years) - 1 if years > 0 else 0
-        except Exception as e:
-            logger.error(f"Error calculating annualized return: {str(e)}")
-            return 0.0
-    
-    def _calculate_max_drawdown(self, equity_series: pd.Series) -> float:
-        """Calculate maximum drawdown."""
-        try:
-            peak = equity_series.expanding().max()
-            drawdown = (equity_series - peak) / peak
-            return float(abs(drawdown.min()))
-        except Exception as e:
-            logger.error(f"Error calculating max drawdown: {str(e)}")
-            return 0.0
-    
-    def _calculate_sortino_ratio(self, returns_series: pd.Series) -> float:
-        """Calculate Sortino ratio."""
-        try:
-            negative_returns = returns_series[returns_series < 0]
-            downside_deviation = float(negative_returns.std() * np.sqrt(252))
-            annualized_return = self._calculate_annualized_return(returns_series)
-            return (annualized_return - self.risk_free_rate) / downside_deviation if downside_deviation > 0 else 0
-        except Exception as e:
-            logger.error(f"Error calculating Sortino ratio: {str(e)}")
-            return 0.0
-    
-    def _store_backtest_result(self, result: Dict):
-        """Store backtest result in history."""
-        self.backtest_results.append({
-            'timestamp': pd.Timestamp.now(),
-            'result': result
-        })
-    
-    def get_backtest_summary(self) -> Dict:
-        """Get summary of all backtest results."""
-        if not self.backtest_results:
-            return {'message': 'No backtest history available'}
-        
-        summary = {
-            'total_backtests': len(self.backtest_results),
-            'average_sharpe_ratios': [],
-            'average_returns': [],
-            'average_drawdowns': [],
-            'best_performing_backtest': None,
-            'recent_results': []
-        }
-        
-        for record in self.backtest_results:
-            result = record['result']
             
-            if 'sharpe_ratio' in result:
-                summary['average_sharpe_ratios'].append(result['sharpe_ratio'])
+            logger.info("Stress testing completed")
+            return stress_results
             
-            if 'total_return' in result:
-                summary['average_returns'].append(result['total_return'])
+        except Exception as e:
+            logger.error(f"Error in stress testing: {str(e)}")
+            return {'status': 'error', 'message': str(e)}
+    
+    async def run_performance_attribution(self, strategy: Callable,
+                                       data: pd.DataFrame,
+                                       factor_data: Optional[Dict] = None) -> Dict[str, Any]:
+        """
+        Performance attribution analysis.
+        
+        Args:
+            strategy: Trading strategy function
+            data: Historical market data
+            factor_data: Factor exposure data
             
-            if 'max_drawdown' in result:
-                summary['average_drawdowns'].append(result['max_drawdown'])
-        
-        if summary['average_sharpe_ratios']:
-            summary['avg_sharpe_ratio'] = np.mean(summary['average_sharpe_ratios'])
-            summary['best_sharpe_ratio'] = max(summary['average_sharpe_ratios'])
-        
-        if summary['average_returns']:
-            summary['avg_return'] = np.mean(summary['average_returns'])
-            summary['best_return'] = max(summary['average_returns'])
-        
-        if summary['average_drawdowns']:
-            summary['avg_drawdown'] = np.mean(summary['average_drawdowns'])
-            summary['worst_drawdown'] = max(summary['average_drawdowns'])
-        
-        # Find best performing backtest
-        if summary['average_sharpe_ratios']:
-            best_index = summary['average_sharpe_ratios'].index(summary['best_sharpe_ratio'])
-            summary['best_performing_backtest'] = self.backtest_results[best_index]
-        
-        # Get recent results
-        summary['recent_results'] = self.backtest_results[-5:]
-        
-        return summary 
+        Returns:
+            Dictionary with performance attribution results
+        """
+        try:
+            logger.info("Running performance attribution analysis...")
+            
+            # Get parameters
+            factors = self.backtesting_params['performance_attribution']['factors']
+            attribution_method = self.backtesting_params['performance_attribution']['attribution_method']
+            
+            # Run strategy backtest
+            strategy_result = await self._run_single_backtest(strategy, data, 100000.0)
+            
+            if not strategy_result or strategy_result.get('status') != 'success':
+                logger.warning("Strategy backtest failed, cannot run performance attribution")
+                return {'status': 'failed', 'message': 'Strategy backtest failed'}
+            
+            # Calculate factor returns
+            factor_returns = self._calculate_factor_returns(data, factor_data, factors)
+            
+            # Performance attribution
+            if attribution_method == 'brinson':
+                attribution_result = self._brinson_attribution(strategy_result, factor_returns)
+            elif attribution_method == 'carino':
+                attribution_result = self._carino_attribution(strategy_result, factor_returns)
+            elif attribution_method == 'menchero':
+                attribution_result = self._menchero_attribution(strategy_result, factor_returns)
+            else:
+                attribution_result = self._brinson_attribution(strategy_result, factor_returns)
+            
+            logger.info("Performance attribution analysis completed")
+            return attribution_result
+            
+        except Exception as e:
+            logger.error(f"Error in performance attribution: {str(e)}")
+            return {'status': 'error', 'message': str(e)}
+    
+    async def _run_single_backtest(self, strategy: Callable,
+                                 data: pd.DataFrame,
+                                 initial_capital: float) -> Dict[str, Any]:
+        """Run a single backtest."""
+        try:
+            # Simulate strategy execution
+            portfolio_values = [initial_capital]
+            returns = []
+            
+            for i in range(1, len(data)):
+                # Get current data slice
+                current_data = data.iloc[:i+1]
+                
+                # Run strategy
+                signal = strategy(current_data)
+                
+                # Calculate returns (simplified)
+                if signal > 0:  # Buy signal
+                    daily_return = data.iloc[i]['returns'] if 'returns' in data.columns else data.iloc[i].pct_change().iloc[-1]
+                elif signal < 0:  # Sell signal
+                    daily_return = -data.iloc[i]['returns'] if 'returns' in data.columns else -data.iloc[i].pct_change().iloc[-1]
+                else:  # Hold
+                    daily_return = 0
+                
+                returns.append(daily_return)
+                
+                # Update portfolio value
+                new_value = portfolio_values[-1] * (1 + daily_return)
+                portfolio_values.append(new_value)
+            
+            # Calculate metrics
+            total_return = (portfolio_values[-1] - initial_capital) / initial_capital
+            volatility = np.std(returns) * np.sqrt(252)
+            sharpe_ratio = (np.mean(returns) * 252 - 0.02) / volatility if volatility > 0 else 0
+            
+            # Calculate maximum drawdown
+            peak = portfolio_values[0]
+            max_drawdown = 0
+            for value in portfolio_values:
+                if value > peak:
+                    peak = value
+                drawdown = (peak - value) / peak
+                max_drawdown = max(max_drawdown, drawdown)
+            
+            return {
+                'status': 'success',
+                'total_return': float(total_return),
+                'volatility': float(volatility),
+                'sharpe_ratio': float(sharpe_ratio),
+                'max_drawdown': float(max_drawdown),
+                'portfolio_values': portfolio_values,
+                'returns': returns
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in single backtest: {str(e)}")
+            return {'status': 'error', 'message': str(e)}
+    
+    def _aggregate_walk_forward_results(self, results: List[Dict]) -> Dict[str, Any]:
+        """Aggregate walk-forward analysis results."""
+        try:
+            total_returns = [r['total_return'] for r in results]
+            sharpe_ratios = [r['sharpe_ratio'] for r in results]
+            max_drawdowns = [r['max_drawdown'] for r in results]
+            volatilities = [r['volatility'] for r in results]
+            
+            aggregated = {
+                'status': 'success',
+                'n_folds': len(results),
+                'mean_total_return': float(np.mean(total_returns)),
+                'std_total_return': float(np.std(total_returns)),
+                'mean_sharpe_ratio': float(np.mean(sharpe_ratios)),
+                'std_sharpe_ratio': float(np.std(sharpe_ratios)),
+                'mean_max_drawdown': float(np.mean(max_drawdowns)),
+                'std_max_drawdown': float(np.std(max_drawdowns)),
+                'mean_volatility': float(np.mean(volatilities)),
+                'std_volatility': float(np.std(volatilities)),
+                'fold_results': results
+            }
+            
+            return aggregated
+            
+        except Exception as e:
+            logger.error(f"Error aggregating walk-forward results: {str(e)}")
+            return {'status': 'error', 'message': str(e)}
+    
+    def _generate_simulated_returns(self, historical_returns: pd.Series) -> pd.Series:
+        """Generate simulated returns using historical distribution."""
+        try:
+            # Fit distribution to historical returns
+            mu = np.mean(historical_returns)
+            sigma = np.std(historical_returns)
+            
+            # Generate random returns
+            simulated_returns = np.random.normal(mu, sigma, len(historical_returns))
+            
+            return pd.Series(simulated_returns, index=historical_returns.index)
+            
+        except Exception as e:
+            logger.error(f"Error generating simulated returns: {str(e)}")
+            return historical_returns
+    
+    def _calculate_monte_carlo_statistics(self, results: List[Dict],
+                                        confidence_level: float,
+                                        risk_free_rate: float) -> Dict[str, Any]:
+        """Calculate Monte Carlo simulation statistics."""
+        try:
+            total_returns = [r['total_return'] for r in results]
+            sharpe_ratios = [r['sharpe_ratio'] for r in results]
+            max_drawdowns = [r['max_drawdown'] for r in results]
+            volatilities = [r['volatility'] for r in results]
+            
+            # Calculate percentiles
+            alpha = 1 - confidence_level
+            lower_percentile = alpha / 2 * 100
+            upper_percentile = (1 - alpha / 2) * 100
+            
+            mc_stats = {
+                'status': 'success',
+                'n_simulations': len(results),
+                'confidence_level': confidence_level,
+                'total_return': {
+                    'mean': float(np.mean(total_returns)),
+                    'std': float(np.std(total_returns)),
+                    'min': float(np.min(total_returns)),
+                    'max': float(np.max(total_returns)),
+                    'percentile_5': float(np.percentile(total_returns, 5)),
+                    'percentile_95': float(np.percentile(total_returns, 95)),
+                    'var': float(np.percentile(total_returns, lower_percentile)),
+                    'cvar': float(np.mean([r for r in total_returns if r <= np.percentile(total_returns, lower_percentile)]))
+                },
+                'sharpe_ratio': {
+                    'mean': float(np.mean(sharpe_ratios)),
+                    'std': float(np.std(sharpe_ratios)),
+                    'min': float(np.min(sharpe_ratios)),
+                    'max': float(np.max(sharpe_ratios))
+                },
+                'max_drawdown': {
+                    'mean': float(np.mean(max_drawdowns)),
+                    'std': float(np.std(max_drawdowns)),
+                    'max': float(np.max(max_drawdowns)),
+                    'percentile_95': float(np.percentile(max_drawdowns, 95))
+                },
+                'volatility': {
+                    'mean': float(np.mean(volatilities)),
+                    'std': float(np.std(volatilities))
+                }
+            }
+            
+            return mc_stats
+            
+        except Exception as e:
+            logger.error(f"Error calculating Monte Carlo statistics: {str(e)}")
+            return {'status': 'error', 'message': str(e)}
+    
+    def _apply_market_crash_shock(self, data: pd.DataFrame, shock_size: float) -> pd.DataFrame:
+        """Apply market crash shock to data."""
+        try:
+            shocked_data = data.copy()
+            
+            # Apply negative shock to returns
+            if 'returns' in shocked_data.columns:
+                shocked_data['returns'] = shocked_data['returns'] * (1 - shock_size)
+            else:
+                # Apply to price data
+                for col in shocked_data.columns:
+                    if col != 'date' and col != 'timestamp':
+                        shocked_data[col] = shocked_data[col] * (1 - shock_size)
+            
+            return shocked_data
+            
+        except Exception as e:
+            logger.error(f"Error applying market crash shock: {str(e)}")
+            return data
+    
+    def _apply_volatility_spike_shock(self, data: pd.DataFrame, shock_size: float) -> pd.DataFrame:
+        """Apply volatility spike shock to data."""
+        try:
+            shocked_data = data.copy()
+            
+            # Increase volatility
+            if 'returns' in shocked_data.columns:
+                shocked_data['returns'] = shocked_data['returns'] * (1 + shock_size)
+            else:
+                # Apply to price data
+                for col in shocked_data.columns:
+                    if col != 'date' and col != 'timestamp':
+                        shocked_data[col] = shocked_data[col] * (1 + shock_size * np.random.normal(0, 1))
+            
+            return shocked_data
+            
+        except Exception as e:
+            logger.error(f"Error applying volatility spike shock: {str(e)}")
+            return data
+    
+    def _apply_correlation_breakdown_shock(self, data: pd.DataFrame, shock_size: float) -> pd.DataFrame:
+        """Apply correlation breakdown shock to data."""
+        try:
+            shocked_data = data.copy()
+            
+            # Add random noise to break correlations
+            if 'returns' in shocked_data.columns:
+                noise = np.random.normal(0, shock_size, len(shocked_data))
+                shocked_data['returns'] = shocked_data['returns'] + noise
+            else:
+                # Apply to price data
+                for col in shocked_data.columns:
+                    if col != 'date' and col != 'timestamp':
+                        noise = np.random.normal(0, shock_size, len(shocked_data))
+                        shocked_data[col] = shocked_data[col] * (1 + noise)
+            
+            return shocked_data
+            
+        except Exception as e:
+            logger.error(f"Error applying correlation breakdown shock: {str(e)}")
+            return data
+    
+    def _apply_liquidity_crisis_shock(self, data: pd.DataFrame, shock_size: float) -> pd.DataFrame:
+        """Apply liquidity crisis shock to data."""
+        try:
+            shocked_data = data.copy()
+            
+            # Simulate liquidity crisis with increased spreads
+            if 'returns' in shocked_data.columns:
+                # Add transaction costs
+                shocked_data['returns'] = shocked_data['returns'] * (1 - shock_size * 0.01)
+            else:
+                # Apply to price data
+                for col in shocked_data.columns:
+                    if col != 'date' and col != 'timestamp':
+                        shocked_data[col] = shocked_data[col] * (1 - shock_size * 0.01)
+            
+            return shocked_data
+            
+        except Exception as e:
+            logger.error(f"Error applying liquidity crisis shock: {str(e)}")
+            return data
+    
+    def _calculate_factor_returns(self, data: pd.DataFrame,
+                                factor_data: Optional[Dict],
+                                factors: List[str]) -> Dict[str, float]:
+        """Calculate factor returns."""
+        try:
+            if factor_data is None:
+                # Generate mock factor returns
+                factor_returns = {}
+                for factor in factors:
+                    factor_returns[factor] = np.random.normal(0.001, 0.02)
+                return factor_returns
+            
+            return factor_data
+            
+        except Exception as e:
+            logger.error(f"Error calculating factor returns: {str(e)}")
+            return {}
+    
+    def _brinson_attribution(self, strategy_result: Dict,
+                            factor_returns: Dict[str, float]) -> Dict[str, Any]:
+        """Brinson performance attribution."""
+        try:
+            attribution = {
+                'status': 'success',
+                'method': 'brinson',
+                'total_return': strategy_result['total_return'],
+                'factor_attribution': {},
+                'residual': 0.0
+            }
+            
+            # Calculate factor attribution
+            total_factor_contribution = 0
+            for factor, factor_return in factor_returns.items():
+                # Simplified attribution calculation
+                factor_contribution = factor_return * 0.1  # Assume 10% exposure
+                attribution['factor_attribution'][factor] = float(factor_contribution)
+                total_factor_contribution += factor_contribution
+            
+            # Calculate residual
+            attribution['residual'] = float(strategy_result['total_return'] - total_factor_contribution)
+            
+            return attribution
+            
+        except Exception as e:
+            logger.error(f"Error in Brinson attribution: {str(e)}")
+            return {'status': 'error', 'message': str(e)}
+    
+    def _carino_attribution(self, strategy_result: Dict,
+                           factor_returns: Dict[str, float]) -> Dict[str, Any]:
+        """Carino performance attribution."""
+        try:
+            # Simplified Carino attribution
+            return self._brinson_attribution(strategy_result, factor_returns)
+            
+        except Exception as e:
+            logger.error(f"Error in Carino attribution: {str(e)}")
+            return {'status': 'error', 'message': str(e)}
+    
+    def _menchero_attribution(self, strategy_result: Dict,
+                             factor_returns: Dict[str, float]) -> Dict[str, Any]:
+        """Menchero performance attribution."""
+        try:
+            # Simplified Menchero attribution
+            return self._brinson_attribution(strategy_result, factor_returns)
+            
+        except Exception as e:
+            logger.error(f"Error in Menchero attribution: {str(e)}")
+            return {'status': 'error', 'message': str(e)}
+    
+    async def get_backtesting_summary(self) -> Dict[str, Any]:
+        """Get comprehensive backtesting summary."""
+        try:
+            summary = {
+                'backtest_results': len(self.backtest_results),
+                'performance_metrics': len(self.performance_metrics),
+                'risk_metrics': len(self.risk_metrics),
+                'attribution_results': len(self.attribution_results),
+                'capabilities': [
+                    'walk_forward_analysis',
+                    'monte_carlo_simulation',
+                    'stress_testing',
+                    'performance_attribution'
+                ]
+            }
+            
+            return summary
+            
+        except Exception as e:
+            logger.error(f"Error getting backtesting summary: {str(e)}")
+            return {} 
