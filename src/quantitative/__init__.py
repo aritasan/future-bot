@@ -11,7 +11,7 @@ This module provides advanced quantitative trading tools including:
 """
 
 from .risk_manager import RiskManager, VaRCalculator, DynamicPositionSizer
-from .statistical_validator import StatisticalSignalValidator
+from .statistical_validator import StatisticalValidator
 from .portfolio_optimizer import PortfolioOptimizer
 from .market_microstructure import MarketMicrostructureAnalyzer
 from .backtesting_engine import AdvancedBacktestingEngine
@@ -22,7 +22,7 @@ __all__ = [
     'RiskManager',
     'VaRCalculator', 
     'DynamicPositionSizer',
-    'StatisticalSignalValidator',
+    'StatisticalValidator',
     'PortfolioOptimizer',
     'MarketMicrostructureAnalyzer',
     'AdvancedBacktestingEngine',

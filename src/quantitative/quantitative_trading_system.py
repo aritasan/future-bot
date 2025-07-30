@@ -1,96 +1,69 @@
-import numpy as np
-import pandas as pd
-from typing import Dict, List, Optional, Tuple, Callable
-import logging
+"""
+Quantitative Trading System
+Advanced quantitative analysis and validation system.
+"""
 
-from .risk_manager import RiskManager, VaRCalculator, DynamicPositionSizer
-from .statistical_validator import StatisticalSignalValidator
+from .statistical_validator import StatisticalValidator
+from .risk_manager import RiskManager
 from .portfolio_optimizer import PortfolioOptimizer
 from .market_microstructure import MarketMicrostructureAnalyzer
 from .backtesting_engine import AdvancedBacktestingEngine
 from .factor_model import FactorModel
+import logging
+import numpy as np
+import pandas as pd
+from typing import Dict, List, Optional, Any, Callable
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
 class QuantitativeTradingSystem:
     """
-    Integrated quantitative trading system combining all quantitative components.
-    Provides comprehensive quantitative analysis and trading decision support.
+    Advanced quantitative trading system with comprehensive analysis capabilities.
     """
     
-    def __init__(self, config: Dict = None):
+    def __init__(self, config: Dict):
         """
         Initialize quantitative trading system.
         
         Args:
-            config: Configuration dictionary for system parameters
+            config: Configuration dictionary
         """
-        self.config = config or {}
+        self.config = config
         
         # Initialize components
-        self.risk_manager = RiskManager(
-            confidence_level=self.config.get('confidence_level', 0.95),
-            max_position_size=self.config.get('max_position_size', 0.02)
+        self.statistical_validator = StatisticalValidator(
+            significance_level=config.get('trading', {}).get('statistical_significance_level', 0.05),
+            min_sample_size=config.get('trading', {}).get('min_sample_size', 100)
         )
         
-        self.statistical_validator = StatisticalSignalValidator(
-            min_p_value=self.config.get('min_p_value', 0.05),
-            min_t_stat=self.config.get('min_t_stat', 2.0)
-        )
+        self.risk_manager = RiskManager(config)
+        self.portfolio_optimizer = PortfolioOptimizer(config)
+        self.market_microstructure = MarketMicrostructureAnalyzer(config)
+        self.backtesting_engine = AdvancedBacktestingEngine(config)
+        self.factor_model = FactorModel(config)
         
-        self.portfolio_optimizer = PortfolioOptimizer(
-            risk_free_rate=self.config.get('risk_free_rate', 0.02),
-            target_return=self.config.get('target_return', None)
-        )
+        # Performance tracking
+        self.performance_metrics = {}
+        self.validation_history = {}
         
-        self.market_analyzer = MarketMicrostructureAnalyzer(
-            min_tick_size=self.config.get('min_tick_size', 0.0001)
-        )
-        
-        self.backtesting_engine = AdvancedBacktestingEngine(
-            initial_capital=self.config.get('initial_capital', 100000),
-            commission_rate=self.config.get('commission_rate', 0.001),
-            slippage_rate=self.config.get('slippage_rate', 0.0005),
-            risk_free_rate=self.config.get('risk_free_rate', 0.02)
-        )
-        
-        self.factor_model = FactorModel(
-            n_factors=self.config.get('n_factors', 5),
-            min_eigenvalue=self.config.get('min_eigenvalue', 1.0)
-        )
-        
-        self.trading_history = []
-        
+        logger.info("QuantitativeTradingSystem initialized")
+    
     async def initialize(self) -> bool:
-        """
-        Initialize the quantitative trading system.
-        
-        Returns:
-            bool: True if initialization successful, False otherwise
-        """
+        """Initialize the quantitative trading system."""
         try:
-            logger.info("Initializing Quantitative Trading System...")
+            # Initialize all components
+            await self.risk_manager.initialize()
+            await self.portfolio_optimizer.initialize()
+            await self.market_microstructure.initialize()
+            await self.backtesting_engine.initialize()
+            await self.factor_model.initialize()
             
-            # Verify all components are available
-            required_components = [
-                'risk_manager',
-                'statistical_validator', 
-                'portfolio_optimizer',
-                'market_analyzer',
-                'backtesting_engine',
-                'factor_model'
-            ]
-            
-            for component in required_components:
-                if not hasattr(self, component):
-                    logger.error(f"Required component {component} not available")
-                    return False
-            
-            logger.info("Quantitative Trading System initialized successfully")
+            logger.info("QuantitativeTradingSystem initialized successfully")
             return True
             
         except Exception as e:
-            logger.error(f"Error initializing Quantitative Trading System: {str(e)}")
+            logger.error(f"Error initializing QuantitativeTradingSystem: {str(e)}")
             return False
         
     def analyze_trading_opportunity(self, market_data: Dict, 
@@ -118,7 +91,7 @@ class QuantitativeTradingSystem:
             
             # Market microstructure analysis
             if 'orderbook' in market_data:
-                market_analysis = self.market_analyzer.analyze_market_structure(
+                market_analysis = self.market_microstructure.analyze_market_structure(
                     market_data['orderbook'],
                     market_data.get('trades')
                 )
@@ -399,7 +372,7 @@ class QuantitativeTradingSystem:
                 'risk_management_summary': self.risk_manager.get_risk_summary(),
                 'statistical_validation_summary': self.statistical_validator.get_validation_summary(),
                 'portfolio_optimization_summary': self.portfolio_optimizer.get_optimization_summary(),
-                'market_analysis_summary': self.market_analyzer.get_analysis_summary(),
+                'market_analysis_summary': self.market_microstructure.get_analysis_summary(),
                 'backtesting_summary': self.backtesting_engine.get_backtest_summary(),
                 'factor_analysis_summary': self.factor_model.get_factor_summary(),
                 'recent_analyses': self.trading_history[-5:] if self.trading_history else []
@@ -446,7 +419,7 @@ class QuantitativeTradingSystem:
                 'risk_management_metrics': self.risk_manager.get_risk_summary(),
                 'statistical_validation_metrics': self.statistical_validator.get_validation_summary(),
                 'portfolio_optimization_metrics': self.portfolio_optimizer.get_optimization_summary(),
-                'market_analysis_metrics': self.market_analyzer.get_analysis_summary(),
+                'market_analysis_metrics': self.market_microstructure.get_analysis_summary(),
                 'backtesting_metrics': self.backtesting_engine.get_backtest_summary(),
                 'factor_analysis_metrics': self.factor_model.get_factor_summary()
             }

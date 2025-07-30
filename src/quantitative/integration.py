@@ -1,89 +1,72 @@
 """
-Integration module for Quantitative Trading System with existing trading bot.
-Provides seamless integration of quantitative analysis into the trading strategy.
+Quantitative Integration Module
+Integrates various quantitative components for trading strategy enhancement.
 """
 
 import logging
-import asyncio
-from typing import Dict, List, Optional, Any
-import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+import pandas as pd
+from typing import Dict, List, Optional, Any
+from datetime import datetime
 
-from .quantitative_trading_system import QuantitativeTradingSystem
+from .statistical_validator import StatisticalValidator
 from .risk_manager import RiskManager
-from .statistical_validator import StatisticalSignalValidator
 from .portfolio_optimizer import PortfolioOptimizer
 from .market_microstructure import MarketMicrostructureAnalyzer
+from .backtesting_engine import AdvancedBacktestingEngine
 from .factor_model import FactorModel
 
 logger = logging.getLogger(__name__)
 
 class QuantitativeIntegration:
     """
-    Integration layer for Quantitative Trading System with existing trading bot.
+    Quantitative integration layer for trading strategy enhancement.
     """
     
-    def __init__(self, config: Dict = None):
+    def __init__(self, config: Dict):
         """
         Initialize quantitative integration.
         
         Args:
-            config: Configuration for quantitative system
+            config: Configuration dictionary
         """
-        self.config = config or {}
+        self.config = config
         
-        # Initialize quantitative trading system
-        self.quantitative_system = QuantitativeTradingSystem(config)
+        # Initialize components
+        self.statistical_validator = StatisticalValidator(
+            significance_level=config.get('trading', {}).get('statistical_significance_level', 0.05),
+            min_sample_size=config.get('trading', {}).get('min_sample_size', 100)
+        )
         
-        # Initialize individual components for direct access
-        self.risk_manager = self.quantitative_system.risk_manager
-        self.statistical_validator = self.quantitative_system.statistical_validator
-        self.portfolio_optimizer = self.quantitative_system.portfolio_optimizer
-        self.market_analyzer = self.quantitative_system.market_analyzer
-        self.factor_model = self.quantitative_system.factor_model
+        self.risk_manager = RiskManager(config)
+        self.portfolio_optimizer = PortfolioOptimizer(config)
+        self.market_microstructure = MarketMicrostructureAnalyzer(config)
+        self.backtesting_engine = AdvancedBacktestingEngine(config)
+        self.factor_model = FactorModel(config)
         
         # Integration state
-        self.integration_enabled = self.config.get('quantitative_integration_enabled', True)
-        self.analysis_cache = {}
-        self.last_analysis_time = {}
+        self.integration_status = 'initialized'
+        self.last_analysis = None
+        
+        logger.info("QuantitativeIntegration initialized")
     
     async def initialize(self) -> bool:
-        """
-        Initialize the quantitative integration system.
-        
-        Returns:
-            bool: True if initialization successful, False otherwise
-        """
+        """Initialize the quantitative integration."""
         try:
-            logger.info("Initializing Quantitative Integration...")
+            # Initialize all components
+            await self.risk_manager.initialize()
+            await self.portfolio_optimizer.initialize()
+            await self.market_microstructure.initialize()
+            await self.backtesting_engine.initialize()
+            await self.factor_model.initialize()
             
-            # Initialize quantitative trading system
-            # Note: QuantitativeTradingSystem doesn't have an initialize method,
-            # so we just verify the components are available
-            if not hasattr(self, 'quantitative_system'):
-                logger.error("Quantitative trading system not available")
-                return False
-            
-            # Verify all components are available
-            required_components = [
-                'risk_manager',
-                'statistical_validator', 
-                'portfolio_optimizer',
-                'market_analyzer',
-                'factor_model'
-            ]
-            
-            for component in required_components:
-                if not hasattr(self.quantitative_system, component):
-                    logger.error(f"Required component {component} not available")
-                    return False
-            
-            logger.info("Quantitative Integration initialized successfully")
+            self.integration_status = 'ready'
+            logger.info("QuantitativeIntegration initialized successfully")
             return True
             
         except Exception as e:
-            logger.error(f"Error initializing Quantitative Integration: {str(e)}")
+            logger.error(f"Error initializing QuantitativeIntegration: {str(e)}")
+            self.integration_status = 'error'
             return False
         
     async def enhance_trading_signal(self, symbol: str, base_signal: Dict, 
@@ -100,7 +83,7 @@ class QuantitativeIntegration:
             Dict: Enhanced signal with quantitative analysis
         """
         try:
-            if not self.integration_enabled:
+            if not self.config.get('quantitative_integration_enabled', True):
                 return base_signal
             
             # Prepare market data for quantitative analysis
@@ -228,7 +211,7 @@ class QuantitativeIntegration:
                 return {'error': 'No orderbook data available'}
             
             # Run microstructure analysis
-            analysis_results = self.market_analyzer.analyze_market_structure(
+            analysis_results = self.market_microstructure.analyze_market_structure(
                 orderbook_data, trade_data
             )
             
@@ -529,14 +512,15 @@ class QuantitativeIntegration:
         """Get integration status and statistics."""
         try:
             return {
-                'integration_enabled': self.integration_enabled,
+                'integration_enabled': self.config.get('quantitative_integration_enabled', True),
                 'cache_size': len(self.analysis_cache),
-                'quantitative_system_status': 'active',
+                'quantitative_system_status': self.integration_status,
                 'components_loaded': [
-                    'risk_manager',
                     'statistical_validator', 
+                    'risk_manager',
                     'portfolio_optimizer',
-                    'market_analyzer',
+                    'market_microstructure',
+                    'backtesting_engine',
                     'factor_model'
                 ]
             }

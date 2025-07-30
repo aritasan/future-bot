@@ -29,6 +29,7 @@ from src.services.notification_service import NotificationService
 from src.utils.helpers import is_long_side, is_short_side, is_trending_down, is_trending_up
 from src.quantitative.integration import QuantitativeIntegration
 from src.quantitative.quantitative_trading_system import QuantitativeTradingSystem
+from src.quantitative.statistical_validator import StatisticalValidator
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,11 @@ class EnhancedTradingStrategyWithQuantitative:
         # Initialize quantitative components
         self.quantitative_integration = QuantitativeIntegration(config)
         self.quantitative_system = QuantitativeTradingSystem(config)
+        
+        # Initialize statistical validator
+        significance_level = config.get('trading', {}).get('statistical_significance_level', 0.05)
+        min_sample_size = config.get('trading', {}).get('min_sample_size', 100)
+        self.statistical_validator = StatisticalValidator(significance_level, min_sample_size)
         
         # Performance tracking
         self.signal_history = {}
@@ -154,6 +160,9 @@ class EnhancedTradingStrategyWithQuantitative:
             
             # Apply quantitative analysis
             signal = await self._apply_quantitative_analysis(symbol, signal, market_data)
+            
+            # Apply statistical validation
+            signal = await self._apply_statistical_validation(symbol, signal, market_data)
             
             return signal
             
@@ -2134,3 +2143,173 @@ class EnhancedTradingStrategyWithQuantitative:
         except Exception as e:
             logger.error(f"Error getting market volatility: {str(e)}")
             return None
+    
+    async def _apply_statistical_validation(self, symbol: str, signal: Dict, market_data: Dict) -> Optional[Dict]:
+        """Apply statistical validation to signal."""
+        try:
+            # Validate signal quality
+            quality_validation = self.statistical_validator.validate_signal_quality(signal)
+            
+            if not quality_validation['is_valid']:
+                logger.warning(f"Signal for {symbol} failed quality validation: {quality_validation['warnings']}")
+                return None
+            
+            # Get benchmark returns for significance testing
+            benchmark_returns = await self._get_benchmark_returns(symbol)
+            
+            if benchmark_returns is not None:
+                # Test signal significance
+                significance_result = self.statistical_validator.test_signal_significance(
+                    self.signal_history.get(symbol, []), 
+                    benchmark_returns
+                )
+                
+                # Only proceed if signal is statistically significant
+                if not significance_result.get('significant', False):
+                    logger.warning(f"Signal for {symbol} not statistically significant (p_value={significance_result.get('p_value', 1.0):.4f})")
+                    return None
+                
+                # Add statistical validation results to signal
+                signal['statistical_validation'] = {
+                    'quality_validation': quality_validation,
+                    'significance_test': significance_result,
+                    'confidence_score': quality_validation['confidence_score']
+                }
+            
+            # Validate market regime stability
+            if 'returns' in market_data and len(market_data['returns']) > 60:
+                regime_validation = self.statistical_validator.validate_market_regime_stability(
+                    np.array(market_data['returns'])
+                )
+                signal['statistical_validation']['regime_stability'] = regime_validation
+            
+            # Store validation in history
+            self.statistical_validator.validation_history[symbol] = signal.get('statistical_validation', {})
+            
+            logger.info(f"Statistical validation passed for {symbol}: confidence_score={quality_validation['confidence_score']:.3f}")
+            
+            return signal
+            
+        except Exception as e:
+            logger.error(f"Error applying statistical validation for {symbol}: {str(e)}")
+            return signal
+    
+    async def _get_benchmark_returns(self, symbol: str) -> Optional[np.ndarray]:
+        """Get benchmark returns for statistical testing."""
+        try:
+            # Use BTC as benchmark for crypto trading
+            btc_klines = await self.indicator_service.get_klines('BTCUSDT', '1h', limit=100)
+            
+            if btc_klines and 'close' in btc_klines and len(btc_klines['close']) > 1:
+                # Calculate BTC returns
+                btc_prices = np.array(btc_klines['close'])
+                btc_returns = np.diff(np.log(btc_prices))
+                return btc_returns
+            
+            # Fallback: use market average returns
+            market_returns = await self._get_market_average_returns()
+            return market_returns
+            
+        except Exception as e:
+            logger.error(f"Error getting benchmark returns for {symbol}: {str(e)}")
+            return None
+    
+    async def _get_market_average_returns(self) -> Optional[np.ndarray]:
+        """Get market average returns as benchmark."""
+        try:
+            # Get returns for major pairs
+            major_pairs = ['ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'SOLUSDT']
+            all_returns = []
+            
+            for pair in major_pairs:
+                try:
+                    klines = await self.indicator_service.get_klines(pair, '1h', limit=100)
+                    if klines and 'close' in klines and len(klines['close']) > 1:
+                        prices = np.array(klines['close'])
+                        returns = np.diff(np.log(prices))
+                        all_returns.append(returns)
+                except Exception as e:
+                    logger.warning(f"Could not get returns for {pair}: {str(e)}")
+                    continue
+            
+            if all_returns:
+                # Calculate average returns across all pairs
+                min_length = min(len(returns) for returns in all_returns)
+                aligned_returns = [returns[:min_length] for returns in all_returns]
+                average_returns = np.mean(aligned_returns, axis=0)
+                return average_returns
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error getting market average returns: {str(e)}")
+            return None
+    
+    async def perform_walk_forward_analysis(self, symbols: List[str]) -> Dict[str, Any]:
+        """Perform walk-forward analysis for strategy validation."""
+        try:
+            logger.info(f"Starting walk-forward analysis for {len(symbols)} symbols")
+            
+            # Get historical data for all symbols
+            all_data = {}
+            
+            for symbol in symbols[:10]:  # Limit to first 10 symbols for performance
+                try:
+                    klines = await self.indicator_service.get_klines(symbol, '1d', limit=500)
+                    if klines and 'close' in klines:
+                        prices = pd.Series(klines['close'])
+                        returns = prices.pct_change().dropna()
+                        all_data[symbol] = returns
+                except Exception as e:
+                    logger.warning(f"Could not get data for {symbol}: {str(e)}")
+                    continue
+            
+            if len(all_data) < 2:
+                logger.warning("Insufficient data for walk-forward analysis")
+                return {'success': False, 'error': 'Insufficient data'}
+            
+            # Convert to DataFrame
+            returns_df = pd.DataFrame(all_data)
+            
+            # Perform walk-forward analysis
+            walk_forward_result = self.statistical_validator.perform_walk_forward_analysis(
+                self, returns_df
+            )
+            
+            if walk_forward_result['success']:
+                logger.info(f"Walk-forward analysis completed successfully")
+                return walk_forward_result
+            else:
+                logger.warning(f"Walk-forward analysis failed: {walk_forward_result.get('error', 'Unknown error')}")
+                return walk_forward_result
+                
+        except Exception as e:
+            logger.error(f"Error performing walk-forward analysis: {str(e)}")
+            return {'success': False, 'error': str(e)}
+    
+    def get_statistical_validation_summary(self) -> Dict[str, Any]:
+        """Get summary of statistical validation results."""
+        try:
+            summary = self.statistical_validator.get_validation_summary()
+            
+            # Add strategy-specific metrics
+            summary.update({
+                'total_signals_generated': len(self.signal_history),
+                'signals_passed_validation': sum(
+                    1 for signals in self.signal_history.values() 
+                    for signal in signals 
+                    if signal.get('statistical_validation', {}).get('quality_validation', {}).get('is_valid', False)
+                ),
+                'average_confidence_score': np.mean([
+                    signal.get('statistical_validation', {}).get('confidence_score', 0)
+                    for signals in self.signal_history.values() 
+                    for signal in signals
+                    if signal.get('statistical_validation')
+                ]) if self.signal_history else 0.0
+            })
+            
+            return summary
+            
+        except Exception as e:
+            logger.error(f"Error getting statistical validation summary: {str(e)}")
+            return {}
