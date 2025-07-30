@@ -271,7 +271,23 @@ def load_config() -> Dict[str, Any]:
             },
             'cache': {
                 'price_ttl': PRICE_CACHE_TTL,
-                'position_ttl': POSITION_CACHE_TTL
+                'position_ttl': POSITION_CACHE_TTL,
+                'enabled': os.getenv('CACHE_ENABLED', 'true').lower() == 'true',
+                'redis_url': os.getenv('REDIS_URL', 'redis://localhost:6379'),
+                'nats_url': os.getenv('NATS_URL', 'nats://localhost:4222'),
+                'ttl': int(os.getenv('CACHE_TTL', '3600')),  # 1 hour default
+                'max_size': int(os.getenv('CACHE_MAX_SIZE', '1000')),
+                'compression_enabled': True,
+                'distributed_cache_enabled': True,
+                'cache_layers': ['memory', 'redis', 'distributed'],
+                'monitoring': {
+                    'enabled': True,
+                    'alert_thresholds': {
+                        'hit_rate_min': 0.7,  # 70% minimum hit rate
+                        'memory_usage_max': 0.8,  # 80% maximum memory usage
+                        'response_time_max': 0.1  # 100ms maximum response time
+                    }
+                }
             },
             'circuit_breaker': {
                 'failure_threshold': FAILURE_THRESHOLD,

@@ -1,0 +1,97 @@
+services:
+  nats:
+    image: nats:2.9-alpine
+    container_name: nats-server-quantitative
+    ports:
+      - "4223:4222"      # NATS client port
+      - "8223:8222"      # NATS HTTP port for monitoring
+    command: -js -m 8222
+    restart: unless-stopped
+    networks:
+      - nats-network
+
+  nui:
+    image: ghcr.io/nats-nui/nui:latest
+    container_name: nats-nui-quantitative
+    ports:
+      - "8081:31311"
+    environment:
+      - NATS_URL=nats://nats:4222
+    depends_on:
+      - nats
+    restart: unless-stopped
+    networks:
+      - nats-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis-cache-quantitative
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    networks:
+      - nats-network
+
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: redis-commander-quantitative
+    ports:
+      - "8082:8081"
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    depends_on:
+      - redis
+    restart: unless-stopped
+    networks:
+      - nats-network
+
+  # trading-bot:
+  #   build: .
+  #   container_name: trading-bot-quantitative
+  #   ports:
+  #     - "8000:8000"
+  #   environment:
+  #     - NATS_URL=nats://nats:4222
+  #     - REDIS_URL=redis://redis:6379
+  #     - CACHE_ENABLED=true
+  #     - CACHE_TTL=3600
+  #     - CACHE_MAX_SIZE=1000
+  #     - PYTHONPATH=/app
+  #   depends_on:
+  #     - nats
+  #     - redis
+  #   restart: unless-stopped
+  #   networks:
+  #     - nats-network
+  #   volumes:
+  #     - ./src:/app/src
+  #     - ./logs:/app/logs
+  #     - ./data:/app/data
+
+  # cache-monitor:
+  #   build: 
+  #     context: .
+  #     dockerfile: Dockerfile.monitor
+  #   container_name: cache-monitor-quantitative
+  #   ports:
+  #     - "8083:8080"
+  #   environment:
+  #     - NATS_URL=nats://nats:4222
+  #     - REDIS_URL=redis://redis:6379
+  #     - PYTHONPATH=/app
+  #   depends_on:
+  #     - nats
+  #     - redis
+  #   restart: unless-stopped
+  #   networks:
+  #     - nats-network
+
+volumes:
+  redis_data:
+
+networks:
+  nats-network:
+    driver: bridge 

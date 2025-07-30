@@ -10,6 +10,7 @@ import time
 import asyncio
 from src.utils.helpers import is_same_symbol, is_same_side, is_long_side
 from src.services.ip_monitor_service import IPMonitorService
+from src.utils.rate_limiter import AdaptiveRateLimiter, RateLimitConfig
 
 logger = logging.getLogger(__name__)
 
@@ -46,10 +47,16 @@ class BinanceService:
         self._max_retry_delay = 32
         self._request_count = 0
         self._last_request_time = 0
-        self._rate_limit = 2400
-        self._rate_limit_window = 60
-        self._rate_limit_queue = asyncio.Queue()
-        self._rate_limit_task = None
+        # Initialize rate limiter
+        rate_limit_config = RateLimitConfig(
+            requests_per_minute=2400,
+            requests_per_second=40,
+            retry_after_429=60,
+            exponential_backoff=True,
+            max_retry_delay=300
+        )
+        self._rate_limiter = AdaptiveRateLimiter(rate_limit_config)
+        
         self._ws_connections = {}
         self._ws_subscriptions = {}
         self._ws_data = {}
@@ -72,6 +79,10 @@ class BinanceService:
             if self._is_initialized:
                 return True
                 
+            # Start rate limiter
+            await self._rate_limiter.start()
+            logger.info("Rate limiter started")
+            
             # Initialize IP monitor if enabled
             if self._ip_monitor_enabled:
                 self._ip_monitor = IPMonitorService(self.config, self.notification_callback)
@@ -184,6 +195,9 @@ class BinanceService:
                
             logger.info(f"Main order placed successfully for {symbol} {main_order_params['side']}: {main_order['id']}")
             
+            # Send notification about the order
+            await self._send_order_notification(main_order, order_params)
+            
             # Place SL/TP orders if specified
             if 'stop_loss' in order_params:
                 await self._update_stop_loss(symbol, main_order, order_params['stop_loss'])
@@ -196,6 +210,41 @@ class BinanceService:
         except Exception as e:
             logger.error(f"Error placing order: {str(e)}")
             return None
+    
+    async def _send_order_notification(self, order: Dict, order_params: Dict) -> None:
+        """Send notification about placed order."""
+        try:
+            if not self._notification_callback:
+                return
+            
+            symbol = order_params.get('symbol', 'Unknown')
+            side = order_params.get('side', 'Unknown')
+            order_type = order_params.get('type', 'Unknown')
+            amount = order_params.get('amount', 0)
+            price = order_params.get('price', 'Market')
+            
+            # Create notification message
+            message = f"🎯 **ORDER PLACED** 🎯\n\n"
+            message += f"**Symbol:** {symbol}\n"
+            message += f"**Action:** {side}\n"
+            message += f"**Type:** {order_type}\n"
+            message += f"**Amount:** {amount}\n"
+            message += f"**Price:** {price}\n"
+            message += f"**Order ID:** {order.get('id', 'N/A')}\n"
+            message += f"**Status:** {order.get('status', 'N/A')}\n"
+            message += f"**Time:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            
+            # Add stop loss and take profit info
+            if 'stop_loss' in order_params:
+                message += f"**Stop Loss:** {order_params['stop_loss']}\n"
+            if 'take_profit' in order_params:
+                message += f"**Take Profit:** {order_params['take_profit']}\n"
+            
+            # Send notification
+            await self._notification_callback(message)
+            
+        except Exception as e:
+            logger.error(f"Error sending order notification: {str(e)}")
             
     async def _validate_order_params(self, order_params: Dict) -> bool:
         """Validate order parameters.
@@ -648,6 +697,9 @@ class BinanceService:
     async def close(self):
         """Close the Binance service."""
         try:
+            # Stop rate limiter
+            await self._rate_limiter.stop()
+            
             # Stop IP monitoring
             if self._ip_monitor:
                 await self._ip_monitor.close()
@@ -1001,8 +1053,8 @@ class BinanceService:
             # Force sync on next request
             self._last_sync_time = 0
 
-    async def _make_request(self, func, *args, **kwargs):
-        """Make a request with retry mechanism and time synchronization."""
+    async def _make_request(self, func, *args, request_type: str = 'default', **kwargs):
+        """Make a request with rate limiting and retry mechanism."""
         retries = 0
         last_error = None
 
@@ -1018,11 +1070,21 @@ class BinanceService:
                     if 'recvWindow' not in kwargs['params']:
                         kwargs['params']['recvWindow'] = 60000  # 60 seconds
                 
-                result = await func(*args, **kwargs)
+                # Execute request through rate limiter
+                result = await self._rate_limiter.execute(func, *args, request_type=request_type, **kwargs)
+                
+                # Reset 429 backoff on successful request
+                await self._rate_limiter.reset_429_backoff()
+                
                 return result
             except Exception as e:
                 last_error = e
                 retries += 1
+                
+                # Check for 429 rate limit errors
+                if '429' in str(e) or 'Too Many Requests' in str(e):
+                    await self._rate_limiter.handle_429_error(e)
+                    continue
                 
                 # Check for IP-related errors
                 if await self._is_ip_error(e):
@@ -1098,7 +1160,15 @@ class BinanceService:
                 elif channel == 'orderbook':
                     ws = await self.exchange.watch_order_book(symbol)
                 elif channel == 'trades':
-                    ws = await self.exchange.watch_trades(symbol)
+                    # Fallback to REST API for trades since watch_trades is not supported
+                    trades = await self._make_request(self.exchange.fetch_trades, symbol, limit=100)
+                    if trades:
+                        self._ws_data[symbol] = trades
+                        self._cache[f"{symbol}_trades"] = {
+                            'data': trades,
+                            'timestamp': time.time()
+                        }
+                    return
                 else:
                     raise ValueError(f"Unsupported websocket channel: {channel}")
                     
@@ -1223,6 +1293,10 @@ class BinanceService:
         except Exception as e:
             logger.error(f"Error getting trades for {symbol}: {str(e)}")
             return []
+    
+    async def get_recent_trades(self, symbol: str) -> List[Dict]:
+        """Get recent trades for a symbol (alias for get_trades)."""
+        return await self.get_trades(symbol)
 
     async def get_funding_rate(self, symbol: str) -> Optional[float]:
         """Get the current funding rate for a futures trading pair.

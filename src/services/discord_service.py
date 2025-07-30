@@ -88,8 +88,20 @@ class DiscordService(BaseNotificationService):
             # Initialize base service first
             await super().initialize()
             
-            # Start the bot in the background
-            asyncio.create_task(self.bot.start(self.config['api']['discord']['bot_token']))
+            # Check if bot token is available
+            discord_config = self.config.get('api', {}).get('discord', {})
+            bot_token = discord_config.get('bot_token')
+            
+            if not bot_token:
+                logger.warning("Discord bot token not found, using webhook mode only")
+                self._is_ready = True
+                self._ready_event.set()
+                return
+            
+            # Start the bot in the background only if not already running
+            if not self._is_running:
+                self._is_running = True
+                asyncio.create_task(self.bot.start(bot_token))
             
             # Wait for the bot to be ready
             try:
