@@ -14,7 +14,7 @@ ATR_PERIOD = int(os.getenv("ATR_PERIOD", "14"))
 MAX_ORDERS_PER_SYMBOL = int(os.getenv("MAX_ORDERS_PER_SYMBOL", "3"))
 
 # Position sizing parameters
-RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", "0.02"))  # 2% risk per trade
+RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", "0.005"))  # 2% risk per trade
 
 # Technical analysis parameters
 MIN_VOLUME_RATIO = float(os.getenv("MIN_VOLUME_RATIO", "1.2"))

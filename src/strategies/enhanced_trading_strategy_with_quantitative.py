@@ -1980,7 +1980,6 @@ class EnhancedTradingStrategyWithQuantitative:
                 
             # Get USDT balance
             usdt_balance = balance.get('USDT', {}).get('total', 0)
-            logger.info(f"USDT balance: {usdt_balance}")
             if not usdt_balance or float(usdt_balance) <= 0:
                 logger.error(f"Invalid USDT balance: {usdt_balance}")
                 return None
