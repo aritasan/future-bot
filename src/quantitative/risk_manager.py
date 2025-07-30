@@ -73,7 +73,7 @@ class VaRCalculator:
     def _calculate_parametric_var(self, returns: np.array, position_size: float) -> float:
         """Calculate parametric VaR assuming normal distribution."""
         try:
-            if returns is None or len(returns) < 2 or np.all(np.isnan(returns)) or position_size == 0:
+            if returns is None or len(returns) < 2 or bool(np.all(np.isnan(returns))) or position_size == 0:
                 return 0.0
             mean_return = np.nanmean(returns)
             std_return = np.nanstd(returns)
@@ -87,7 +87,7 @@ class VaRCalculator:
     def _calculate_monte_carlo_var(self, returns: np.array, position_size: float, n_simulations: int = 10000) -> float:
         """Calculate Monte Carlo VaR."""
         try:
-            if returns is None or len(returns) < 2 or np.all(np.isnan(returns)) or position_size == 0:
+            if returns is None or len(returns) < 2 or bool(np.all(np.isnan(returns))) or position_size == 0:
                 return 0.0
             mean_return = np.nanmean(returns)
             std_return = np.nanstd(returns)
@@ -108,11 +108,11 @@ class VaRCalculator:
     def _calculate_expected_shortfall(self, returns: np.array, var_threshold: float) -> float:
         """Calculate Expected Shortfall (Conditional VaR)."""
         try:
-            if returns is None or len(returns) < 2 or np.all(np.isnan(returns)):
+            if returns is None or len(returns) < 2 or bool(np.all(np.isnan(returns))):
                 return 0.0
             var_return = -var_threshold  # Convert to return space
             tail_returns = returns[returns <= var_return]
-            if len(tail_returns) == 0 or np.all(np.isnan(tail_returns)):
+            if len(tail_returns) == 0 or bool(np.all(np.isnan(tail_returns))):
                 return 0.0
             mean_tail = np.nanmean(tail_returns)
             if np.isnan(mean_tail):

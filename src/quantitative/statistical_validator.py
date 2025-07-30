@@ -126,7 +126,7 @@ class StatisticalSignalValidator:
     def _calculate_sharpe_ratio(self, returns: np.array, risk_free_rate: float = 0.0) -> float:
         """Calculate Sharpe ratio."""
         try:
-            if returns is None or len(returns) < 2 or np.all(np.isnan(returns)) or np.nanstd(returns) == 0:
+            if returns is None or len(returns) < 2 or bool(np.all(np.isnan(returns))) or np.nanstd(returns) == 0:
                 return 0.0
             excess_returns = returns - risk_free_rate/252
             std_dev = np.nanstd(excess_returns)
@@ -140,7 +140,7 @@ class StatisticalSignalValidator:
     def _calculate_information_ratio(self, returns: np.array, benchmark_returns: np.array = None) -> float:
         """Calculate Information ratio."""
         try:
-            if returns is None or len(returns) < 2 or np.all(np.isnan(returns)):
+            if returns is None or len(returns) < 2 or bool(np.all(np.isnan(returns))):
                 return 0.0
             if benchmark_returns is None:
                 benchmark_returns = np.random.normal(0.0005, 0.03, len(returns))
@@ -156,13 +156,13 @@ class StatisticalSignalValidator:
     def _calculate_sortino_ratio(self, returns: np.array, risk_free_rate: float = 0.0) -> float:
         """Calculate Sortino ratio."""
         try:
-            if returns is None or len(returns) < 2 or np.all(np.isnan(returns)):
+            if returns is None or len(returns) < 2 or bool(np.all(np.isnan(returns))):
                 return 0.0
             excess_returns = returns - risk_free_rate/252
             downside_returns = excess_returns[excess_returns < 0]
             if len(downside_returns) == 0 or np.all(np.isnan(downside_returns)):
                 return 0.0
-            downside_deviation = np.nanstd(downside_returns)
+            downside_deviation = float(np.nanstd(downside_returns))
             if downside_deviation == 0 or np.isnan(downside_deviation):
                 return 0.0
             return np.nanmean(excess_returns) / downside_deviation * np.sqrt(252)
@@ -173,7 +173,7 @@ class StatisticalSignalValidator:
     def _calculate_calmar_ratio(self, returns: np.array) -> float:
         """Calculate Calmar ratio."""
         try:
-            if returns is None or len(returns) < 2 or np.all(np.isnan(returns)):
+            if returns is None or len(returns) < 2 or bool(np.all(np.isnan(returns))):
                 return 0.0
             cumulative_returns = np.cumprod(1 + returns)
             max_drawdown = self._calculate_max_drawdown(returns)
@@ -190,12 +190,12 @@ class StatisticalSignalValidator:
     def _calculate_max_drawdown(self, returns: np.array) -> float:
         """Calculate maximum drawdown."""
         try:
-            if returns is None or len(returns) < 2 or np.all(np.isnan(returns)):
+            if returns is None or len(returns) < 2 or bool(np.all(np.isnan(returns))):
                 return 0.0
             cumulative_returns = np.cumprod(1 + returns)
             running_max = np.maximum.accumulate(cumulative_returns)
             drawdown = (cumulative_returns - running_max) / running_max
-            if len(drawdown) == 0 or np.all(np.isnan(drawdown)):
+            if len(drawdown) == 0 or bool(np.all(np.isnan(drawdown))):
                 return 0.0
             return float(np.nanmin(drawdown))
         except Exception as e:

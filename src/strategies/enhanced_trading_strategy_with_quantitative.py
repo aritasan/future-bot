@@ -375,13 +375,13 @@ class EnhancedTradingStrategyWithQuantitative:
             weights = {'1h': 0.2, '4h': 0.3, '1d': 0.5}
             
             combined_strength = 0.0
-            total_confidence = 0.0
+            weighted_confidence = 0.0
             all_reasons = []
             
             for timeframe, signal in timeframes.items():
                 weight = weights.get(timeframe, 0.2)
                 combined_strength += signal['strength'] * weight
-                total_confidence += signal['confidence'] * weight
+                weighted_confidence += signal['confidence'] * weight
                 all_reasons.extend(signal.get('reasons', []))
             
             # Calculate dynamic thresholds based on market conditions
@@ -396,20 +396,23 @@ class EnhancedTradingStrategyWithQuantitative:
             buy_threshold = thresholds['buy_threshold']
             sell_threshold = thresholds['sell_threshold']
             
-            # Determine final action
+            # Determine final action and confidence
             if combined_strength > buy_threshold:
                 action = 'buy'
-                confidence = min(0.95, (combined_strength - buy_threshold) / (0.4 - buy_threshold))
+                # Use weighted confidence as base, then adjust based on threshold distance
+                confidence = min(0.95, weighted_confidence + (combined_strength - buy_threshold) / (0.4 - buy_threshold) * 0.3)
             elif combined_strength < sell_threshold:
                 action = 'sell'
-                confidence = min(0.95, (sell_threshold - combined_strength) / (sell_threshold + 0.4))
+                # Use weighted confidence as base, then adjust based on threshold distance
+                confidence = min(0.95, weighted_confidence + (sell_threshold - combined_strength) / (sell_threshold + 0.4) * 0.3)
             else:
                 action = 'hold'
-                confidence = 0.5
+                confidence = weighted_confidence  # Use the weighted confidence for hold actions
             
             # Log threshold information for monitoring
             logger.info(f"Dynamic thresholds - Buy: {buy_threshold:.3f}, Sell: {sell_threshold:.3f}, "
-                       f"Combined strength: {combined_strength:.3f}, Action: {action}, "
+                       f"Combined strength: {combined_strength:.3f}, Weighted confidence: {weighted_confidence:.3f}, "
+                       f"Final confidence: {confidence:.3f}, Action: {action}, "
                        f"Market regime: {thresholds['market_regime']}")
             
             return {
@@ -1430,7 +1433,7 @@ class EnhancedTradingStrategyWithQuantitative:
             
             # Sortino ratio
             downside_returns = returns[returns < 0]
-            sortino_ratio = float(np.mean(returns) / np.std(downside_returns) * np.sqrt(252)) if len(downside_returns) > 0 and np.std(downside_returns) > 0 else 0
+            sortino_ratio = float(np.mean(returns) / np.std(downside_returns) * np.sqrt(252)) if len(downside_returns) > 0 and float(np.std(downside_returns)) > 0 else 0
             
             # Calmar ratio
             cumulative_return = float((1 + returns).prod() - 1)
