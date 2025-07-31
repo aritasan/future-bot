@@ -54,3 +54,4 @@ mypy>=0.991
 # pickle5
 # hashlib
 json5
+shap
