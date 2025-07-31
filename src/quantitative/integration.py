@@ -530,4 +530,35 @@ class QuantitativeIntegration:
             }
         except Exception as e:
             logger.error(f"Error getting integration status: {str(e)}")
-            return {'error': str(e)} 
+            return {'error': str(e)}
+    
+    async def close(self) -> None:
+        """Close the quantitative integration and cleanup resources."""
+        try:
+            logger.info("Closing QuantitativeIntegration...")
+            
+            # Close all components
+            if hasattr(self, 'risk_manager') and hasattr(self.risk_manager, 'close'):
+                await self.risk_manager.close()
+            
+            if hasattr(self, 'portfolio_optimizer') and hasattr(self.portfolio_optimizer, 'close'):
+                await self.portfolio_optimizer.close()
+            
+            if hasattr(self, 'market_microstructure') and hasattr(self.market_microstructure, 'close'):
+                await self.market_microstructure.close()
+            
+            if hasattr(self, 'backtesting_engine') and hasattr(self.backtesting_engine, 'close'):
+                await self.backtesting_engine.close()
+            
+            if hasattr(self, 'factor_model') and hasattr(self.factor_model, 'close'):
+                await self.factor_model.close()
+            
+            # Clear cache
+            self.analysis_cache.clear()
+            
+            self.integration_status = 'closed'
+            logger.info("QuantitativeIntegration closed successfully")
+            
+        except Exception as e:
+            logger.error(f"Error closing QuantitativeIntegration: {str(e)}")
+            raise 

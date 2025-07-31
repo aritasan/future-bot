@@ -633,3 +633,21 @@ class WorldQuantMLEnsemble:
         except Exception as e:
             logger.error(f"Error getting ML summary: {str(e)}")
             return {} 
+    async def close(self) -> None:
+        """Close the worldquantmlensemble and cleanup resources."""
+        try:
+            logger.info("Closing WorldQuantMLEnsemble...")
+            
+            # Clear any stored data
+            if hasattr(self, 'analysis_cache'):
+                self.analysis_cache.clear()
+            if hasattr(self, 'history'):
+                self.history.clear()
+            if hasattr(self, 'metrics_history'):
+                self.metrics_history.clear()
+            
+            logger.info("WorldQuantMLEnsemble closed successfully")
+            
+        except Exception as e:
+            logger.error(f"Error closing WorldQuantMLEnsemble: {str(e)}")
+            raise

@@ -462,4 +462,20 @@ class RiskManager:
             }
         except Exception as e:
             logger.error(f"Error getting risk summary: {str(e)}")
-            return {'error': str(e)} 
+            return {'error': str(e)}
+    
+    async def close(self) -> None:
+        """Close the risk manager and cleanup resources."""
+        try:
+            logger.info("Closing RiskManager...")
+            
+            # Clear history
+            self.risk_metrics_history.clear()
+            self.position_history.clear()
+            self.var_history.clear()
+            
+            logger.info("RiskManager closed successfully")
+            
+        except Exception as e:
+            logger.error(f"Error closing RiskManager: {str(e)}")
+            raise 

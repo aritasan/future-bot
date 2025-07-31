@@ -1011,4 +1011,27 @@ class WorldQuantPortfolioOptimizer:
             
         except Exception as e:
             logger.error(f"Error getting comprehensive performance report: {str(e)}")
-            return {} 
+            return {}
+    
+    async def close(self) -> None:
+        """Close the portfolio optimizer and cleanup resources."""
+        try:
+            logger.info("Closing WorldQuantPortfolioOptimizer...")
+            
+            # Stop performance monitoring
+            if hasattr(self, 'monitoring_active') and self.monitoring_active:
+                await self.stop_performance_monitoring()
+            
+            # Clear portfolio state
+            if hasattr(self, 'portfolio_state'):
+                self.portfolio_state.clear()
+            
+            # Clear monitoring state
+            if hasattr(self, 'monitoring_state'):
+                self.monitoring_state.clear()
+            
+            logger.info("WorldQuantPortfolioOptimizer closed successfully")
+            
+        except Exception as e:
+            logger.error(f"Error closing WorldQuantPortfolioOptimizer: {str(e)}")
+            raise 

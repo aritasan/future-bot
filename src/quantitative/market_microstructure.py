@@ -11,9 +11,24 @@ class MarketMicrostructureAnalyzer:
     Implements bid-ask spread, order flow, and market impact analysis.
     """
     
-    def __init__(self, min_tick_size: float = 0.0001):
-        self.min_tick_size = min_tick_size
+    def __init__(self, config: Dict = None):
+        if config is None:
+            config = {}
+        self.config = config
+        self.min_tick_size = config.get('min_tick_size', 0.0001)
         self.analysis_history = []
+        logger.info("MarketMicrostructureAnalyzer initialized")
+    
+    async def initialize(self) -> bool:
+        """Initialize the market microstructure analyzer."""
+        try:
+            # Clear any existing data
+            self.analysis_history.clear()
+            logger.info("MarketMicrostructureAnalyzer initialized successfully")
+            return True
+        except Exception as e:
+            logger.error(f"Error initializing MarketMicrostructureAnalyzer: {str(e)}")
+            return False
         
     def analyze_market_structure(self, orderbook_data: Dict, trade_data: pd.DataFrame = None) -> Dict:
         """
@@ -629,3 +644,21 @@ class MarketMicrostructureAnalyzer:
             summary['avg_imbalance'] = np.mean(summary['average_imbalances'])
         
         return summary 
+    async def close(self) -> None:
+        """Close the marketmicrostructureanalyzer and cleanup resources."""
+        try:
+            logger.info("Closing MarketMicrostructureAnalyzer...")
+            
+            # Clear any stored data
+            if hasattr(self, 'analysis_cache'):
+                self.analysis_cache.clear()
+            if hasattr(self, 'history'):
+                self.history.clear()
+            if hasattr(self, 'metrics_history'):
+                self.metrics_history.clear()
+            
+            logger.info("MarketMicrostructureAnalyzer closed successfully")
+            
+        except Exception as e:
+            logger.error(f"Error closing MarketMicrostructureAnalyzer: {str(e)}")
+            raise

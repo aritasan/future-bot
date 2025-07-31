@@ -794,3 +794,21 @@ class WorldQuantFactorModel:
         except Exception as e:
             logger.error(f"Error building factor model: {str(e)}")
             return {'error': str(e)} 
+    async def close(self) -> None:
+        """Close the worldquantfactormodel and cleanup resources."""
+        try:
+            logger.info("Closing WorldQuantFactorModel...")
+            
+            # Clear any stored data
+            if hasattr(self, 'analysis_cache'):
+                self.analysis_cache.clear()
+            if hasattr(self, 'history'):
+                self.history.clear()
+            if hasattr(self, 'metrics_history'):
+                self.metrics_history.clear()
+            
+            logger.info("WorldQuantFactorModel closed successfully")
+            
+        except Exception as e:
+            logger.error(f"Error closing WorldQuantFactorModel: {str(e)}")
+            raise

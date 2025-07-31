@@ -688,3 +688,21 @@ class AdvancedBacktestingEngine:
         except Exception as e:
             logger.error(f"Error getting backtesting summary: {str(e)}")
             return {} 
+    async def close(self) -> None:
+        """Close the advancedbacktestingengine and cleanup resources."""
+        try:
+            logger.info("Closing AdvancedBacktestingEngine...")
+            
+            # Clear any stored data
+            if hasattr(self, 'analysis_cache'):
+                self.analysis_cache.clear()
+            if hasattr(self, 'history'):
+                self.history.clear()
+            if hasattr(self, 'metrics_history'):
+                self.metrics_history.clear()
+            
+            logger.info("AdvancedBacktestingEngine closed successfully")
+            
+        except Exception as e:
+            logger.error(f"Error closing AdvancedBacktestingEngine: {str(e)}")
+            raise

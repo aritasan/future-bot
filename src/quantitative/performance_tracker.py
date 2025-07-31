@@ -708,3 +708,21 @@ class WorldQuantPerformanceTracker:
             
         except Exception as e:
             logger.error(f"Error stopping monitoring: {str(e)}") 
+    async def close(self) -> None:
+        """Close the worldquantperformancetracker and cleanup resources."""
+        try:
+            logger.info("Closing WorldQuantPerformanceTracker...")
+            
+            # Clear any stored data
+            if hasattr(self, 'analysis_cache'):
+                self.analysis_cache.clear()
+            if hasattr(self, 'history'):
+                self.history.clear()
+            if hasattr(self, 'metrics_history'):
+                self.metrics_history.clear()
+            
+            logger.info("WorldQuantPerformanceTracker closed successfully")
+            
+        except Exception as e:
+            logger.error(f"Error closing WorldQuantPerformanceTracker: {str(e)}")
+            raise
