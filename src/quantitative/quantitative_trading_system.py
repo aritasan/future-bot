@@ -307,4 +307,38 @@ class QuantitativeTradingSystem:
             
         except Exception as e:
             logger.error(f"Error getting performance metrics: {str(e)}")
-            return {'error': str(e)} 
+            return {'error': str(e)}
+
+    async def close(self) -> None:
+        """Close the quantitative trading system and cleanup resources."""
+        try:
+            logger.info("Closing QuantitativeTradingSystem...")
+            
+            # Close all components
+            components = [
+                self.portfolio_optimizer,
+                self.risk_manager,
+                self.statistical_validator,
+                self.market_microstructure,
+                self.backtesting_engine,
+                self.factor_model,
+                self.ml_ensemble
+            ]
+            
+            for component in components:
+                if hasattr(component, 'close'):
+                    try:
+                        await component.close()
+                    except Exception as e:
+                        logger.warning(f"Error closing component {component.__class__.__name__}: {str(e)}")
+            
+            # Clear history
+            self.analysis_history.clear()
+            self.optimization_results.clear()
+            self.risk_metrics.clear()
+            
+            logger.info("QuantitativeTradingSystem closed successfully")
+            
+        except Exception as e:
+            logger.error(f"Error closing QuantitativeTradingSystem: {str(e)}")
+            raise 

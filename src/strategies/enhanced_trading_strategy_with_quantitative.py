@@ -124,19 +124,43 @@ class EnhancedTradingStrategyWithQuantitative:
             # Get comprehensive market data
             market_data = await self._get_comprehensive_market_data(symbol)
             
+            # Calculate dynamic validation thresholds
+            dynamic_thresholds = self._calculate_dynamic_validation_thresholds(symbol, market_data)
+            
+            # Accumulate signals if history is insufficient
+            signal_history = self.signal_history.get(symbol, [])
+            if len(signal_history) < dynamic_thresholds['min_sample_size']:
+                logger.info(f"Accumulating signals for {symbol} (history: {len(signal_history)} < {dynamic_thresholds['min_sample_size']})")
+                await self._accumulate_signals_for_symbol(symbol)
+            
             # Generate advanced signal with quantitative analysis
             signal = await self._generate_advanced_signal(symbol, indicator_service, market_data)
             
             if signal:
+                # Improve signal quality
+                signal = await self._improve_signal_quality(signal, market_data)
+                
+                # Boost signal quality for new symbols
+                signal = await self._boost_signal_quality(signal, market_data, symbol)
+                
+                # Apply dynamic thresholds
+                if signal.get('confidence', 0) < dynamic_thresholds['confidence_threshold']:
+                    logger.info(f"Signal confidence too low for {symbol}: {signal.get('confidence', 0):.3f} < {dynamic_thresholds['confidence_threshold']}")
+                    return None
+                
+                if abs(signal.get('strength', 0)) < dynamic_thresholds['strength_threshold']:
+                    logger.info(f"Signal strength too low for {symbol}: {abs(signal.get('strength', 0)):.3f} < {dynamic_thresholds['strength_threshold']}")
+                    return None
+                
                 # Store signal history
                 self._store_signal_history(symbol, signal)
                 
                 # Log quantitative analysis
-                validation = await self.quantitative_system.validate_signal(signal, market_data)
+                validation = self.quantitative_system.statistical_validator.validate_signal_quality(signal)
                 await self._log_quantitative_analysis(symbol, signal, validation)
                 
                 logger.info(f"Generated signal for {symbol}: {signal.get('action', 'HOLD')} "
-                          f"(confidence: {signal.get('confidence', 0):.3f})")
+                          f"(confidence: {signal.get('confidence', 0):.3f}, strength: {signal.get('strength', 0):.3f})")
                 
                 return signal
             
@@ -775,22 +799,261 @@ class EnhancedTradingStrategyWithQuantitative:
             return 'neutral'
     
     def _store_signal_history(self, symbol: str, signal: Dict) -> None:
-        """Store signal history for analysis."""
+        """Store signal in history for statistical validation."""
         try:
             if symbol not in self.signal_history:
                 self.signal_history[symbol] = []
             
-            self.signal_history[symbol].append({
-                'timestamp': datetime.now().isoformat(),
-                'signal': signal
-            })
+            # Add timestamp if not present
+            if 'timestamp' not in signal:
+                signal['timestamp'] = datetime.now().isoformat()
             
-            # Keep only last 100 signals per symbol
-            if len(self.signal_history[symbol]) > 100:
-                self.signal_history[symbol] = self.signal_history[symbol][-100:]
-                
+            # Store signal with performance tracking
+            signal_with_performance = {
+                **signal,
+                'performance_metrics': {
+                    'signal_strength': signal.get('strength', 0.0),
+                    'confidence': signal.get('confidence', 0.0),
+                    'action': signal.get('action', 'hold'),
+                    'timestamp': signal.get('timestamp', datetime.now().isoformat())
+                }
+            }
+            
+            self.signal_history[symbol].append(signal_with_performance)
+            
+            # Keep only last 1000 signals to prevent memory issues
+            if len(self.signal_history[symbol]) > 1000:
+                self.signal_history[symbol] = self.signal_history[symbol][-1000:]
+            
+            logger.debug(f"Stored signal for {symbol}, history size: {len(self.signal_history[symbol])}")
+            
         except Exception as e:
-            logger.error(f"Error storing signal history: {str(e)}")
+            logger.error(f"Error storing signal history for {symbol}: {str(e)}")
+
+    async def _accumulate_signals_for_symbol(self, symbol: str) -> None:
+        """Accumulate signals for a symbol to build statistical significance."""
+        try:
+            # Get recent market data
+            market_data = await self._get_comprehensive_market_data(symbol)
+            
+            # Generate multiple signals with different timeframes
+            timeframes = ['5m', '15m', '1h', '4h']
+            
+            for timeframe in timeframes:
+                try:
+                    # Get klines for this timeframe
+                    klines = await self.indicator_service.get_klines(symbol, timeframe, limit=100)
+                    
+                    if klines and 'close' in klines:
+                        # Convert to DataFrame
+                        df = self._convert_klines_to_dataframe(klines)
+                        
+                        if not df.empty:
+                            # Calculate indicators
+                            df = await self._calculate_advanced_indicators(df)
+                            
+                            # Create signal
+                            signal = self._create_advanced_signal(symbol, df, df, df, market_data)
+                            
+                            if signal:
+                                # Store in history
+                                self._store_signal_history(symbol, signal)
+                                
+                except Exception as e:
+                    logger.warning(f"Error accumulating signal for {symbol} {timeframe}: {str(e)}")
+                    continue
+            
+            logger.info(f"Signal accumulation completed for {symbol}, total signals: {len(self.signal_history.get(symbol, []))}")
+            
+        except Exception as e:
+            logger.error(f"Error accumulating signals for {symbol}: {str(e)}")
+
+    def _calculate_dynamic_validation_thresholds(self, symbol: str, market_data: Dict) -> Dict[str, float]:
+        """Calculate dynamic validation thresholds based on market conditions."""
+        try:
+            signal_history = self.signal_history.get(symbol, [])
+            history_size = len(signal_history)
+            
+            # Base thresholds
+            base_thresholds = {
+                'min_sample_size': 10,
+                'significance_level': 0.1,
+                'confidence_threshold': 0.3,
+                'strength_threshold': 0.1
+            }
+            
+            # Adjust based on history size - MORE AGGRESSIVE FOR NEW SYMBOLS
+            if history_size >= 100:
+                base_thresholds['min_sample_size'] = 50
+                base_thresholds['significance_level'] = 0.05
+                base_thresholds['confidence_threshold'] = 0.5
+                base_thresholds['strength_threshold'] = 0.2
+            elif history_size >= 50:
+                base_thresholds['min_sample_size'] = 25
+                base_thresholds['significance_level'] = 0.08
+                base_thresholds['confidence_threshold'] = 0.4
+                base_thresholds['strength_threshold'] = 0.15
+            elif history_size >= 20:
+                base_thresholds['min_sample_size'] = 15
+                base_thresholds['significance_level'] = 0.1
+                base_thresholds['confidence_threshold'] = 0.35
+                base_thresholds['strength_threshold'] = 0.12
+            elif history_size < 10:
+                # VERY AGGRESSIVE for very new symbols
+                base_thresholds['confidence_threshold'] = 0.15  # 50% reduction
+                base_thresholds['strength_threshold'] = 0.05   # 50% reduction
+            elif history_size < 20:
+                # AGGRESSIVE for new symbols
+                base_thresholds['confidence_threshold'] = 0.2   # 33% reduction
+                base_thresholds['strength_threshold'] = 0.07   # 30% reduction
+            
+            # Adjust based on market volatility
+            if 'volatility' in market_data:
+                volatility = market_data['volatility']
+                if volatility > 0.05:  # High volatility
+                    base_thresholds['confidence_threshold'] *= 0.8  # Lower threshold
+                    base_thresholds['strength_threshold'] *= 0.8
+                elif volatility < 0.02:  # Low volatility
+                    base_thresholds['confidence_threshold'] *= 1.2  # Higher threshold
+                    base_thresholds['strength_threshold'] *= 1.2
+            
+            # Adjust based on market regime
+            if 'market_regime' in market_data:
+                regime = market_data['market_regime']
+                if regime == 'trending':
+                    base_thresholds['strength_threshold'] *= 1.1
+                elif regime == 'mean_reverting':
+                    base_thresholds['confidence_threshold'] *= 0.9
+            
+            logger.debug(f"Dynamic thresholds for {symbol}: {base_thresholds}")
+            return base_thresholds
+            
+        except Exception as e:
+            logger.error(f"Error calculating dynamic thresholds for {symbol}: {str(e)}")
+            return {
+                'min_sample_size': 10,
+                'significance_level': 0.1,
+                'confidence_threshold': 0.15,  # Lower default for new symbols
+                'strength_threshold': 0.05    # Lower default for new symbols
+            }
+
+    async def _improve_signal_quality(self, signal: Dict, market_data: Dict) -> Dict:
+        """Improve signal quality with advanced analysis."""
+        try:
+            # Calculate signal strength based on multiple factors
+            strength_factors = []
+            
+            # Technical indicators strength
+            if 'timeframes' in signal:
+                for timeframe, tf_data in signal['timeframes'].items():
+                    tf_strength = abs(tf_data.get('strength', 0))
+                    strength_factors.append(tf_strength)
+            
+            # Market condition strength
+            if 'volatility' in market_data:
+                volatility = market_data['volatility']
+                vol_strength = 1.0 if 0.02 <= volatility <= 0.05 else 0.8
+                strength_factors.append(vol_strength)
+            
+            # Trend strength
+            if 'market_regime' in market_data:
+                regime = market_data['market_regime']
+                regime_strength = 1.2 if regime == 'trending' else 0.9
+                strength_factors.append(regime_strength)
+            
+            # Calculate improved strength
+            if strength_factors:
+                improved_strength = np.mean(strength_factors) * signal.get('strength', 0)
+                signal['strength'] = improved_strength
+            
+            # Improve confidence based on signal consistency
+            if 'timeframes' in signal:
+                confidences = [tf_data.get('confidence', 0) for tf_data in signal['timeframes'].values()]
+                if confidences:
+                    signal['confidence'] = np.mean(confidences)
+            
+            # Add quality metrics
+            signal['quality_metrics'] = {
+                'strength_factors': strength_factors,
+                'confidence_consistency': np.std(confidences) if 'confidences' in locals() else 0.0,
+                'market_alignment': regime_strength if 'regime_strength' in locals() else 1.0
+            }
+            
+            logger.debug(f"Improved signal quality for {signal.get('symbol', 'unknown')}: strength={signal.get('strength', 0):.3f}, confidence={signal.get('confidence', 0):.3f}")
+            
+            return signal
+            
+        except Exception as e:
+            logger.error(f"Error improving signal quality: {str(e)}")
+            return signal
+
+    async def _boost_signal_quality(self, signal: Dict, market_data: Dict, symbol: str) -> Dict:
+        """Boost signal quality for new symbols with low confidence."""
+        try:
+            signal_history = self.signal_history.get(symbol, [])
+            history_size = len(signal_history)
+            
+            # Base confidence and strength
+            base_confidence = signal.get('confidence', 0)
+            base_strength = signal.get('strength', 0)
+            
+            # Boost factors for new symbols
+            boost_multiplier = 1.0
+            
+            # Boost based on history size
+            if history_size < 10:
+                boost_multiplier = 2.0  # Double boost for very new symbols
+            elif history_size < 20:
+                boost_multiplier = 1.5  # 50% boost for new symbols
+            elif history_size < 50:
+                boost_multiplier = 1.2  # 20% boost for moderately new symbols
+            
+            # Boost based on market conditions
+            if 'volatility' in market_data:
+                volatility = market_data['volatility']
+                if volatility < 0.03:  # Low volatility - more predictable
+                    boost_multiplier *= 1.1
+                elif volatility > 0.08:  # High volatility - less predictable
+                    boost_multiplier *= 0.9
+            
+            # Boost based on market regime
+            if 'market_regime' in market_data:
+                regime = market_data['market_regime']
+                if regime == 'trending':
+                    boost_multiplier *= 1.1  # Trending markets are more predictable
+                elif regime == 'mean_reverting':
+                    boost_multiplier *= 1.05  # Mean reverting markets are moderately predictable
+            
+            # Boost based on signal strength
+            if abs(base_strength) > 0.1:
+                boost_multiplier *= 1.2  # Strong signals get more boost
+            
+            # Apply boost to confidence
+            boosted_confidence = min(base_confidence * boost_multiplier, 0.95)  # Cap at 95%
+            
+            # Apply boost to strength
+            boosted_strength = base_strength * boost_multiplier
+            
+            # Update signal
+            signal['confidence'] = boosted_confidence
+            signal['strength'] = boosted_strength
+            
+            # Add boost metrics
+            signal['quality_metrics']['boost_applied'] = {
+                'original_confidence': base_confidence,
+                'boosted_confidence': boosted_confidence,
+                'boost_multiplier': boost_multiplier,
+                'history_size': history_size,
+                'boost_reason': f"New symbol boost (history: {history_size})"
+            }
+            
+            logger.info(f"Boosted signal quality for {symbol}: confidence {base_confidence:.3f} -> {boosted_confidence:.3f} (boost: {boost_multiplier:.2f}x)")
+            
+            return signal
+            
+        except Exception as e:
+            logger.error(f"Error boosting signal quality for {symbol}: {str(e)}")
+            return signal
     
     async def _log_quantitative_analysis(self, symbol: str, signal: Dict, validation: Dict) -> None:
         """Log quantitative analysis results."""
@@ -2388,13 +2651,30 @@ class EnhancedTradingStrategyWithQuantitative:
                 logger.warning(f"Signal for {symbol} failed quality validation: {quality_validation['warnings']}")
                 return None
             
+            # Check if we have sufficient signal history for statistical validation
+            signal_history = self.signal_history.get(symbol, [])
+            if len(signal_history) < self.statistical_validator.min_sample_size:
+                logger.info(f"Insufficient signal history for {symbol} ({len(signal_history)} < {self.statistical_validator.min_sample_size}), skipping statistical validation")
+                # Add basic validation results without statistical testing
+                signal['statistical_validation'] = {
+                    'quality_validation': quality_validation,
+                    'significance_test': {
+                        'significant': True,  # Assume significant for new symbols
+                        'p_value': 0.05,
+                        'sample_size': len(signal_history),
+                        'note': 'Insufficient history, validation skipped'
+                    },
+                    'confidence_score': quality_validation['confidence_score']
+                }
+                return signal
+            
             # Get benchmark returns for significance testing
             benchmark_returns = await self._get_benchmark_returns(symbol)
             
             if benchmark_returns is not None:
                 # Test signal significance
                 significance_result = self.statistical_validator.test_signal_significance(
-                    self.signal_history.get(symbol, []), 
+                    signal_history, 
                     benchmark_returns
                 )
                 

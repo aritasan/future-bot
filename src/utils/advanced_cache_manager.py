@@ -407,6 +407,29 @@ class AdvancedCacheManager:
     def _compress_value(self, value: Any) -> bytes:
         """Compress value using gzip."""
         try:
+            # Check if value is a coroutine
+            if asyncio.iscoroutine(value) or asyncio.iscoroutinefunction(value):
+                logger.warning(f"Skipping coroutine object for key: {type(value).__name__}")
+                return pickle.dumps(None)  # Return None instead of coroutine
+            
+            # Check if value contains coroutines
+            if isinstance(value, dict):
+                cleaned_value = {}
+                for k, v in value.items():
+                    if asyncio.iscoroutine(v) or asyncio.iscoroutinefunction(v):
+                        cleaned_value[k] = None
+                    else:
+                        cleaned_value[k] = v
+                value = cleaned_value
+            elif isinstance(value, list):
+                cleaned_value = []
+                for item in value:
+                    if asyncio.iscoroutine(item) or asyncio.iscoroutinefunction(item):
+                        cleaned_value.append(None)
+                    else:
+                        cleaned_value.append(item)
+                value = cleaned_value
+            
             serialized = pickle.dumps(value)
             return gzip.compress(serialized)
         except Exception as e:
