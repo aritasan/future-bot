@@ -12,6 +12,7 @@ from scipy import stats
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 import warnings
+from datetime import datetime
 
 # Suppress warnings
 warnings.filterwarnings('ignore')
@@ -706,16 +707,90 @@ class WorldQuantFactorModel:
         """Get comprehensive factor model summary."""
         try:
             summary = {
-                'total_factors': len(self.factors),
-                'factor_names': list(self.factors.keys()),
-                'factor_data_points': len(self.factor_data.get('market', {})),
+                'factors': list(self.factors.keys()),
+                'factor_exposures': self.factor_exposures,
                 'risk_attribution': self.risk_attribution_results,
-                'factor_performance': self.factor_performance,
-                'risk_metrics': self.risk_metrics
+                'performance': self.factor_performance,
+                'risk_metrics': self.risk_metrics,
+                'sector_exposure': {},
+                'geographic_exposure': {}
             }
             
             return summary
             
         except Exception as e:
             logger.error(f"Error getting factor summary: {str(e)}")
-            return {} 
+            return {'error': str(e)}
+
+    async def build_factor_model(self, returns_data: pd.DataFrame) -> Dict[str, Any]:
+        """
+        Build comprehensive factor model from returns data.
+        
+        Args:
+            returns_data: DataFrame with asset returns
+            
+        Returns:
+            Dict: Factor model results including exposures and risk attribution
+        """
+        try:
+            logger.info("Building comprehensive factor model...")
+            
+            if returns_data is None or returns_data.empty:
+                logger.warning("No returns data provided for factor model")
+                return {'error': 'No returns data provided'}
+            
+            # Convert to numpy array if needed
+            if isinstance(returns_data, pd.DataFrame):
+                returns_array = returns_data.values
+                symbols = returns_data.columns.tolist()
+            elif isinstance(returns_data, np.ndarray):
+                returns_array = returns_data
+                symbols = [f"Asset_{i}" for i in range(returns_array.shape[1])]
+            else:
+                logger.error("Invalid returns data format")
+                return {'error': 'Invalid returns data format'}
+            
+            # Prepare market data structure
+            market_data = {
+                'returns': returns_array,
+                'symbols': symbols,
+                'timestamps': pd.date_range(start='2023-01-01', periods=len(returns_array), freq='D')
+            }
+            
+            # Calculate all factors
+            logger.info("Calculating factor exposures...")
+            factor_exposures = await self.calculate_all_factors(symbols, market_data)
+            
+            # Perform risk attribution analysis
+            logger.info("Performing risk attribution analysis...")
+            risk_attribution = await self.perform_risk_attribution_analysis(symbols, market_data)
+            
+            # Analyze sector and geographic exposures
+            logger.info("Analyzing sector and geographic exposures...")
+            sector_analysis = await self.analyze_sector_risk_exposure(symbols)
+            geographic_analysis = await self.analyze_geographic_risk_exposure(symbols)
+            
+            # Calculate factor correlations
+            factor_correlations = await self._calculate_factor_correlations(factor_exposures)
+            
+            # Build comprehensive results
+            results = {
+                'factor_exposures': factor_exposures,
+                'risk_attribution': risk_attribution,
+                'sector_analysis': sector_analysis,
+                'geographic_analysis': geographic_analysis,
+                'factor_correlations': factor_correlations,
+                'model_status': 'success',
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            # Store results for future reference
+            self.factor_exposures = factor_exposures
+            self.risk_attribution_results = risk_attribution
+            
+            logger.info("Factor model built successfully")
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error building factor model: {str(e)}")
+            return {'error': str(e)} 

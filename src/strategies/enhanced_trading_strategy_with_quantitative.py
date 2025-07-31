@@ -850,8 +850,12 @@ class EnhancedTradingStrategyWithQuantitative:
             returns_df = pd.DataFrame(returns_data)
             
             # Call optimize_portfolio with proper data
-            optimization = self.quantitative_system.optimize_portfolio(returns_df)
-            return optimization
+            try:
+                optimization = await self.quantitative_system.optimize_portfolio(returns_df)
+                return optimization
+            except Exception as e:
+                logger.error(f"Error in portfolio optimization: {str(e)}")
+                return {'error': str(e)}
             
         except Exception as e:
             logger.error(f"Error analyzing portfolio optimization: {str(e)}")
@@ -881,8 +885,12 @@ class EnhancedTradingStrategyWithQuantitative:
             returns_df = pd.DataFrame(returns_data)
             
             # Use factor model directly
-            factor_results = self.quantitative_system.factor_model.build_factor_model(returns_df)
-            return factor_results
+            try:
+                factor_results = await self.quantitative_system.factor_model.build_factor_model(returns_df)
+                return factor_results
+            except Exception as e:
+                logger.error(f"Error in factor analysis: {str(e)}")
+                return {'error': str(e)}
             
         except Exception as e:
             logger.error(f"Error analyzing factor exposures: {str(e)}")

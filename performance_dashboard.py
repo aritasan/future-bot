@@ -403,7 +403,7 @@ class PerformanceDashboard:
     def run(self, host='localhost', port=8050, debug=False):
         """Run the dashboard."""
         logger.info(f"Starting performance dashboard on http://{host}:{port}")
-        self.app.run_server(host=host, port=port, debug=debug)
+        self.app.run(host=host, port=port, debug=debug)
 
 def start_dashboard(strategy_instance=None, host='localhost', port=8050):
     """Start the performance dashboard."""

@@ -7,6 +7,7 @@ import logging
 from typing import Dict, Optional, List, Any
 import numpy as np
 import pandas as pd
+from datetime import datetime
 
 from .portfolio_optimizer import WorldQuantPortfolioOptimizer
 from .risk_manager import RiskManager
@@ -190,21 +191,120 @@ class QuantitativeTradingSystem:
         """Get comprehensive system summary."""
         try:
             summary = {
+                'system_status': 'active',
                 'components': {
-                    'portfolio_optimizer': 'WorldQuantPortfolioOptimizer',
-                    'risk_manager': 'RiskManager',
-                    'statistical_validator': 'StatisticalValidator',
-                    'market_microstructure': 'MarketMicrostructureAnalyzer',
-                    'backtesting_engine': 'AdvancedBacktestingEngine',
-                    'factor_model': 'WorldQuantFactorModel',
-                    'ml_ensemble': 'WorldQuantMLEnsemble'
+                    'portfolio_optimizer': 'initialized',
+                    'risk_manager': 'initialized',
+                    'statistical_validator': 'initialized',
+                    'market_microstructure': 'initialized',
+                    'backtesting_engine': 'initialized',
+                    'factor_model': 'initialized',
+                    'ml_ensemble': 'initialized'
                 },
                 'analysis_history': len(self.analysis_history),
                 'optimization_results': len(self.optimization_results),
-                'risk_metrics': len(self.risk_metrics)
+                'risk_metrics': len(self.risk_metrics),
+                'timestamp': datetime.now().isoformat()
             }
             
             return summary
             
         except Exception as e:
-            logger.error(f"Error getting system summary: {str(e)}") 
+            logger.error(f"Error getting system summary: {str(e)}")
+            return {'error': str(e)}
+
+    async def get_performance_metrics(self) -> Dict[str, Any]:
+        """
+        Get comprehensive performance metrics from all components.
+        
+        Returns:
+            Dict: Performance metrics from all quantitative components
+        """
+        try:
+            logger.info("Collecting performance metrics from all components...")
+            
+            metrics = {
+                'portfolio_optimization': {},
+                'risk_metrics': {},
+                'factor_analysis': {},
+                'market_microstructure': {},
+                'backtesting_results': {},
+                'ml_predictions': {},
+                'system_performance': {}
+            }
+            
+            # Get portfolio optimization metrics
+            try:
+                if hasattr(self.portfolio_optimizer, 'get_performance_metrics'):
+                    metrics['portfolio_optimization'] = await self.portfolio_optimizer.get_performance_metrics()
+                else:
+                    metrics['portfolio_optimization'] = {'status': 'not_available'}
+            except Exception as e:
+                logger.error(f"Error getting portfolio optimization metrics: {str(e)}")
+                metrics['portfolio_optimization'] = {'error': str(e)}
+            
+            # Get risk metrics
+            try:
+                if hasattr(self.risk_manager, 'get_risk_summary'):
+                    metrics['risk_metrics'] = self.risk_manager.get_risk_summary()
+                else:
+                    metrics['risk_metrics'] = {'status': 'not_available'}
+            except Exception as e:
+                logger.error(f"Error getting risk metrics: {str(e)}")
+                metrics['risk_metrics'] = {'error': str(e)}
+            
+            # Get factor analysis metrics
+            try:
+                if hasattr(self.factor_model, 'get_factor_summary'):
+                    metrics['factor_analysis'] = await self.factor_model.get_factor_summary()
+                else:
+                    metrics['factor_analysis'] = {'status': 'not_available'}
+            except Exception as e:
+                logger.error(f"Error getting factor analysis metrics: {str(e)}")
+                metrics['factor_analysis'] = {'error': str(e)}
+            
+            # Get market microstructure metrics
+            try:
+                if hasattr(self.market_microstructure, 'get_analysis_summary'):
+                    metrics['market_microstructure'] = await self.market_microstructure.get_analysis_summary()
+                else:
+                    metrics['market_microstructure'] = {'status': 'not_available'}
+            except Exception as e:
+                logger.error(f"Error getting market microstructure metrics: {str(e)}")
+                metrics['market_microstructure'] = {'error': str(e)}
+            
+            # Get backtesting results
+            try:
+                if hasattr(self.backtesting_engine, 'get_backtest_summary'):
+                    metrics['backtesting_results'] = await self.backtesting_engine.get_backtest_summary()
+                else:
+                    metrics['backtesting_results'] = {'status': 'not_available'}
+            except Exception as e:
+                logger.error(f"Error getting backtesting results: {str(e)}")
+                metrics['backtesting_results'] = {'error': str(e)}
+            
+            # Get ML ensemble metrics
+            try:
+                if hasattr(self.ml_ensemble, 'get_ensemble_summary'):
+                    metrics['ml_predictions'] = await self.ml_ensemble.get_ensemble_summary()
+                else:
+                    metrics['ml_predictions'] = {'status': 'not_available'}
+            except Exception as e:
+                logger.error(f"Error getting ML ensemble metrics: {str(e)}")
+                metrics['ml_predictions'] = {'error': str(e)}
+            
+            # System performance metrics
+            metrics['system_performance'] = {
+                'total_analyses': len(self.analysis_history),
+                'total_optimizations': len(self.optimization_results),
+                'total_risk_calculations': len(self.risk_metrics),
+                'last_analysis': self.last_analysis if hasattr(self, 'last_analysis') else None,
+                'system_status': 'active'
+            }
+            
+            logger.info("Performance metrics collected successfully")
+            return metrics
+            
+        except Exception as e:
+            logger.error(f"Error getting performance metrics: {str(e)}")
+            return {'error': str(e)} 

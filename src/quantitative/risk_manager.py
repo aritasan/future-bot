@@ -349,14 +349,51 @@ class DynamicPositionSizer:
 
 class RiskManager:
     """
-    Comprehensive risk management system combining VaR and position sizing.
+    WorldQuant-level risk manager for comprehensive risk analysis and management.
     """
     
-    def __init__(self, confidence_level: float = 0.95, max_position_size: float = 0.02):
-        self.var_calculator = VaRCalculator(confidence_level)
-        self.position_sizer = DynamicPositionSizer(max_position_size)
-        self.risk_history = []
+    def __init__(self, config: Dict):
+        """
+        Initialize Risk Manager.
         
+        Args:
+            config: Configuration dictionary
+        """
+        self.config = config
+        
+        # Initialize components
+        self.var_calculator = VaRCalculator(
+            confidence_level=config.get('risk', {}).get('var_confidence_level', 0.95),
+            time_horizon=config.get('risk', {}).get('var_time_horizon', 1)
+        )
+        
+        self.position_sizer = DynamicPositionSizer(
+            max_position_size=config.get('risk', {}).get('max_position_size', 0.02),
+            risk_tolerance=config.get('risk', {}).get('risk_tolerance', 0.02)
+        )
+        
+        # Risk metrics storage
+        self.risk_metrics_history = []
+        self.position_history = []
+        self.var_history = []
+        
+        logger.info("RiskManager initialized")
+    
+    async def initialize(self) -> bool:
+        """Initialize the risk manager."""
+        try:
+            # Initialize risk tracking
+            self.risk_metrics_history = []
+            self.position_history = []
+            self.var_history = []
+            
+            logger.info("RiskManager initialized successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error initializing RiskManager: {str(e)}")
+            return False
+    
     def calculate_risk_metrics(self, returns: np.array, signal_data: Dict, 
                              position_size: float) -> Dict:
         """Calculate comprehensive risk metrics."""

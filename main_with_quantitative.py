@@ -215,10 +215,14 @@ async def run_portfolio_analysis(
                     optimization_results = cached_optimization
                 else:
                     # Analyze portfolio optimization
-                    optimization_results = await asyncio.wait_for(strategy.analyze_portfolio_optimization(symbols), timeout=120)
-                    if optimization_results and 'error' not in optimization_results:
-                        # Cache optimization results
-                        await cache_service.cache_portfolio_analysis("optimization", optimization_results, ttl=3600)  # 1 hour TTL
+                    try:
+                        optimization_results = await asyncio.wait_for(strategy.analyze_portfolio_optimization(symbols), timeout=120)
+                        if optimization_results and 'error' not in optimization_results:
+                            # Cache optimization results
+                            await cache_service.cache_portfolio_analysis("optimization", optimization_results, ttl=3600)  # 1 hour TTL
+                    except Exception as e:
+                        logger.error(f"Error in portfolio optimization analysis: {str(e)}")
+                        optimization_results = None
                 
                 # Check cache for factor analysis
                 cached_factors = await cache_service.get_portfolio_analysis("factors")
@@ -227,10 +231,14 @@ async def run_portfolio_analysis(
                     factor_results = cached_factors
                 else:
                     # Analyze factor exposures
-                    factor_results = await asyncio.wait_for(strategy.analyze_factor_exposures(symbols), timeout=120)
-                    if factor_results and 'error' not in factor_results:
-                        # Cache factor results
-                        await cache_service.cache_portfolio_analysis("factors", factor_results, ttl=3600)  # 1 hour TTL
+                    try:
+                        factor_results = await asyncio.wait_for(strategy.analyze_factor_exposures(symbols), timeout=120)
+                        if factor_results and 'error' not in factor_results:
+                            # Cache factor results
+                            await cache_service.cache_portfolio_analysis("factors", factor_results, ttl=3600)  # 1 hour TTL
+                    except Exception as e:
+                        logger.error(f"Error in factor analysis: {str(e)}")
+                        factor_results = None
                 
                 # Get performance metrics
                 metrics = await asyncio.wait_for(strategy.get_performance_metrics(), timeout=60)

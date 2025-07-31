@@ -617,7 +617,7 @@ class EnhancedPerformanceDashboard:
         """Run the enhanced dashboard."""
         logger.info(f"Starting enhanced performance dashboard on http://{host}:{port}")
         logger.info(f"WebSocket server expected at {self.websocket_url}")
-        self.app.run_server(host=host, port=port, debug=debug)
+        self.app.run(host=host, port=port, debug=debug)
 
 def start_enhanced_dashboard(websocket_url="ws://localhost:8765", host='localhost', port=8050):
     """Start the enhanced performance dashboard."""

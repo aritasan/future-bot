@@ -74,7 +74,8 @@ class WorldQuantRealTimePerformanceMonitor:
             'risk_score': 0.0,
             'stability_score': 0.0,
             'websocket_clients': set(),
-            'monitoring_task': None
+            'monitoring_task': None,
+            'websocket_port': None # Added for storing the port
         }
         
         # Alert thresholds - WorldQuant Standards
@@ -238,16 +239,42 @@ class WorldQuantRealTimePerformanceMonitor:
                     logger.info(f"WebSocket client connected: {websocket.remote_address}")
                     
                     # Send initial data
-                    initial_data = await self.get_real_time_summary()
-                    await websocket.send(json.dumps(initial_data, default=str))
+                    try:
+                        logger.info("Preparing initial data...")
+                        initial_data = await self.get_real_time_summary()
+                        logger.info(f"Initial data: {initial_data}")
+                        
+                        # Ensure data is serializable
+                        json_data = json.dumps(initial_data, default=str)
+                        logger.info(f"JSON data: {json_data}")
+                        
+                        await websocket.send(json_data)
+                        logger.info("Sent initial data successfully")
+                    except Exception as e:
+                        logger.error(f"Error sending initial data: {str(e)}")
+                        # Send fallback data
+                        fallback_data = {
+                            'performance_score': 0.0,
+                            'risk_score': 0.0,
+                            'stability_score': 0.0,
+                            'timestamp': datetime.now().isoformat(),
+                            'status': 'fallback'
+                        }
+                        await websocket.send(json.dumps(fallback_data))
+                        logger.info("Sent fallback data")
                     
-                    # Keep connection alive and send updates
+                    # Keep connection alive
                     while True:
                         try:
-                            # Wait for client ping
-                            await websocket.ping()
-                            await asyncio.sleep(1)
+                            await asyncio.sleep(5)  # Update every 5 seconds
+                            
+                            # Send performance data
+                            data = await self.get_real_time_summary()
+                            json_data = json.dumps(data, default=str)
+                            await websocket.send(json_data)
+                            
                         except websockets.exceptions.ConnectionClosed:
+                            logger.info("WebSocket connection closed by client")
                             break
                         except Exception as e:
                             logger.error(f"WebSocket error: {str(e)}")
@@ -259,9 +286,30 @@ class WorldQuantRealTimePerformanceMonitor:
                     self.monitoring_state['websocket_clients'].discard(websocket)
                     logger.info(f"WebSocket client disconnected: {websocket.remote_address}")
             
-            # Start WebSocket server
-            server = await websockets.serve(websocket_handler, "localhost", 8765)
-            logger.info("WebSocket server running on ws://localhost:8765")
+            # Try different ports if the default port is busy
+            ports_to_try = [8765, 8766, 8767, 8768, 8769]
+            server = None
+            selected_port = None
+            
+            for port in ports_to_try:
+                try:
+                    server = await websockets.serve(websocket_handler, "localhost", port)
+                    selected_port = port
+                    logger.info(f"WebSocket server running on ws://localhost:{port}")
+                    break
+                except OSError as e:
+                    if "Address already in use" in str(e) or "Only one usage" in str(e):
+                        logger.warning(f"Port {port} is busy, trying next port...")
+                        continue
+                    else:
+                        raise e
+            
+            if server is None:
+                logger.error("Could not start WebSocket server on any available port")
+                return
+            
+            # Store the selected port for dashboard connection
+            self.monitoring_state['websocket_port'] = selected_port
             
             # Keep server running
             await server.wait_closed()
@@ -569,36 +617,39 @@ class WorldQuantRealTimePerformanceMonitor:
             return []
     
     async def get_real_time_summary(self) -> Dict[str, Any]:
-        """Get comprehensive real-time performance summary."""
+        """Get simplified real-time summary for WebSocket."""
         try:
-            latest_metrics = {}
-            for metric_name, metric_queue in self.performance_metrics.items():
-                if metric_queue:
-                    latest_metrics[metric_name] = metric_queue[-1]
-            
-            latest_system_metrics = {}
-            for metric_name, metric_queue in self.system_metrics.items():
-                if metric_queue:
-                    latest_system_metrics[metric_name] = metric_queue[-1]
-            
+            # Create simple, serializable data structure
             summary = {
-                'performance_metrics': latest_metrics,
-                'system_metrics': latest_system_metrics,
-                'performance_score': self.monitoring_state['performance_score'],
-                'risk_score': self.monitoring_state['risk_score'],
-                'stability_score': self.monitoring_state['stability_score'],
-                'alert_count': self.monitoring_state['alert_count'],
-                'last_update': self.monitoring_state['last_update'],
-                'monitoring_active': self.monitoring_state['active'],
-                'websocket_clients': len(self.monitoring_state['websocket_clients']),
-                'timestamp': datetime.now().isoformat()
+                'performance_score': float(self.monitoring_state.get('performance_score', 0.0)),
+                'risk_score': float(self.monitoring_state.get('risk_score', 0.0)),
+                'stability_score': float(self.monitoring_state.get('stability_score', 0.0)),
+                'timestamp': datetime.now().isoformat(),
+                'alerts_count': int(self.monitoring_state.get('alert_count', 0)),
+                'system_status': 'active' if self.monitoring_state.get('active', False) else 'inactive',
+                'websocket_clients': len(self.monitoring_state.get('websocket_clients', set())),
+                'last_update': self.monitoring_state.get('last_update', datetime.now().isoformat())
             }
+            
+            # Ensure last_update is a string
+            if isinstance(summary['last_update'], datetime):
+                summary['last_update'] = summary['last_update'].isoformat()
             
             return summary
             
         except Exception as e:
             logger.error(f"Error getting real-time summary: {str(e)}")
-            return {}
+            return {
+                'performance_score': 0.0,
+                'risk_score': 0.0,
+                'stability_score': 0.0,
+                'timestamp': datetime.now().isoformat(),
+                'alerts_count': 0,
+                'system_status': 'error',
+                'websocket_clients': 0,
+                'last_update': datetime.now().isoformat(),
+                'error': str(e)
+            }
     
     async def get_performance_summary(self) -> Dict[str, Any]:
         """Get comprehensive performance summary."""

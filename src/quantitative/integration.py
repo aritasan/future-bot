@@ -48,6 +48,10 @@ class QuantitativeIntegration:
         self.integration_status = 'initialized'
         self.last_analysis = None
         
+        # Analysis cache for performance optimization
+        self.analysis_cache = {}
+        self.cache_ttl = 3600  # 1 hour cache TTL
+        
         logger.info("QuantitativeIntegration initialized")
     
     async def initialize(self) -> bool:

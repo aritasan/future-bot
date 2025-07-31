@@ -222,49 +222,54 @@ class WorldQuantPerformanceTracker:
     async def _start_websocket_server(self) -> None:
         """Start WebSocket server for real-time data broadcasting."""
         try:
-            # Start WebSocket server in background
-            asyncio.create_task(self._websocket_server())
-            logger.info("WebSocket server started for real-time monitoring")
+            # Disable WebSocket server to avoid port conflicts
+            # Using real_time_performance_monitor.py WebSocket server instead
+            logger.info("WebSocket server disabled - using real_time_performance_monitor WebSocket server")
         except Exception as e:
             logger.error(f"Error starting WebSocket server: {str(e)}")
     
     async def _websocket_server(self) -> None:
         """WebSocket server for real-time performance data."""
         try:
-            async def websocket_handler(websocket, path):
-                """Handle WebSocket connections."""
-                try:
-                    self.monitoring_state['websocket_clients'].add(websocket)
-                    logger.info(f"WebSocket client connected: {websocket.remote_address}")
-                    
-                    # Send initial data
-                    initial_data = await self.get_real_time_summary()
-                    await websocket.send(json.dumps(initial_data, default=str))
-                    
-                    # Keep connection alive and send updates
-                    while True:
-                        try:
-                            # Wait for client ping
-                            await websocket.ping()
-                            await asyncio.sleep(1)
-                        except websockets.exceptions.ConnectionClosed:
-                            break
-                        except Exception as e:
-                            logger.error(f"WebSocket error: {str(e)}")
-                            break
-                            
-                except Exception as e:
-                    logger.error(f"WebSocket handler error: {str(e)}")
-                finally:
-                    self.monitoring_state['websocket_clients'].discard(websocket)
-                    logger.info(f"WebSocket client disconnected: {websocket.remote_address}")
+            # Disable WebSocket server to avoid port conflicts
+            logger.info("WebSocket server disabled - using real_time_performance_monitor WebSocket server")
+            return
             
-            # Start WebSocket server
-            server = await websockets.serve(websocket_handler, "localhost", 8765)
-            logger.info("WebSocket server running on ws://localhost:8765")
-            
-            # Keep server running
-            await server.wait_closed()
+            # Original code commented out to avoid conflicts
+            # async def websocket_handler(websocket, path):
+            #     """Handle WebSocket connections."""
+            #     try:
+            #         self.monitoring_state['websocket_clients'].add(websocket)
+            #         logger.info(f"WebSocket client connected: {websocket.remote_address}")
+            #         
+            #         # Send initial data
+            #         initial_data = await self.get_real_time_summary()
+            #         await websocket.send(json.dumps(initial_data, default=str))
+            #         
+            #         # Keep connection alive and send updates
+            #         while True:
+            #             try:
+            #                 # Wait for client ping
+            #                 await websocket.ping()
+            #                 await asyncio.sleep(1)
+            #             except websockets.exceptions.ConnectionClosed:
+            #                 break
+            #             except Exception as e:
+            #                 logger.error(f"WebSocket error: {str(e)}")
+            #                 break
+            #                 
+            #     except Exception as e:
+            #         logger.error(f"WebSocket handler error: {str(e)}")
+            #     finally:
+            #         self.monitoring_state['websocket_clients'].discard(websocket)
+            #         logger.info(f"WebSocket client disconnected: {websocket.remote_address}")
+            # 
+            # # Start WebSocket server
+            # server = await websockets.serve(websocket_handler, "localhost", 8765)
+            # logger.info("WebSocket server running on ws://localhost:8765")
+            # 
+            # # Keep server running
+            # await server.wait_closed()
             
         except Exception as e:
             logger.error(f"Error in WebSocket server: {str(e)}")
