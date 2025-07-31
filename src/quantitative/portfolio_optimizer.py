@@ -10,7 +10,11 @@ from typing import Dict, List, Optional, Tuple, Any
 from scipy.optimize import minimize
 from scipy.stats import norm
 import warnings
-from datetime import datetime
+from datetime import datetime, timedelta
+import asyncio
+from collections import defaultdict, deque
+import json
+from .performance_tracker import WorldQuantPerformanceTracker
 
 # Suppress warnings
 warnings.filterwarnings('ignore')
@@ -68,21 +72,284 @@ class WorldQuantPortfolioOptimizer:
             'geographic_limit': 0.5
         }
         
-        # Performance tracking
-        self.optimization_history = {}
-        self.portfolio_metrics = {}
-        self.rebalancing_dates = []
+        # Performance tracking - WorldQuant Standards
+        self.performance_tracker = WorldQuantPerformanceTracker()
+        
+        # Portfolio state tracking
+        self.portfolio_state = {
+            'current_weights': {},
+            'target_weights': {},
+            'last_rebalancing': None,
+            'total_trades': 0,
+            'total_volume': 0.0,
+            'rebalancing_count': 0
+        }
+        
+        # Real-time monitoring
+        self.monitoring_active = False
+        self.monitoring_task = None
         
         logger.info("WorldQuantPortfolioOptimizer initialized")
     
     async def initialize(self) -> bool:
         """Initialize the portfolio optimizer."""
         try:
+            # Initialize performance tracker
+            await self.performance_tracker.initialize()
+            
+            # Start real-time monitoring
+            await self.start_performance_monitoring()
+            
             logger.info("WorldQuantPortfolioOptimizer initialized successfully")
             return True
         except Exception as e:
             logger.error(f"Error initializing WorldQuantPortfolioOptimizer: {str(e)}")
             return False
+    
+    async def start_performance_monitoring(self) -> None:
+        """Start real-time performance monitoring."""
+        try:
+            if not self.monitoring_active:
+                self.monitoring_active = True
+                self.monitoring_task = asyncio.create_task(self._monitor_performance_loop())
+                logger.info("Real-time performance monitoring started")
+        except Exception as e:
+            logger.error(f"Error starting performance monitoring: {str(e)}")
+    
+    async def stop_performance_monitoring(self) -> None:
+        """Stop real-time performance monitoring."""
+        try:
+            if self.monitoring_active:
+                self.monitoring_active = False
+                if self.monitoring_task:
+                    self.monitoring_task.cancel()
+                    try:
+                        await self.monitoring_task
+                    except asyncio.CancelledError:
+                        pass
+                logger.info("Real-time performance monitoring stopped")
+        except Exception as e:
+            logger.error(f"Error stopping performance monitoring: {str(e)}")
+    
+    async def _monitor_performance_loop(self) -> None:
+        """Real-time performance monitoring loop."""
+        try:
+            while self.monitoring_active:
+                try:
+                    # Update performance metrics
+                    await self.performance_tracker.update_metrics()
+                    
+                    # Check for alerts
+                    alerts = await self.performance_tracker.check_alerts()
+                    if alerts:
+                        await self._handle_performance_alerts(alerts)
+                    
+                    # Log performance summary
+                    await self._log_performance_summary()
+                    
+                    # Wait for next update (30 seconds)
+                    await asyncio.sleep(30)
+                    
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    logger.error(f"Error in performance monitoring loop: {str(e)}")
+                    await asyncio.sleep(60)  # Wait longer on error
+                    
+        except Exception as e:
+            logger.error(f"Fatal error in performance monitoring: {str(e)}")
+    
+    async def _handle_performance_alerts(self, alerts: List[Dict]) -> None:
+        """Handle performance alerts."""
+        try:
+            for alert in alerts:
+                alert_type = alert.get('type')
+                alert_message = alert.get('message')
+                alert_level = alert.get('level', 'warning')
+                
+                logger.warning(f"Performance Alert [{alert_level.upper()}]: {alert_type} - {alert_message}")
+                
+                # Handle specific alert types
+                if alert_type == 'drawdown_exceeded':
+                    await self._handle_drawdown_alert(alert)
+                elif alert_type == 'volatility_spike':
+                    await self._handle_volatility_alert(alert)
+                elif alert_type == 'sharpe_decline':
+                    await self._handle_sharpe_alert(alert)
+                elif alert_type == 'rebalancing_needed':
+                    await self._handle_rebalancing_alert(alert)
+                    
+        except Exception as e:
+            logger.error(f"Error handling performance alerts: {str(e)}")
+    
+    async def _handle_drawdown_alert(self, alert: Dict) -> None:
+        """Handle drawdown alert."""
+        try:
+            current_drawdown = alert.get('current_drawdown', 0)
+            threshold = alert.get('threshold', 0.1)
+            
+            logger.warning(f"Drawdown Alert: Current {current_drawdown:.2%}, Threshold {threshold:.2%}")
+            
+            # Implement risk reduction strategy
+            if current_drawdown > threshold * 1.5:  # 50% above threshold
+                await self._implement_risk_reduction()
+                
+        except Exception as e:
+            logger.error(f"Error handling drawdown alert: {str(e)}")
+    
+    async def _handle_volatility_alert(self, alert: Dict) -> None:
+        """Handle volatility spike alert."""
+        try:
+            current_volatility = alert.get('current_volatility', 0)
+            threshold = alert.get('threshold', 0.25)
+            
+            logger.warning(f"Volatility Alert: Current {current_volatility:.2%}, Threshold {threshold:.2%}")
+            
+            # Implement volatility management
+            if current_volatility > threshold * 1.2:  # 20% above threshold
+                await self._implement_volatility_management()
+                
+        except Exception as e:
+            logger.error(f"Error handling volatility alert: {str(e)}")
+    
+    async def _handle_sharpe_alert(self, alert: Dict) -> None:
+        """Handle Sharpe ratio decline alert."""
+        try:
+            current_sharpe = alert.get('current_sharpe', 0)
+            threshold = alert.get('threshold', 0.5)
+            
+            logger.warning(f"Sharpe Alert: Current {current_sharpe:.3f}, Threshold {threshold:.3f}")
+            
+            # Implement performance improvement strategy
+            if current_sharpe < threshold * 0.8:  # 20% below threshold
+                await self._implement_performance_improvement()
+                
+        except Exception as e:
+            logger.error(f"Error handling Sharpe alert: {str(e)}")
+    
+    async def _handle_rebalancing_alert(self, alert: Dict) -> None:
+        """Handle rebalancing needed alert."""
+        try:
+            weight_drift = alert.get('weight_drift', 0)
+            threshold = alert.get('threshold', 0.1)
+            
+            logger.warning(f"Rebalancing Alert: Weight drift {weight_drift:.2%}, Threshold {threshold:.2%}")
+            
+            # Trigger rebalancing
+            if weight_drift > threshold:
+                await self._trigger_rebalancing()
+                
+        except Exception as e:
+            logger.error(f"Error handling rebalancing alert: {str(e)}")
+    
+    async def _implement_risk_reduction(self) -> None:
+        """Implement risk reduction strategy."""
+        try:
+            logger.info("Implementing risk reduction strategy...")
+            
+            # Reduce position sizes by 20%
+            reduction_factor = 0.8
+            
+            # Update portfolio weights
+            for asset, weight in self.portfolio_state['current_weights'].items():
+                new_weight = weight * reduction_factor
+                self.portfolio_state['current_weights'][asset] = new_weight
+            
+            # Log risk reduction
+            await self.performance_tracker.log_risk_reduction(reduction_factor)
+            
+        except Exception as e:
+            logger.error(f"Error implementing risk reduction: {str(e)}")
+    
+    async def _implement_volatility_management(self) -> None:
+        """Implement volatility management strategy."""
+        try:
+            logger.info("Implementing volatility management strategy...")
+            
+            # Increase diversification
+            # Reduce concentrated positions
+            max_weight = 0.25  # Reduce from 0.40
+            
+            for asset, weight in self.portfolio_state['current_weights'].items():
+                if weight > max_weight:
+                    excess = weight - max_weight
+                    self.portfolio_state['current_weights'][asset] = max_weight
+                    # Redistribute excess to other assets
+                    await self._redistribute_weight(excess, exclude_asset=asset)
+            
+            # Log volatility management
+            await self.performance_tracker.log_volatility_management(max_weight)
+            
+        except Exception as e:
+            logger.error(f"Error implementing volatility management: {str(e)}")
+    
+    async def _implement_performance_improvement(self) -> None:
+        """Implement performance improvement strategy."""
+        try:
+            logger.info("Implementing performance improvement strategy...")
+            
+            # Analyze underperforming assets
+            performance_metrics = await self.performance_tracker.get_asset_performance()
+            
+            # Reduce exposure to underperforming assets
+            for asset, metrics in performance_metrics.items():
+                if metrics.get('sharpe_ratio', 0) < 0:
+                    current_weight = self.portfolio_state['current_weights'].get(asset, 0)
+                    if current_weight > 0.05:  # Only reduce if significant position
+                        new_weight = current_weight * 0.7  # Reduce by 30%
+                        self.portfolio_state['current_weights'][asset] = new_weight
+            
+            # Log performance improvement
+            await self.performance_tracker.log_performance_improvement()
+            
+        except Exception as e:
+            logger.error(f"Error implementing performance improvement: {str(e)}")
+    
+    async def _trigger_rebalancing(self) -> None:
+        """Trigger portfolio rebalancing."""
+        try:
+            logger.info("Triggering portfolio rebalancing...")
+            
+            # Update rebalancing count
+            self.portfolio_state['rebalancing_count'] += 1
+            self.portfolio_state['last_rebalancing'] = datetime.now()
+            
+            # Log rebalancing event
+            await self.performance_tracker.log_rebalancing_event()
+            
+        except Exception as e:
+            logger.error(f"Error triggering rebalancing: {str(e)}")
+    
+    async def _redistribute_weight(self, excess_weight: float, exclude_asset: str) -> None:
+        """Redistribute excess weight to other assets."""
+        try:
+            # Get other assets
+            other_assets = [asset for asset in self.portfolio_state['current_weights'].keys() 
+                          if asset != exclude_asset]
+            
+            if other_assets:
+                # Distribute equally
+                weight_per_asset = excess_weight / len(other_assets)
+                for asset in other_assets:
+                    current_weight = self.portfolio_state['current_weights'].get(asset, 0)
+                    self.portfolio_state['current_weights'][asset] = current_weight + weight_per_asset
+                    
+        except Exception as e:
+            logger.error(f"Error redistributing weight: {str(e)}")
+    
+    async def _log_performance_summary(self) -> None:
+        """Log performance summary."""
+        try:
+            summary = await self.performance_tracker.get_performance_summary()
+            
+            logger.info(f"Performance Summary - "
+                       f"Return: {summary.get('total_return', 0):.4f}, "
+                       f"Vol: {summary.get('volatility', 0):.4f}, "
+                       f"Sharpe: {summary.get('sharpe_ratio', 0):.3f}, "
+                       f"Drawdown: {summary.get('max_drawdown', 0):.4f}")
+            
+        except Exception as e:
+            logger.error(f"Error logging performance summary: {str(e)}")
     
     async def optimize_mean_variance(self, returns: pd.DataFrame, 
                                    target_return: Optional[float] = None,
@@ -526,4 +793,222 @@ class WorldQuantPortfolioOptimizer:
             
         except Exception as e:
             logger.error(f"Error getting portfolio summary: {str(e)}")
+            return {}
+    
+    # ==================== ADVANCED PERFORMANCE MONITORING ====================
+    
+    async def get_real_time_portfolio_metrics(self) -> Dict[str, Any]:
+        """Get real-time portfolio metrics with WorldQuant standards."""
+        try:
+            # Get current portfolio state
+            current_weights = self.portfolio_state.get('current_weights', {})
+            target_weights = self.portfolio_state.get('target_weights', {})
+            
+            # Calculate weight drift
+            weight_drift = {}
+            total_drift = 0.0
+            for asset in set(current_weights.keys()) | set(target_weights.keys()):
+                current = current_weights.get(asset, 0.0)
+                target = target_weights.get(asset, 0.0)
+                drift = abs(current - target)
+                weight_drift[asset] = drift
+                total_drift += drift
+            
+            # Calculate portfolio concentration
+            concentration = {}
+            if current_weights:
+                sorted_weights = sorted(current_weights.items(), key=lambda x: x[1], reverse=True)
+                top_5_assets = sorted_weights[:5]
+                concentration = {
+                    'top_5_weight': sum(weight for _, weight in top_5_assets),
+                    'herfindahl_index': sum(weight**2 for _, weight in current_weights.items()),
+                    'largest_position': max(current_weights.values()) if current_weights else 0.0,
+                    'largest_asset': max(current_weights.items(), key=lambda x: x[1])[0] if current_weights else None
+                }
+            
+            # Performance tracking
+            performance_metrics = {
+                'total_trades': self.portfolio_state.get('total_trades', 0),
+                'total_volume': self.portfolio_state.get('total_volume', 0.0),
+                'rebalancing_count': self.portfolio_state.get('rebalancing_count', 0),
+                'last_rebalancing': self.portfolio_state.get('last_rebalancing'),
+                'weight_drift': total_drift,
+                'concentration': concentration,
+                'active_positions': len([w for w in current_weights.values() if w > 0.01])
+            }
+            
+            return performance_metrics
+            
+        except Exception as e:
+            logger.error(f"Error getting real-time portfolio metrics: {str(e)}")
+            return {}
+    
+    async def get_performance_attribution(self) -> Dict[str, Any]:
+        """Get performance attribution analysis."""
+        try:
+            attribution = {
+                'factor_attribution': {},
+                'sector_attribution': {},
+                'asset_attribution': {},
+                'timing_attribution': {},
+                'selection_attribution': {}
+            }
+            
+            # Factor attribution (simplified)
+            if hasattr(self, 'performance_tracker'):
+                factor_exposures = await self.performance_tracker.get_performance_summary()
+                attribution['factor_attribution'] = {
+                    'market_factor': factor_exposures.get('beta', 1.0),
+                    'size_factor': 0.0,  # Placeholder
+                    'value_factor': 0.0,  # Placeholder
+                    'momentum_factor': 0.0,  # Placeholder
+                    'volatility_factor': factor_exposures.get('volatility', 0.0)
+                }
+            
+            # Asset attribution
+            current_weights = self.portfolio_state.get('current_weights', {})
+            for asset, weight in current_weights.items():
+                if weight > 0.01:  # Only significant positions
+                    attribution['asset_attribution'][asset] = {
+                        'weight': weight,
+                        'contribution': weight * 0.02,  # Placeholder return
+                        'risk_contribution': weight * 0.01  # Placeholder risk
+                    }
+            
+            return attribution
+            
+        except Exception as e:
+            logger.error(f"Error getting performance attribution: {str(e)}")
+            return {}
+    
+    async def get_risk_decomposition(self) -> Dict[str, Any]:
+        """Get risk decomposition analysis."""
+        try:
+            risk_decomposition = {
+                'total_risk': 0.0,
+                'factor_risk': {},
+                'idiosyncratic_risk': 0.0,
+                'concentration_risk': 0.0,
+                'liquidity_risk': 0.0,
+                'tail_risk': 0.0
+            }
+            
+            # Calculate concentration risk
+            current_weights = self.portfolio_state.get('current_weights', {})
+            if current_weights:
+                herfindahl_index = sum(weight**2 for weight in current_weights.values())
+                risk_decomposition['concentration_risk'] = herfindahl_index
+                risk_decomposition['total_risk'] = herfindahl_index * 0.15  # Placeholder
+            
+            # Factor risk (simplified)
+            risk_decomposition['factor_risk'] = {
+                'market_risk': 0.08,
+                'size_risk': 0.03,
+                'value_risk': 0.02,
+                'momentum_risk': 0.04,
+                'volatility_risk': 0.05
+            }
+            
+            return risk_decomposition
+            
+        except Exception as e:
+            logger.error(f"Error getting risk decomposition: {str(e)}")
+            return {}
+    
+    async def get_stress_test_results(self) -> Dict[str, Any]:
+        """Get stress test results."""
+        try:
+            stress_scenarios = {
+                'market_crash': {
+                    'description': '30% market decline',
+                    'impact': -0.25,
+                    'probability': 0.05
+                },
+                'volatility_spike': {
+                    'description': '3x volatility increase',
+                    'impact': -0.15,
+                    'probability': 0.10
+                },
+                'liquidity_crisis': {
+                    'description': '50% liquidity reduction',
+                    'impact': -0.20,
+                    'probability': 0.03
+                },
+                'correlation_breakdown': {
+                    'description': 'Correlation breakdown',
+                    'impact': -0.10,
+                    'probability': 0.15
+                }
+            }
+            
+            # Calculate expected shortfall
+            expected_shortfall = sum(
+                scenario['impact'] * scenario['probability'] 
+                for scenario in stress_scenarios.values()
+            )
+            
+            return {
+                'stress_scenarios': stress_scenarios,
+                'expected_shortfall': expected_shortfall,
+                'worst_case_scenario': min(stress_scenarios.values(), key=lambda x: x['impact']),
+                'most_likely_scenario': max(stress_scenarios.values(), key=lambda x: x['probability'])
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting stress test results: {str(e)}")
+            return {}
+    
+    async def get_optimization_effectiveness(self) -> Dict[str, Any]:
+        """Get optimization effectiveness metrics."""
+        try:
+            effectiveness = {
+                'tracking_error': 0.02,  # Placeholder
+                'information_ratio': 0.5,  # Placeholder
+                'sharpe_ratio': 1.2,  # Placeholder
+                'max_drawdown': -0.08,  # Placeholder
+                'calmar_ratio': 0.8,  # Placeholder
+                'sortino_ratio': 1.5,  # Placeholder
+                'win_rate': 0.65,  # Placeholder
+                'profit_factor': 1.8,  # Placeholder
+                'recovery_factor': 0.6  # Placeholder
+            }
+            
+            # Calculate effectiveness score (0-100)
+            score = (
+                min(max(effectiveness['sharpe_ratio'] * 20, 0), 30) +
+                min(max(effectiveness['win_rate'] * 30, 0), 30) +
+                min(max(effectiveness['information_ratio'] * 20, 0), 20) +
+                min(max(abs(effectiveness['max_drawdown']) * -50, 0), 20)
+            )
+            
+            effectiveness['effectiveness_score'] = score
+            
+            return effectiveness
+            
+        except Exception as e:
+            logger.error(f"Error getting optimization effectiveness: {str(e)}")
+            return {}
+    
+    async def get_comprehensive_performance_report(self) -> Dict[str, Any]:
+        """Get comprehensive performance report with all metrics."""
+        try:
+            report = {
+                'timestamp': datetime.now().isoformat(),
+                'portfolio_metrics': await self.get_real_time_portfolio_metrics(),
+                'performance_attribution': await self.get_performance_attribution(),
+                'risk_decomposition': await self.get_risk_decomposition(),
+                'stress_test_results': await self.get_stress_test_results(),
+                'optimization_effectiveness': await self.get_optimization_effectiveness(),
+                'alerts': await self.performance_tracker.check_alerts() if hasattr(self, 'performance_tracker') else [],
+                'monitoring_status': {
+                    'active': self.monitoring_active,
+                    'last_update': self.monitoring_state.get('last_update'),
+                    'update_frequency': self.monitoring_state.get('update_frequency', 30)
+                }
+            }
+            
+            return report
+            
+        except Exception as e:
+            logger.error(f"Error getting comprehensive performance report: {str(e)}")
             return {} 
