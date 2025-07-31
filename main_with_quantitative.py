@@ -5,8 +5,6 @@ Main entry point for the trading bot with Quantitative Trading Integration.
 
 import asyncio
 import logging
-import sys
-from pathlib import Path
 
 # Setup logging configuration
 from src.utils.logging_config import setup_logging
@@ -21,9 +19,7 @@ logging.getLogger('aiohttp.access').setLevel(logging.ERROR)
 logging.getLogger('websockets.server').setLevel(logging.WARNING)
 
 
-import logging
 import signal
-import sys
 from logging.handlers import RotatingFileHandler
 import os
 from datetime import datetime

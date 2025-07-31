@@ -309,6 +309,208 @@ class QuantitativeTradingSystem:
             logger.error(f"Error getting performance metrics: {str(e)}")
             return {'error': str(e)}
 
+    async def validate_signal(self, signal: Dict, market_data: Dict) -> Dict[str, Any]:
+        """
+        Validate trading signal using quantitative analysis.
+        
+        Args:
+            signal: Trading signal dictionary
+            market_data: Market data dictionary
+            
+        Returns:
+            Dictionary with validation results
+        """
+        try:
+            validation_results = {
+                'validated': False,
+                'confidence': 0.0,
+                'strength': 0.0,
+                'statistical_significance': False,
+                'risk_assessment': {},
+                'factor_analysis': {},
+                'ml_predictions': {}
+            }
+            
+            # 1. Statistical validation
+            if hasattr(self, 'statistical_validator'):
+                quality_validation = self.statistical_validator.validate_signal_quality(signal)
+                validation_results['statistical_validation'] = quality_validation
+                validation_results['statistical_significance'] = quality_validation.get('significant', False)
+            
+            # 2. Risk assessment
+            if hasattr(self, 'risk_manager'):
+                risk_assessment = self.risk_manager.assess_signal_risk(signal, market_data)
+                validation_results['risk_assessment'] = risk_assessment
+            
+            # 3. Factor analysis
+            if hasattr(self, 'factor_model'):
+                factor_analysis = await self.factor_model.analyze_signal_factors(signal, market_data)
+                validation_results['factor_analysis'] = factor_analysis
+            
+            # 4. ML predictions
+            if hasattr(self, 'ml_ensemble'):
+                ml_predictions = await self.ml_ensemble.predict_signal_outcome(signal, market_data)
+                validation_results['ml_predictions'] = ml_predictions
+            
+            # 5. Calculate overall confidence and strength
+            confidence_factors = []
+            strength_factors = []
+            
+            if validation_results['statistical_significance']:
+                confidence_factors.append(0.3)
+                strength_factors.append(0.2)
+            
+            if validation_results['risk_assessment'].get('acceptable_risk', False):
+                confidence_factors.append(0.2)
+                strength_factors.append(0.1)
+            
+            if validation_results['factor_analysis'].get('favorable_factors', False):
+                confidence_factors.append(0.2)
+                strength_factors.append(0.2)
+            
+            if validation_results['ml_predictions'].get('positive_prediction', False):
+                confidence_factors.append(0.3)
+                strength_factors.append(0.3)
+            
+            # Calculate weighted averages
+            if confidence_factors:
+                validation_results['confidence'] = sum(confidence_factors)
+            if strength_factors:
+                validation_results['strength'] = sum(strength_factors)
+            
+            # Determine if signal is validated
+            validation_results['validated'] = (
+                validation_results['confidence'] >= 0.5 and
+                validation_results['strength'] >= 0.3
+            )
+            
+            logger.info(f"Signal validation completed: validated={validation_results['validated']}, "
+                       f"confidence={validation_results['confidence']:.3f}, "
+                       f"strength={validation_results['strength']:.3f}")
+            
+            return validation_results
+            
+        except Exception as e:
+            logger.error(f"Error validating signal: {str(e)}")
+            return {
+                'validated': False,
+                'confidence': 0.0,
+                'strength': 0.0,
+                'error': str(e)
+            }
+    
+    async def get_recommendations(self, symbol: str) -> Dict[str, Any]:
+        """
+        Get quantitative trading recommendations for a symbol.
+        
+        Args:
+            symbol: Trading symbol
+            
+        Returns:
+            Dictionary with trading recommendations
+        """
+        try:
+            recommendations = {
+                'symbol': symbol,
+                'action': 'hold',
+                'confidence': 0.0,
+                'strength': 0.0,
+                'risk_level': 'medium',
+                'position_size': 0.0,
+                'stop_loss': 0.0,
+                'take_profit': 0.0,
+                'reasoning': [],
+                'factor_exposures': {},
+                'risk_metrics': {},
+                'ml_predictions': {}
+            }
+            
+            # 1. Factor model analysis
+            if hasattr(self, 'factor_model'):
+                factor_analysis = await self.factor_model.analyze_symbol_factors(symbol)
+                recommendations['factor_exposures'] = factor_analysis
+            
+            # 2. Risk assessment
+            if hasattr(self, 'risk_manager'):
+                risk_assessment = self.risk_manager.assess_symbol_risk(symbol)
+                recommendations['risk_metrics'] = risk_assessment
+                recommendations['risk_level'] = risk_assessment.get('risk_level', 'medium')
+            
+            # 3. ML predictions
+            if hasattr(self, 'ml_ensemble'):
+                ml_predictions = await self.ml_ensemble.predict_symbol_movement(symbol)
+                recommendations['ml_predictions'] = ml_predictions
+            
+            # 4. Portfolio optimization insights
+            if hasattr(self, 'portfolio_optimizer'):
+                portfolio_insights = await self.portfolio_optimizer.get_symbol_optimization(symbol)
+                recommendations['portfolio_insights'] = portfolio_insights
+            
+            # 5. Determine action based on analysis
+            confidence_score = 0.0
+            strength_score = 0.0
+            reasoning = []
+            
+            # Factor analysis contribution
+            if recommendations['factor_exposures'].get('favorable_factors', False):
+                confidence_score += 0.3
+                strength_score += 0.2
+                reasoning.append('Favorable factor exposures')
+            
+            # Risk assessment contribution
+            if recommendations['risk_metrics'].get('acceptable_risk', False):
+                confidence_score += 0.2
+                strength_score += 0.1
+                reasoning.append('Acceptable risk profile')
+            
+            # ML predictions contribution
+            if recommendations['ml_predictions'].get('positive_prediction', False):
+                confidence_score += 0.3
+                strength_score += 0.3
+                reasoning.append('Positive ML prediction')
+            
+            # Portfolio optimization contribution
+            if recommendations.get('portfolio_insights', {}).get('optimal_weight', 0) > 0:
+                confidence_score += 0.2
+                strength_score += 0.2
+                reasoning.append('Portfolio optimization favorable')
+            
+            # Set final values
+            recommendations['confidence'] = min(confidence_score, 1.0)
+            recommendations['strength'] = min(strength_score, 1.0)
+            recommendations['reasoning'] = reasoning
+            
+            # Determine action
+            if recommendations['confidence'] >= 0.7 and recommendations['strength'] >= 0.5:
+                recommendations['action'] = 'buy'
+            elif recommendations['confidence'] >= 0.6 and recommendations['strength'] >= 0.4:
+                recommendations['action'] = 'sell'
+            else:
+                recommendations['action'] = 'hold'
+            
+            # Calculate position size
+            if recommendations['action'] != 'hold':
+                base_size = 0.1  # 10% of portfolio
+                risk_adjustment = 1.0 - (recommendations['risk_metrics'].get('var_99', 0) * 10)
+                confidence_adjustment = recommendations['confidence']
+                recommendations['position_size'] = base_size * risk_adjustment * confidence_adjustment
+            
+            logger.info(f"Recommendations for {symbol}: action={recommendations['action']}, "
+                       f"confidence={recommendations['confidence']:.3f}, "
+                       f"strength={recommendations['strength']:.3f}")
+            
+            return recommendations
+            
+        except Exception as e:
+            logger.error(f"Error getting recommendations for {symbol}: {str(e)}")
+            return {
+                'symbol': symbol,
+                'action': 'hold',
+                'confidence': 0.0,
+                'strength': 0.0,
+                'error': str(e)
+            }
+
     async def close(self) -> None:
         """Close the quantitative trading system and cleanup resources."""
         try:

@@ -153,7 +153,7 @@ async def test_signal_boosting():
         await strategy.close()
         
         logger.info(f"\n{'='*60}")
-        logger.info("✅ Signal boosting test completed successfully")
+        logger.info("Signal boosting test completed successfully")
         logger.info(f"{'='*60}")
         
     except Exception as e:

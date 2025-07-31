@@ -464,6 +464,133 @@ class RiskManager:
             logger.error(f"Error getting risk summary: {str(e)}")
             return {'error': str(e)}
     
+    def assess_signal_risk(self, signal: Dict, market_data: Dict) -> Dict:
+        """
+        Assess risk for a trading signal.
+        
+        Args:
+            signal: Trading signal dictionary
+            market_data: Market data dictionary
+            
+        Returns:
+            Dictionary with risk assessment results
+        """
+        try:
+            risk_assessment = {
+                'acceptable_risk': False,
+                'risk_level': 'high',
+                'var_99': 0.0,
+                'var_95': 0.0,
+                'position_size_recommendation': 0.0,
+                'risk_factors': []
+            }
+            
+            # Extract signal parameters
+            signal_strength = signal.get('strength', 0.0)
+            confidence = signal.get('confidence', 0.0)
+            action = signal.get('action', 'hold')
+            
+            # Calculate basic risk metrics
+            if 'returns' in market_data:
+                returns = np.array(market_data['returns'])
+                if len(returns) > 0:
+                    # Calculate VaR
+                    var_99 = self.var_calculator.calculate_var(returns, 1.0, 'parametric')
+                    var_95 = self.var_calculator.calculate_var(returns, 1.0, 'historical')
+                    
+                    risk_assessment['var_99'] = var_99.get('parametric_var', 0.0)
+                    risk_assessment['var_95'] = var_95.get('historical_var', 0.0)
+            
+            # Assess risk level based on signal parameters
+            if signal_strength >= 0.7 and confidence >= 0.8:
+                risk_assessment['risk_level'] = 'low'
+                risk_assessment['acceptable_risk'] = True
+            elif signal_strength >= 0.5 and confidence >= 0.6:
+                risk_assessment['risk_level'] = 'medium'
+                risk_assessment['acceptable_risk'] = True
+            else:
+                risk_assessment['risk_level'] = 'high'
+                risk_assessment['acceptable_risk'] = False
+            
+            # Calculate position size recommendation
+            if risk_assessment['acceptable_risk']:
+                position_size = self.position_sizer.calculate_position_size(
+                    signal_strength=signal_strength,
+                    volatility=market_data.get('volatility', 0.02),
+                    correlation=market_data.get('correlation', 0.0),
+                    var_limit=risk_assessment['var_99']
+                )
+                risk_assessment['position_size_recommendation'] = position_size.get('final_position_size', 0.0)
+            
+            # Add risk factors
+            if signal_strength < 0.5:
+                risk_assessment['risk_factors'].append('Low signal strength')
+            if confidence < 0.6:
+                risk_assessment['risk_factors'].append('Low confidence')
+            if risk_assessment['var_99'] > 0.05:
+                risk_assessment['risk_factors'].append('High VaR')
+            
+            return risk_assessment
+            
+        except Exception as e:
+            logger.error(f"Error assessing signal risk: {str(e)}")
+            return {
+                'acceptable_risk': False,
+                'risk_level': 'high',
+                'error': str(e)
+            }
+    
+    def assess_symbol_risk(self, symbol: str) -> Dict:
+        """
+        Assess risk for a trading symbol.
+        
+        Args:
+            symbol: Trading symbol
+            
+        Returns:
+            Dictionary with symbol risk assessment
+        """
+        try:
+            risk_assessment = {
+                'symbol': symbol,
+                'risk_level': 'medium',
+                'var_99': 0.0,
+                'var_95': 0.0,
+                'volatility': 0.0,
+                'correlation': 0.0,
+                'acceptable_risk': False,
+                'risk_factors': []
+            }
+            
+            # For now, return default assessment
+            # In a real implementation, this would analyze historical data for the symbol
+            risk_assessment['volatility'] = 0.02  # Default 2% volatility
+            risk_assessment['correlation'] = 0.0   # Default correlation
+            risk_assessment['var_99'] = 0.03       # Default 3% VaR
+            risk_assessment['var_95'] = 0.02       # Default 2% VaR
+            
+            # Determine risk level
+            if risk_assessment['volatility'] < 0.015:
+                risk_assessment['risk_level'] = 'low'
+                risk_assessment['acceptable_risk'] = True
+            elif risk_assessment['volatility'] < 0.03:
+                risk_assessment['risk_level'] = 'medium'
+                risk_assessment['acceptable_risk'] = True
+            else:
+                risk_assessment['risk_level'] = 'high'
+                risk_assessment['acceptable_risk'] = False
+            
+            return risk_assessment
+            
+        except Exception as e:
+            logger.error(f"Error assessing symbol risk for {symbol}: {str(e)}")
+            return {
+                'symbol': symbol,
+                'risk_level': 'high',
+                'acceptable_risk': False,
+                'error': str(e)
+            }
+
     async def close(self) -> None:
         """Close the risk manager and cleanup resources."""
         try:

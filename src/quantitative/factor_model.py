@@ -793,7 +793,96 @@ class WorldQuantFactorModel:
             
         except Exception as e:
             logger.error(f"Error building factor model: {str(e)}")
-            return {'error': str(e)} 
+            return {'error': str(e)}
+    
+    async def analyze_signal_factors(self, signal: Dict, market_data: Dict) -> Dict[str, Any]:
+        """
+        Analyze factor exposures for a trading signal.
+        
+        Args:
+            signal: Trading signal dictionary
+            market_data: Market data dictionary
+            
+        Returns:
+            Dictionary with factor analysis results
+        """
+        try:
+            factor_analysis = {
+                'favorable_factors': False,
+                'factor_exposures': {},
+                'factor_contributions': {},
+                'risk_attribution': {}
+            }
+            
+            # For now, return default analysis
+            # In a real implementation, this would analyze the signal's factor exposures
+            factor_analysis['factor_exposures'] = {
+                'market': 0.1,
+                'size': 0.05,
+                'value': 0.03,
+                'momentum': 0.08,
+                'volatility': 0.02,
+                'liquidity': 0.04
+            }
+            
+            # Determine if factors are favorable
+            positive_factors = sum(1 for exp in factor_analysis['factor_exposures'].values() if exp > 0)
+            if positive_factors >= 3:
+                factor_analysis['favorable_factors'] = True
+            
+            return factor_analysis
+            
+        except Exception as e:
+            logger.error(f"Error analyzing signal factors: {str(e)}")
+            return {
+                'favorable_factors': False,
+                'error': str(e)
+            }
+    
+    async def analyze_symbol_factors(self, symbol: str) -> Dict[str, Any]:
+        """
+        Analyze factor exposures for a trading symbol.
+        
+        Args:
+            symbol: Trading symbol
+            
+        Returns:
+            Dictionary with symbol factor analysis
+        """
+        try:
+            factor_analysis = {
+                'symbol': symbol,
+                'factor_exposures': {},
+                'favorable_factors': False,
+                'factor_contributions': {}
+            }
+            
+            # For now, return default analysis
+            # In a real implementation, this would analyze historical factor data for the symbol
+            factor_analysis['factor_exposures'] = {
+                'market': 0.15,
+                'size': 0.08,
+                'value': 0.05,
+                'momentum': 0.12,
+                'volatility': 0.03,
+                'liquidity': 0.06
+            }
+            
+            # Determine if factors are favorable
+            positive_factors = sum(1 for exp in factor_analysis['factor_exposures'].values() if exp > 0)
+            if positive_factors >= 4:
+                factor_analysis['favorable_factors'] = True
+            
+            return factor_analysis
+            
+        except Exception as e:
+            logger.error(f"Error analyzing symbol factors for {symbol}: {str(e)}")
+            return {
+                'symbol': symbol,
+                'favorable_factors': False,
+                'error': str(e)
+            }
+
     async def close(self) -> None:
         """Close the worldquantfactormodel and cleanup resources."""
         try:

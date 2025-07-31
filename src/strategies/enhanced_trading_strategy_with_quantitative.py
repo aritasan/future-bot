@@ -1536,8 +1536,8 @@ class EnhancedTradingStrategyWithQuantitative:
             for symbol_signals in self.signal_history.values():
                 for signal_entry in symbol_signals:
                     total_signals += 1
-                    signal = signal_entry['signal']
-                    if signal.get('quantitative_confidence', 0) > 0.5:
+                    # Signal is stored directly, not nested under 'signal' key
+                    if signal_entry.get('quantitative_confidence', 0) > 0.5:
                         successful_signals += 1
             
             if total_signals > 0:

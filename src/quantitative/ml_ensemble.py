@@ -632,7 +632,102 @@ class WorldQuantMLEnsemble:
             
         except Exception as e:
             logger.error(f"Error getting ML summary: {str(e)}")
-            return {} 
+            return {}
+    
+    async def predict_signal_outcome(self, signal: Dict, market_data: Dict) -> Dict[str, Any]:
+        """
+        Predict outcome for a trading signal.
+        
+        Args:
+            signal: Trading signal dictionary
+            market_data: Market data dictionary
+            
+        Returns:
+            Dictionary with ML prediction results
+        """
+        try:
+            prediction_results = {
+                'positive_prediction': False,
+                'prediction_confidence': 0.0,
+                'predicted_return': 0.0,
+                'model_agreement': 0.0,
+                'feature_importance': {}
+            }
+            
+            # For now, return default prediction
+            # In a real implementation, this would use trained models to predict signal outcome
+            signal_strength = signal.get('strength', 0.0)
+            confidence = signal.get('confidence', 0.0)
+            
+            # Simple prediction logic based on signal parameters
+            if signal_strength >= 0.6 and confidence >= 0.7:
+                prediction_results['positive_prediction'] = True
+                prediction_results['prediction_confidence'] = 0.8
+                prediction_results['predicted_return'] = 0.02  # 2% predicted return
+                prediction_results['model_agreement'] = 0.75
+            elif signal_strength >= 0.4 and confidence >= 0.5:
+                prediction_results['positive_prediction'] = True
+                prediction_results['prediction_confidence'] = 0.6
+                prediction_results['predicted_return'] = 0.01  # 1% predicted return
+                prediction_results['model_agreement'] = 0.6
+            else:
+                prediction_results['positive_prediction'] = False
+                prediction_results['prediction_confidence'] = 0.3
+                prediction_results['predicted_return'] = -0.01  # -1% predicted return
+                prediction_results['model_agreement'] = 0.4
+            
+            return prediction_results
+            
+        except Exception as e:
+            logger.error(f"Error predicting signal outcome: {str(e)}")
+            return {
+                'positive_prediction': False,
+                'prediction_confidence': 0.0,
+                'error': str(e)
+            }
+    
+    async def predict_symbol_movement(self, symbol: str) -> Dict[str, Any]:
+        """
+        Predict movement for a trading symbol.
+        
+        Args:
+            symbol: Trading symbol
+            
+        Returns:
+            Dictionary with symbol movement prediction
+        """
+        try:
+            prediction_results = {
+                'symbol': symbol,
+                'positive_prediction': False,
+                'prediction_confidence': 0.0,
+                'predicted_direction': 'neutral',
+                'predicted_magnitude': 0.0,
+                'model_agreement': 0.0
+            }
+            
+            # For now, return default prediction
+            # In a real implementation, this would use trained models to predict symbol movement
+            prediction_results['prediction_confidence'] = 0.6
+            prediction_results['predicted_direction'] = 'up'
+            prediction_results['predicted_magnitude'] = 0.015  # 1.5% predicted movement
+            prediction_results['model_agreement'] = 0.65
+            
+            # Determine if prediction is positive
+            if prediction_results['predicted_direction'] == 'up' and prediction_results['prediction_confidence'] >= 0.5:
+                prediction_results['positive_prediction'] = True
+            
+            return prediction_results
+            
+        except Exception as e:
+            logger.error(f"Error predicting symbol movement for {symbol}: {str(e)}")
+            return {
+                'symbol': symbol,
+                'positive_prediction': False,
+                'prediction_confidence': 0.0,
+                'error': str(e)
+            }
+
     async def close(self) -> None:
         """Close the worldquantmlensemble and cleanup resources."""
         try:
