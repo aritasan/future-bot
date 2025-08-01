@@ -170,7 +170,16 @@ class BinanceService:
             
             # Get symbol and position side
             symbol = order_params['symbol']
-                    
+            
+            # Check margin before placing order
+            margin_check = await self._check_margin_for_order(order_params)
+            if not margin_check['sufficient']:
+                logger.error(f"Insufficient margin for {symbol} {order_params['side']}: {margin_check['reason']}")
+                logger.error(f"Required: {margin_check['required']}, Available: {margin_check['available']}")
+                return None
+            
+            logger.info(f"Margin check passed for {symbol} {order_params['side']}: Required {margin_check['required']}, Available {margin_check['available']}")
+
             # Place main order first
             main_order_params = {
                 'symbol': symbol,
@@ -210,6 +219,72 @@ class BinanceService:
         except Exception as e:
             logger.error(f"Error placing order: {str(e)}")
             return None
+    
+    async def _check_margin_for_order(self, order_params: Dict) -> Dict:
+        """Check if there's sufficient margin for the order.
+        
+        Args:
+            order_params: Dictionary containing order parameters
+            
+        Returns:
+            Dict: {
+                'sufficient': bool,
+                'required': float,
+                'available': float,
+                'reason': str
+            }
+        """
+        try:
+            # Get account balance
+            balance = await self.get_account_balance()
+            if not balance or 'total' not in balance:
+                return {
+                    'sufficient': False,
+                    'required': 0,
+                    'available': 0,
+                    'reason': 'Could not fetch account balance'
+                }
+            
+            # Get available USDT balance
+            available_usdt = float(balance.get('free', {}).get('USDT', 0))
+            
+            # Calculate required margin for the order
+            symbol = order_params['symbol']
+            amount = float(order_params['amount'])
+            
+            # Get current price for margin calculation
+            current_price = await self.get_current_price(symbol)
+            if not current_price:
+                return {
+                    'sufficient': False,
+                    'required': 0,
+                    'available': available_usdt,
+                    'reason': f'Could not get current price for {symbol}'
+                }
+            
+            # Calculate required margin (position value + buffer)
+            position_value = amount * current_price
+            margin_buffer = 0.1  # 10% buffer for fees and price fluctuations
+            required_margin = position_value * (1 + margin_buffer)
+            
+            # Check if sufficient margin
+            sufficient = available_usdt >= required_margin
+            
+            return {
+                'sufficient': sufficient,
+                'required': required_margin,
+                'available': available_usdt,
+                'reason': 'Insufficient USDT balance' if not sufficient else 'Sufficient margin'
+            }
+            
+        except Exception as e:
+            logger.error(f"Error checking margin for order: {str(e)}")
+            return {
+                'sufficient': False,
+                'required': 0,
+                'available': 0,
+                'reason': f'Error checking margin: {str(e)}'
+            }
     
     def set_notification_callback(self, callback: Optional[Callable]) -> None:
         """Set the notification callback after initialization.
