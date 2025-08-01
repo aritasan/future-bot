@@ -211,12 +211,23 @@ class BinanceService:
             logger.error(f"Error placing order: {str(e)}")
             return None
     
+    def set_notification_callback(self, callback: Optional[Callable]) -> None:
+        """Set the notification callback after initialization.
+        
+        Args:
+            callback: The notification callback function
+        """
+        self.notification_callback = callback
+        logger.info("Notification callback set successfully")
+    
     async def _send_order_notification(self, order: Dict, order_params: Dict) -> None:
         """Send notification about placed order."""
         try:
-            if not self._notification_callback:
+            if not self.notification_callback:
+                logger.debug("Notification callback not set - skipping notification")
                 return
             
+            logger.info(f"Sending order notification for {order_params}")
             symbol = order_params.get('symbol', 'Unknown')
             side = order_params.get('side', 'Unknown')
             order_type = order_params.get('type', 'Unknown')
@@ -230,9 +241,6 @@ class BinanceService:
             message += f"**Type:** {order_type}\n"
             message += f"**Amount:** {amount}\n"
             message += f"**Price:** {price}\n"
-            message += f"**Order ID:** {order.get('id', 'N/A')}\n"
-            message += f"**Status:** {order.get('status', 'N/A')}\n"
-            message += f"**Time:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
             
             # Add stop loss and take profit info
             if 'stop_loss' in order_params:
@@ -241,7 +249,7 @@ class BinanceService:
                 message += f"**Take Profit:** {order_params['take_profit']}\n"
             
             # Send notification
-            await self._notification_callback(message)
+            await self.notification_callback(message)
             
         except Exception as e:
             logger.error(f"Error sending order notification: {str(e)}")

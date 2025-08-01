@@ -37,10 +37,10 @@ logger = logging.getLogger(__name__)
 async def run_main_trading_bot():
     """Run the main trading bot."""
     try:
-        from main_with_quantitative import main
+        # from main_with_quantitative import main
         
         logger.info("🤖 Starting Main Trading Bot (main_with_quantitative.py)...")
-        await main()
+        # await main()
         
     except Exception as e:
         logger.error(f"❌ Error running main trading bot: {e}")

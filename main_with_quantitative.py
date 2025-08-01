@@ -462,6 +462,10 @@ async def main():
             await notification_service.initialize()
             logger.info("Notification service initialized")
             
+            # Set notification callback for Binance service
+            binance_service.set_notification_callback(notification_service.send_message)
+            logger.info("Notification callback set for Binance service")
+            
             # Initialize enhanced trading strategy with quantitative integration
             strategy = EnhancedTradingStrategyWithQuantitative(
                 config, binance_service, indicator_service, notification_service, cache_service
