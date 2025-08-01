@@ -180,13 +180,23 @@ class BinanceService:
             
             logger.info(f"Margin check passed for {symbol} {order_params['side']}: Required {margin_check['required']}, Available {margin_check['available']}")
 
+            # Check if order should be placed based on existing orders and positions
+            position_side = 'LONG' if is_long_side(order_params['side']) else 'SHORT'
+            order_check = await self.should_place_order(symbol, position_side)
+            
+            if not order_check['should_place']:
+                logger.info(f"Skipping order placement for {symbol}: {order_check['reason']}")
+                return None
+            
+            logger.info(f"Order check passed for {symbol}: {order_check['reason']}")
+
             # Place main order first
             main_order_params = {
                 'symbol': symbol,
                 'side': order_params['side'],
                 'type': order_params['type'].upper(),
                 'params': {
-                    'positionSide': 'LONG' if is_long_side(order_params['side']) else 'SHORT',
+                    'positionSide': position_side,
                 },
                 'amount': order_params['amount']
             }
@@ -307,7 +317,7 @@ class BinanceService:
             side = order_params.get('side', 'Unknown')
             order_type = order_params.get('type', 'Unknown')
             amount = order_params.get('amount', 0)
-            price = order_params.get('price', 'Market')
+            price = order.get('price', '0')
             
             # Create notification message
             message = f"🎯 **ORDER PLACED** 🎯\n\n"
@@ -1612,6 +1622,64 @@ class BinanceService:
         except Exception as e:
             logger.error(f"Error getting existing order for {symbol}: {str(e)}")
             return None
+    
+    async def should_place_order(self, symbol: str, position_side: str = None) -> Dict:
+        """Check if an order should be placed based on existing orders and positions.
+        
+        Args:
+            symbol: Trading pair symbol
+            position_side: Position side (e.g. 'LONG', 'SHORT')
+            
+        Returns:
+            Dict: {
+                'should_place': bool,
+                'reason': str,
+                'existing_order': Optional[Dict],
+                'existing_position': Optional[Dict]
+            }
+        """
+        try:
+            if not self._is_initialized:
+                return {
+                    'should_place': False,
+                    'reason': 'Binance service not initialized',
+                    'existing_order': None,
+                    'existing_position': None
+                }
+                
+            if self._is_closed:
+                return {
+                    'should_place': False,
+                    'reason': 'Binance service is closed',
+                    'existing_order': None,
+                    'existing_position': None
+                }
+            
+            # Check for existing position if position_side is provided
+            existing_position = await self.get_position(symbol, position_side)
+            
+            # Determine if order should be placed
+            should_place = True
+            reason = "No existing orders or positions found"
+            
+            if existing_position and float(existing_position.get('info', {}).get('positionAmt', 0)) != 0:
+                should_place = False
+                reason = f"Existing position found for {symbol} {position_side}"
+            
+            return {
+                'should_place': should_place,
+                'reason': reason,
+                'existing_position': existing_position
+            }
+            
+        except Exception as e:
+            logger.error(f"Error checking if order should be placed for {symbol}: {str(e)}")
+            return {
+                'should_place': False,
+                'reason': f'Error checking order status: {str(e)}',
+                'existing_order': None,
+                'existing_position': None
+            }
     
     async def close_position(self, symbol: str, position_side: str = None) -> bool:
         """Close position for a specific symbol and position side.

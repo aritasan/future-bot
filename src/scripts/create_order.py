@@ -6,7 +6,6 @@ import logging
 import sys
 import os
 from typing import Optional
-from src.services import telegram_service
 
 # Set event loop policy for Windows
 if sys.platform == 'win32':
@@ -114,12 +113,12 @@ async def main():
     #     'take_profit': 97500
     # }
     order_params = {
-        'symbol': 'ETHFI/USDT',
+        'symbol': 'ME/USDT',
         'side': 'BUY',
         'order_type': 'MARKET',
-        'amount': 200,
-        'stop_loss': 0.55,
-        'take_profit': 0.65
+        'amount': 7,
+        'stop_loss': 0.3,
+        'take_profit': 1
     }
     
     await test_place_order(

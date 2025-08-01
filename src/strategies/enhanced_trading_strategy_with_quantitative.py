@@ -1264,7 +1264,7 @@ class EnhancedTradingStrategyWithQuantitative:
                 return
             
             # Calculate position size using risk management
-            risk_per_trade = self.config.get('risk_management', {}).get('risk_per_trade', 0.02)  # 2% risk per trade
+            risk_per_trade = self.config.get('trading', {}).get('risk_per_trade', 0.02)  # 2% risk per trade
             position_size = await self._calculate_position_size(symbol, risk_per_trade, current_price)
             
             if position_size is None:

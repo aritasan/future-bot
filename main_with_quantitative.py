@@ -509,21 +509,7 @@ async def main():
                         except Exception as e:
                             logger.error(f"Error processing symbol {symbol}: {str(e)}")
             
-            logger.info(f"Starting processing of {total_symbols} symbols with max {max_concurrent_tasks} concurrent batches")
-            
-            # Process symbols in batches
-            batch_size = max_concurrent_tasks
-            symbol_batches = [symbols[i:i + batch_size] for i in range(0, len(symbols), batch_size)]
-            
-            for batch in symbol_batches:
-                task = asyncio.create_task(process_symbol_batch(batch))
-                tasks.append(task)
-            
-            # Start portfolio analysis task
-            portfolio_task = asyncio.create_task(
-                run_portfolio_analysis(strategy, symbols, cache_service)
-            )
-            tasks.append(portfolio_task)
+            logger.info(f"Starting continuous processing of {total_symbols} symbols with max {max_concurrent_tasks} concurrent batches")
             
             # Send startup notification
             startup_message = "🚀 Trading Bot with Quantitative Trading Integration started successfully!"
@@ -532,12 +518,45 @@ async def main():
             if discord_service:
                 await discord_service.send_message(startup_message)
             
-            # Wait for all tasks to complete or shutdown signal
-            try:
-                await asyncio.gather(*tasks, return_exceptions=True)
-            except asyncio.CancelledError:
-                logger.info("Main task gathering cancelled")
-                raise
+            # Continuous processing loop
+            cycle_count = 0
+            while is_running and not shutdown_event.is_set():
+                cycle_count += 1
+                logger.info(f"=== Starting cycle {cycle_count} ===")
+                
+                # Clear previous tasks
+                tasks.clear()
+                
+                # Process symbols in batches
+                batch_size = max_concurrent_tasks
+                symbol_batches = [symbols[i:i + batch_size] for i in range(0, len(symbols), batch_size)]
+                
+                for batch in symbol_batches:
+                    task = asyncio.create_task(process_symbol_batch(batch))
+                    tasks.append(task)
+                
+                # Start portfolio analysis task
+                portfolio_task = asyncio.create_task(
+                    run_portfolio_analysis(strategy, symbols, cache_service)
+                )
+                tasks.append(portfolio_task)
+                
+                # Wait for all tasks to complete or shutdown signal
+                try:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                    logger.info(f"=== Completed cycle {cycle_count} ===")
+                    
+                    # Wait before starting next cycle (5 minutes)
+                    logger.info("Waiting 5 minutes before starting next cycle...")
+                    await asyncio.sleep(300)  # 5 minutes
+                    
+                except asyncio.CancelledError:
+                    logger.info("Main task gathering cancelled")
+                    raise
+                except Exception as e:
+                    logger.error(f"Error in cycle {cycle_count}: {str(e)}")
+                    # Wait a bit before retrying
+                    await asyncio.sleep(60)  # 1 minute
             
         except Exception as e:
             logger.error(f"Error during initialization: {str(e)}")
