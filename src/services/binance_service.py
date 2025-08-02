@@ -181,16 +181,28 @@ class BinanceService:
             logger.info(f"Margin check passed for {symbol} {order_params['side']}: Required {margin_check['required']}, Available {margin_check['available']}")
 
             # Check if order should be placed based on existing orders and positions
-            position_side = 'LONG' if is_long_side(order_params['side']) else 'SHORT'
-            order_check = await self.should_place_order(symbol, position_side)
+            # Skip check if this is a DCA order
+            is_dca_order = order_params.get('isDCA', False)
             
-            if not order_check['should_place']:
-                logger.info(f"Skipping order placement for {symbol}: {order_check['reason']}")
-                return None
-            
-            logger.info(f"Order check passed for {symbol}: {order_check['reason']}")
+            if not is_dca_order:
+                position_side = 'LONG' if is_long_side(order_params['side']) else 'SHORT'
+                order_check = await self.should_place_order(symbol, position_side)
+                
+                if not order_check['should_place']:
+                    logger.info(f"Skipping order placement for {symbol}: {order_check['reason']}")
+                    return None
+                
+                logger.info(f"Order check passed for {symbol}: {order_check['reason']}")
+            else:
+                logger.info(f"DCA order detected for {symbol} - bypassing existing order check")
 
             # Place main order first
+            # Determine position side for DCA orders
+            if is_dca_order:
+                position_side = order_params.get('positionSide', 'LONG')
+            else:
+                position_side = 'LONG' if is_long_side(order_params['side']) else 'SHORT'
+                
             main_order_params = {
                 'symbol': symbol,
                 'side': order_params['side'],

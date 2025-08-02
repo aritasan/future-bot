@@ -30,7 +30,6 @@ from src.utils.helpers import is_long_side, is_short_side, is_trending_down, is_
 from src.quantitative.integration import QuantitativeIntegration
 from src.quantitative.quantitative_trading_system import QuantitativeTradingSystem
 from src.quantitative.statistical_validator import StatisticalValidator
-from src.quantitative.worldquant_dca_trailing import WorldQuantDCA, WorldQuantTrailingStop
 
 logger = logging.getLogger(__name__)
 
@@ -93,10 +92,6 @@ class EnhancedTradingStrategyWithQuantitative:
             'risk_score': 0.0,
             'stability_score': 0.0
         }
-        
-        # Initialize WorldQuant DCA and Trailing Stop
-        self.worldquant_dca = WorldQuantDCA(config)
-        self.worldquant_trailing = WorldQuantTrailingStop(config)
         
         # Initialize cache service if provided
         if self.cache_service:
@@ -1253,9 +1248,6 @@ class EnhancedTradingStrategyWithQuantitative:
                 market_data,
                 validation.get('risk_metrics', {})
             )
-            
-            # Check DCA and Trailing Stop opportunities
-            await self._check_dca_and_trailing_opportunities(symbol, market_data)
                 
         except Exception as e:
             import traceback
@@ -1272,7 +1264,7 @@ class EnhancedTradingStrategyWithQuantitative:
                 return
             
             # Calculate position size using risk management
-            risk_per_trade = self.config.get('trading', {}).get('risk_per_trade', 0.02)  # 2% risk per trade
+            risk_per_trade = self.config.get('risk_management', {}).get('risk_per_trade', 0.02)  # 2% risk per trade
             position_size = await self._calculate_position_size(symbol, risk_per_trade, current_price)
             
             if position_size is None:
@@ -1591,37 +1583,6 @@ class EnhancedTradingStrategyWithQuantitative:
         except Exception as e:
             logger.error(f"Error getting performance metrics: {str(e)}")
             return {}
-    
-    async def _check_dca_and_trailing_opportunities(self, symbol: str, market_data: Dict) -> None:
-        """Check DCA and Trailing Stop opportunities for existing positions."""
-        try:
-            # Get all positions for this symbol
-            positions = await self.binance_service.get_positions(symbol)
-            
-            if not positions:
-                return
-            
-            for position in positions:
-                position_size = abs(float(position.get('info', {}).get('positionAmt', 0)))
-                
-                # Skip if no position
-                if position_size <= 0:
-                    continue
-                
-                # Check DCA opportunity
-                dca_decision = await self.worldquant_dca.check_dca_opportunity(symbol, position, market_data)
-                if dca_decision.get('should_dca', False):
-                    logger.info(f"DCA opportunity detected for {symbol}: {dca_decision}")
-                    await self.worldquant_dca.execute_dca(symbol, position, dca_decision, self.binance_service)
-                
-                # Check Trailing Stop opportunity
-                trailing_decision = await self.worldquant_trailing.check_trailing_stop_opportunity(symbol, position, market_data)
-                if trailing_decision.get('should_update', False):
-                    logger.info(f"Trailing Stop opportunity detected for {symbol}: {trailing_decision}")
-                    await self.worldquant_trailing.execute_trailing_stop_update(symbol, position, trailing_decision, self.binance_service)
-                    
-        except Exception as e:
-            logger.error(f"Error checking DCA and Trailing Stop opportunities for {symbol}: {str(e)}")
     
     async def close(self):
         """Close the strategy and cleanup resources."""

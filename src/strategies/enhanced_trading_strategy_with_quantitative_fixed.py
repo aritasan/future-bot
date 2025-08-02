@@ -30,11 +30,68 @@ from src.utils.helpers import is_long_side, is_short_side, is_trending_down, is_
 from src.quantitative.integration import QuantitativeIntegration
 from src.quantitative.quantitative_trading_system import QuantitativeTradingSystem
 from src.quantitative.statistical_validator import StatisticalValidator
-from src.quantitative.worldquant_dca_trailing import WorldQuantDCA, WorldQuantTrailingStop
 
 logger = logging.getLogger(__name__)
 
 class EnhancedTradingStrategyWithQuantitative:
+    async def _check_margin_health(self) -> bool:
+        """Check if margin is sufficient for trading."""
+        try:
+            balance = await self.binance_service.get_account_balance()
+            if balance and 'total' in balance:
+                total_balance = float(balance['total'].get('USDT', 0))
+                if total_balance < 10:  # Less than $10
+                    logger.warning(f"Insufficient balance: ${total_balance}")
+                    return False
+            return True
+        except Exception as e:
+            logger.error(f"Error checking margin health: {str(e)}")
+            return False
+    
+    async def _handle_margin_error(self, symbol: str, error: str) -> None:
+        """Handle margin insufficient errors gracefully."""
+        logger.warning(f"Margin error for {symbol}: {error}")
+        
+        # Implement circuit breaker
+        if not hasattr(self, '_margin_error_count'):
+            self._margin_error_count = 0
+        
+        self._margin_error_count += 1
+        
+        if self._margin_error_count >= 5:
+            logger.error("🚨 Too many margin errors, implementing circuit breaker")
+            logger.error("💡 Consider: 1) Adding more margin 2) Reducing position sizes 3) Pausing trading")
+            # Could implement a pause mechanism here
+        
+        # Wait before retrying
+        await asyncio.sleep(60)  # Wait 1 minute before retrying
+    
+    async def _reduce_position_size(self, base_size: float) -> float:
+        """Reduce position size when margin is insufficient."""
+        try:
+            # Get current balance
+            balance = await self.binance_service.get_account_balance()
+            if balance and 'total' in balance:
+                total_balance = float(balance['total'].get('USDT', 0))
+                
+                # Calculate safe position size (max 5% of balance)
+                max_position_value = total_balance * 0.05
+                safe_size = max_position_value / 100  # Assume $100 per unit
+                
+                # Use the smaller of base_size or safe_size
+                reduced_size = min(base_size, safe_size)
+                
+                if reduced_size < base_size:
+                    logger.warning(f"Reduced position size from {base_size} to {reduced_size} due to margin constraints")
+                
+                return reduced_size
+            
+            return base_size
+            
+        except Exception as e:
+            logger.error(f"Error reducing position size: {str(e)}")
+            return base_size * 0.5  # Reduce by 50% as fallback
+
     """
     Enhanced trading strategy with WorldQuant-level quantitative analysis integration.
     """
@@ -93,10 +150,6 @@ class EnhancedTradingStrategyWithQuantitative:
             'risk_score': 0.0,
             'stability_score': 0.0
         }
-        
-        # Initialize WorldQuant DCA and Trailing Stop
-        self.worldquant_dca = WorldQuantDCA(config)
-        self.worldquant_trailing = WorldQuantTrailingStop(config)
         
         # Initialize cache service if provided
         if self.cache_service:
@@ -1253,9 +1306,6 @@ class EnhancedTradingStrategyWithQuantitative:
                 market_data,
                 validation.get('risk_metrics', {})
             )
-            
-            # Check DCA and Trailing Stop opportunities
-            await self._check_dca_and_trailing_opportunities(symbol, market_data)
                 
         except Exception as e:
             import traceback
@@ -1272,7 +1322,7 @@ class EnhancedTradingStrategyWithQuantitative:
                 return
             
             # Calculate position size using risk management
-            risk_per_trade = self.config.get('trading', {}).get('risk_per_trade', 0.02)  # 2% risk per trade
+            risk_per_trade = self.config.get('risk_management', {}).get('risk_per_trade', 0.02)  # 2% risk per trade
             position_size = await self._calculate_position_size(symbol, risk_per_trade, current_price)
             
             if position_size is None:
@@ -1353,6 +1403,15 @@ class EnhancedTradingStrategyWithQuantitative:
                 order_params['take_profit'] = take_profit
                 logger.info(f"Take profit calculated for {symbol} SHORT: {take_profit}")
             
+
+            # Check margin health before placing order
+            if not await self._check_margin_health():
+                logger.warning(f"Insufficient margin for {symbol}, skipping order")
+                return
+            
+            # Reduce position size if needed
+            position_size = await self._reduce_position_size(position_size)
+            
             # Place SHORT position order
             order = await self.binance_service.place_order(order_params)
             
@@ -1360,6 +1419,9 @@ class EnhancedTradingStrategyWithQuantitative:
                 logger.info(f"SHORT position opened for {symbol} with size {position_size} and SL/TP: {order}")
             else:
                 logger.error(f"Failed to place SHORT order for {symbol}")
+                # Handle margin error specifically
+                await self._handle_margin_error(symbol, "Order placement failed")
+
             
         except Exception as e:
             logger.error(f"Error executing SHORT order for {symbol}: {str(e)}")
@@ -1591,37 +1653,6 @@ class EnhancedTradingStrategyWithQuantitative:
         except Exception as e:
             logger.error(f"Error getting performance metrics: {str(e)}")
             return {}
-    
-    async def _check_dca_and_trailing_opportunities(self, symbol: str, market_data: Dict) -> None:
-        """Check DCA and Trailing Stop opportunities for existing positions."""
-        try:
-            # Get all positions for this symbol
-            positions = await self.binance_service.get_positions(symbol)
-            
-            if not positions:
-                return
-            
-            for position in positions:
-                position_size = abs(float(position.get('info', {}).get('positionAmt', 0)))
-                
-                # Skip if no position
-                if position_size <= 0:
-                    continue
-                
-                # Check DCA opportunity
-                dca_decision = await self.worldquant_dca.check_dca_opportunity(symbol, position, market_data)
-                if dca_decision.get('should_dca', False):
-                    logger.info(f"DCA opportunity detected for {symbol}: {dca_decision}")
-                    await self.worldquant_dca.execute_dca(symbol, position, dca_decision, self.binance_service)
-                
-                # Check Trailing Stop opportunity
-                trailing_decision = await self.worldquant_trailing.check_trailing_stop_opportunity(symbol, position, market_data)
-                if trailing_decision.get('should_update', False):
-                    logger.info(f"Trailing Stop opportunity detected for {symbol}: {trailing_decision}")
-                    await self.worldquant_trailing.execute_trailing_stop_update(symbol, position, trailing_decision, self.binance_service)
-                    
-        except Exception as e:
-            logger.error(f"Error checking DCA and Trailing Stop opportunities for {symbol}: {str(e)}")
     
     async def close(self):
         """Close the strategy and cleanup resources."""
