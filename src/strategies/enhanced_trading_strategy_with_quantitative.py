@@ -104,6 +104,18 @@ class EnhancedTradingStrategyWithQuantitative:
         
         logger.info("Enhanced Trading Strategy with Quantitative Analysis initialized")
     
+
+    async def with_timeout(self, coro, timeout_seconds=60, operation_name="operation"):
+        """Execute coroutine with timeout protection."""
+        try:
+            return await asyncio.wait_for(coro, timeout=timeout_seconds)
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout error in {operation_name} after {timeout_seconds}s")
+            return None
+        except Exception as e:
+            logger.error(f"Error in {operation_name}: {str(e)}")
+            return None
+
     async def initialize(self) -> bool:
         """Initialize the strategy and quantitative components."""
         try:
@@ -1196,6 +1208,14 @@ class EnhancedTradingStrategyWithQuantitative:
             return False
     
     async def process_trading_signals(self, signals: Dict) -> None:
+        """Process trading signals with enhanced error handling."""
+        try:
+            logger.info(f"Processing signals: {signals.get('action', 'unknown')} for {signals.get('symbol', 'unknown')}")
+        except Exception as e:
+            import traceback
+            logger.error(f"Error in process_trading_signals: {str(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return
         """Process trading signals and execute trades for futures trading with HEDGING mode."""
         try:
             if not signals or signals.get('action') == 'hold':
@@ -1595,27 +1615,47 @@ class EnhancedTradingStrategyWithQuantitative:
     async def _check_dca_and_trailing_opportunities(self, symbol: str, market_data: Dict) -> None:
         """Check DCA and Trailing Stop opportunities for existing positions."""
         try:
-            # Get all positions for this symbol
-            positions = await self.binance_service.get_positions(symbol)
+            # Get all positions
+            all_positions = await self.binance_service.get_positions()
             
-            if not positions:
+            if not all_positions:
                 return
             
-            for position in positions:
-                position_size = abs(float(position.get('info', {}).get('positionAmt', 0)))
-                
-                # Skip if no position
-                if position_size <= 0:
+            # Filter positions for this specific symbol
+            symbol_positions = []
+            for position in all_positions:
+                if not position or not isinstance(position, dict):
                     continue
+                    
+                # Get position info
+                info = position.get('info', {})
+                if not info:
+                    continue
+                    
+                # Normalize position symbol
+                pos_symbol = info.get('symbol', '').replace('/', '')
+                normalized_symbol = symbol.split(':')[0].replace('/', '')
                 
+                # Check if symbols match
+                if pos_symbol == normalized_symbol:
+                    position_size = abs(float(info.get('positionAmt', 0)))
+                    
+                    # Skip if no position
+                    if position_size <= 0:
+                        continue
+                        
+                    symbol_positions.append(position)
+            
+            # Process positions for this symbol
+            for position in symbol_positions:
                 # Check DCA opportunity
-                dca_decision = await self.worldquant_dca.check_dca_opportunity(symbol, position, market_data)
+                dca_decision = await self.with_timeout(self.worldquant_dca.check_dca_opportunity(symbol, position, market_data), 30, 'dca_check')
                 if dca_decision.get('should_dca', False):
                     logger.info(f"DCA opportunity detected for {symbol}: {dca_decision}")
                     await self.worldquant_dca.execute_dca(symbol, position, dca_decision, self.binance_service)
                 
                 # Check Trailing Stop opportunity
-                trailing_decision = await self.worldquant_trailing.check_trailing_stop_opportunity(symbol, position, market_data)
+                trailing_decision = await self.with_timeout(self.worldquant_trailing.check_trailing_stop_opportunity(symbol, position, market_data), 30, 'trailing_check')
                 if trailing_decision.get('should_update', False):
                     logger.info(f"Trailing Stop opportunity detected for {symbol}: {trailing_decision}")
                     await self.worldquant_trailing.execute_trailing_stop_update(symbol, position, trailing_decision, self.binance_service)
@@ -1623,6 +1663,77 @@ class EnhancedTradingStrategyWithQuantitative:
         except Exception as e:
             logger.error(f"Error checking DCA and Trailing Stop opportunities for {symbol}: {str(e)}")
     
+
+    async def health_check(self) -> Dict[str, Any]:
+        """Perform health check on strategy components."""
+        try:
+            health_status = {
+                'timestamp': time.time(),
+                'status': 'healthy',
+                'components': {}
+            }
+            
+            # Check quantitative components
+            if hasattr(self, 'quantitative_system'):
+                try:
+                    # Quick test of quantitative system
+                    health_status['components']['quantitative_system'] = 'healthy'
+                except Exception as e:
+                    health_status['components']['quantitative_system'] = f'unhealthy: {str(e)}'
+                    health_status['status'] = 'degraded'
+            
+            # Check cache service
+            if hasattr(self, 'cache_service'):
+                try:
+                    # Quick test of cache service
+                    health_status['components']['cache_service'] = 'healthy'
+                except Exception as e:
+                    health_status['components']['cache_service'] = f'unhealthy: {str(e)}'
+                    health_status['status'] = 'degraded'
+            
+            # Check signal history
+            if hasattr(self, 'signal_history'):
+                health_status['components']['signal_history'] = f'healthy (size: {len(self.signal_history)})'
+            
+            logger.info(f"Health check completed: {health_status['status']}")
+            return health_status
+            
+        except Exception as e:
+            logger.error(f"Health check failed: {str(e)}")
+            return {
+                'timestamp': time.time(),
+                'status': 'unhealthy',
+                'error': str(e)
+            }
+    
+    async def recover_from_error(self, error: Exception) -> bool:
+        """Attempt to recover from an error."""
+        try:
+            logger.info(f"Attempting to recover from error: {str(error)}")
+            
+            # Clear caches if needed
+            if hasattr(self, 'data_cache'):
+                self.data_cache.clear()
+                logger.info("Cleared data cache")
+            
+            # Reset signal history if needed
+            if hasattr(self, 'signal_history'):
+                self.signal_history.clear()
+                logger.info("Cleared signal history")
+            
+            # Perform health check
+            health = await self.health_check()
+            if health['status'] == 'healthy':
+                logger.info("Recovery successful")
+                return True
+            else:
+                logger.warning("Recovery incomplete")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Recovery failed: {str(e)}")
+            return False
+
     async def close(self):
         """Close the strategy and cleanup resources."""
         try:

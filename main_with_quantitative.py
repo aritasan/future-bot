@@ -20,6 +20,7 @@ logging.getLogger('websockets.server').setLevel(logging.WARNING)
 
 
 import signal
+import traceback
 from logging.handlers import RotatingFileHandler
 import os
 from datetime import datetime
@@ -161,8 +162,23 @@ async def process_symbol_with_quantitative(
         logger.info(f"Processing cancelled for {symbol}")
         raise
     except Exception as e:
+        logger.error(f"Fatal error processing symbol {symbol}: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        
+        # Attempt recovery
+        if hasattr(strategy, 'recover_from_error'):
+            try:
+                recovery_success = await strategy.recover_from_error(e)
+                if recovery_success:
+                    logger.info(f"Recovery successful for {symbol}")
+                else:
+                    logger.error(f"Recovery failed for {symbol}")
+            except Exception as recovery_error:
+                logger.error(f"Recovery attempt failed: {str(recovery_error)}")
+        
+        # Continue with next symbol instead of crashing
         logger.error(f"Error processing symbol {symbol}: {str(e)}")
-        raise
+        return
 
 async def send_quantitative_notification(
     symbol: str, 
