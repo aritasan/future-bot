@@ -449,7 +449,6 @@ async def main():
                     logger.info("Discord service initialized successfully")
                 except Exception as e:
                     logger.error(f"Error initializing Discord service: {str(e)}")
-                    import traceback
                     logger.error(f"Discord initialization traceback:\n{traceback.format_exc()}")
                     discord_service = None
             

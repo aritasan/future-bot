@@ -1109,7 +1109,7 @@ class EnhancedTradingStrategyWithQuantitative:
         try:
             # Get historical data for all symbols
             returns_data = {}
-            for symbol in symbols[:10]:  # Limit to first 10 symbols to avoid overload
+            for symbol in symbols:
                 try:
                     # Get historical data
                     klines = await self.indicator_service.get_klines(symbol, '1d', limit=100)
@@ -1146,7 +1146,7 @@ class EnhancedTradingStrategyWithQuantitative:
         try:
             # Get historical data for factor analysis
             returns_data = {}
-            for symbol in symbols[:10]:  # Limit to first 10 symbols
+            for symbol in symbols:
                 try:
                     klines = await self.indicator_service.get_klines(symbol, '1d', limit=100)
                     if klines and 'close' in klines:
@@ -2917,7 +2917,7 @@ class EnhancedTradingStrategyWithQuantitative:
             # Get historical data for all symbols
             all_data = {}
             
-            for symbol in symbols[:10]:  # Limit to first 10 symbols for performance
+            for symbol in symbols:
                 try:
                     klines = await self.indicator_service.get_klines(symbol, '1d', limit=500)
                     if klines and 'close' in klines:
@@ -3138,7 +3138,7 @@ class EnhancedTradingStrategyWithQuantitative:
             
             training_results = {}
             
-            for symbol in symbols[:5]:  # Limit to first 5 symbols for performance
+            for symbol in symbols:
                 try:
                     # Get market data
                     market_data = await self._get_comprehensive_market_data(symbol)
