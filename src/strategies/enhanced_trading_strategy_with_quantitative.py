@@ -31,6 +31,7 @@ from src.quantitative.integration import QuantitativeIntegration
 from src.quantitative.quantitative_trading_system import QuantitativeTradingSystem
 from src.quantitative.statistical_validator import StatisticalValidator
 from src.quantitative.worldquant_dca_trailing import WorldQuantDCA, WorldQuantTrailingStop
+from src.quantitative.implied_volatility import ImpliedVolatilityEngine
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +98,9 @@ class EnhancedTradingStrategyWithQuantitative:
         # Initialize WorldQuant DCA and Trailing Stop
         self.worldquant_dca = WorldQuantDCA(config)
         self.worldquant_trailing = WorldQuantTrailingStop(config)
+        
+        # Initialize Implied Volatility Engine
+        self.volatility_engine = ImpliedVolatilityEngine(config)
         
         # Initialize cache service if provided
         if self.cache_service:
@@ -2044,36 +2048,91 @@ class EnhancedTradingStrategyWithQuantitative:
             return signal
     
     async def _apply_volatility_regime_analysis(self, symbol: str, signal: Dict, market_data: Dict) -> Dict:
-        """Apply volatility regime analysis."""
+        """Apply advanced volatility regime analysis using WorldQuant Implied Volatility Engine."""
         try:
             volatility_signal = signal.copy()
             
             if 'returns' in market_data and len(market_data['returns']) > 50:
                 returns = np.array(market_data['returns'])
                 
-                # Calculate rolling volatility
-                rolling_vol = pd.Series(returns).rolling(20).std()
-                current_vol = float(rolling_vol.iloc[-1])
-                avg_vol = float(rolling_vol.mean())
+                # Use Implied Volatility Engine for advanced analysis
+                volatility_analysis = self.volatility_engine.analyze_volatility_surface(symbol, market_data)
                 
-                # Volatility regime classification
-                if current_vol > avg_vol * 1.5:
-                    regime = 'high_volatility'
-                    volatility_signal['position_size'] *= 0.7
-                    volatility_signal['reasons'].append('high_volatility_regime')
-                elif current_vol < avg_vol * 0.7:
-                    regime = 'low_volatility'
-                    volatility_signal['position_size'] *= 1.2
-                    volatility_signal['reasons'].append('low_volatility_regime')
+                if 'error' not in volatility_analysis:
+                    # Get volatility consensus
+                    vol_consensus = volatility_analysis.get('volatility_consensus', {})
+                    mean_vol = vol_consensus.get('mean_volatility', 0.2)
+                    
+                    # Get regime analysis
+                    regime_analysis = volatility_analysis.get('regime_analysis', {})
+                    regime = regime_analysis.get('regime', 'normal_volatility')
+                    regime_score = regime_analysis.get('regime_score', 0.5)
+                    
+                    # Advanced volatility regime classification
+                    if regime == 'high_volatility':
+                        volatility_signal['position_size'] *= (1.0 - regime_score * 0.5)
+                        volatility_signal['reasons'].append('high_volatility_regime')
+                        volatility_signal['reasons'].append(f'volatility_score_{regime_score:.2f}')
+                    elif regime == 'low_volatility':
+                        volatility_signal['position_size'] *= (1.0 + regime_score * 0.3)
+                        volatility_signal['reasons'].append('low_volatility_regime')
+                        volatility_signal['reasons'].append(f'volatility_score_{regime_score:.2f}')
+                    else:
+                        volatility_signal['reasons'].append('normal_volatility_regime')
+                    
+                    # Add comprehensive volatility analysis
+                    volatility_signal['implied_volatility_analysis'] = volatility_analysis
+                    
+                    # Get volatility trading signals
+                    vol_signals = self.volatility_engine.get_volatility_trading_signals(volatility_analysis)
+                    volatility_signal['volatility_signals'] = vol_signals
+                    
+                    # Adjust position size based on volatility
+                    adjusted_size = self.volatility_engine.adjust_position_size_by_volatility(
+                        volatility_signal.get('position_size', 0.01), 
+                        volatility_analysis
+                    )
+                    volatility_signal['volatility_adjusted_position_size'] = adjusted_size
+                    
+                    # Calculate optimal stop loss based on volatility
+                    current_price = volatility_signal.get('current_price', 0.0)
+                    if current_price > 0:
+                        optimal_sl = self.volatility_engine.calculate_volatility_optimal_stop_loss(
+                            current_price, volatility_analysis, 'long'
+                        )
+                        volatility_signal['volatility_optimal_stop_loss'] = optimal_sl
+                    
+                    # Enhanced volatility regime information
+                    volatility_signal['volatility_regime'] = {
+                        'regime': regime,
+                        'regime_score': regime_score,
+                        'mean_volatility': mean_vol,
+                        'volatility_confidence': vol_consensus.get('volatility_confidence', 0.5),
+                        'volatility_dispersion': vol_consensus.get('volatility_dispersion', 0.0)
+                    }
                 else:
-                    regime = 'normal_volatility'
-                
-                volatility_signal['volatility_regime'] = {
-                    'regime': regime,
-                    'current_volatility': current_vol,
-                    'average_volatility': avg_vol,
-                    'volatility_ratio': current_vol / avg_vol
-                }
+                    # Fallback to basic volatility analysis
+                    rolling_vol = pd.Series(returns).rolling(20).std()
+                    current_vol = float(rolling_vol.iloc[-1])
+                    avg_vol = float(rolling_vol.mean())
+                    
+                    if current_vol > avg_vol * 1.5:
+                        regime = 'high_volatility'
+                        volatility_signal['position_size'] *= 0.7
+                        volatility_signal['reasons'].append('high_volatility_regime')
+                    elif current_vol < avg_vol * 0.7:
+                        regime = 'low_volatility'
+                        volatility_signal['position_size'] *= 1.2
+                        volatility_signal['reasons'].append('low_volatility_regime')
+                    else:
+                        regime = 'normal_volatility'
+                    
+                    volatility_signal['volatility_regime'] = {
+                        'regime': regime,
+                        'current_volatility': current_vol,
+                        'average_volatility': avg_vol,
+                        'volatility_ratio': current_vol / avg_vol
+                    }
             
             return volatility_signal
             
@@ -3759,3 +3818,105 @@ class EnhancedTradingStrategyWithQuantitative:
         except Exception as e:
             logger.error(f"Error getting comprehensive performance report: {str(e)}")
             return {}
+    
+    async def _apply_implied_volatility_analysis(self, symbol: str, signal: Dict, market_data: Dict) -> Dict:
+        """Apply WorldQuant Implied Volatility analysis to trading signal."""
+        try:
+            implied_vol_signal = signal.copy()
+            
+            # Perform comprehensive volatility analysis
+            volatility_analysis = self.volatility_engine.analyze_volatility_surface(symbol, market_data)
+            
+            if 'error' not in volatility_analysis:
+                # Add volatility analysis to signal
+                implied_vol_signal['implied_volatility_analysis'] = volatility_analysis
+                
+                # Get volatility trading signals
+                vol_signals = self.volatility_engine.get_volatility_trading_signals(volatility_analysis)
+                implied_vol_signal['volatility_signals'] = vol_signals
+                
+                # Adjust signal strength based on volatility
+                regime_analysis = volatility_analysis.get('regime_analysis', {})
+                regime = regime_analysis.get('regime', 'normal_volatility')
+                regime_score = regime_analysis.get('regime_score', 0.5)
+                
+                # Volatility-based signal adjustments
+                if regime == 'high_volatility':
+                    implied_vol_signal['strength'] *= (1.0 - regime_score * 0.3)
+                    implied_vol_signal['reasons'].append('high_volatility_suppression')
+                elif regime == 'low_volatility':
+                    implied_vol_signal['strength'] *= (1.0 + regime_score * 0.2)
+                    implied_vol_signal['reasons'].append('low_volatility_enhancement')
+                
+                # Add volatility confidence to signal confidence
+                vol_consensus = volatility_analysis.get('volatility_consensus', {})
+                vol_confidence = vol_consensus.get('volatility_confidence', 0.5)
+                implied_vol_signal['confidence'] = (implied_vol_signal.get('confidence', 0.5) + vol_confidence) / 2
+                
+                # Add volatility risk metrics
+                vol_risk_metrics = volatility_analysis.get('volatility_risk_metrics', {})
+                implied_vol_signal['volatility_risk_metrics'] = vol_risk_metrics
+                
+                logger.info(f"Applied Implied Volatility analysis for {symbol}: {regime} (score: {regime_score:.2f})")
+            
+            return implied_vol_signal
+            
+        except Exception as e:
+            logger.error(f"Error applying implied volatility analysis: {str(e)}")
+            return signal
+    
+    async def _optimize_final_signal_with_volatility(self, symbol: str, signal: Dict, market_data: Dict) -> Dict:
+        """Optimize final signal with volatility adjustments."""
+        try:
+            optimized_signal = signal.copy()
+            
+            # Preserve current_price
+            current_price = signal.get('current_price', 0.0)
+            
+            # Signal strength normalization
+            signal_strength = optimized_signal.get('strength', 0.0)
+            optimized_signal['signal_strength'] = np.clip(signal_strength, -1.0, 1.0)
+            
+            # Volatility-adjusted confidence calculation
+            base_confidence = optimized_signal.get('confidence', 0.0)
+            vol_analysis = optimized_signal.get('implied_volatility_analysis', {})
+            
+            if vol_analysis and 'volatility_consensus' in vol_analysis:
+                vol_confidence = vol_analysis['volatility_consensus'].get('volatility_confidence', 0.5)
+                # Blend base confidence with volatility confidence
+                optimized_signal['final_confidence'] = float((base_confidence + vol_confidence) / 2)
+            else:
+                optimized_signal['final_confidence'] = float(base_confidence)
+            
+            # Position size optimization with volatility
+            base_size = optimized_signal.get('position_size', 0.01)
+            
+            if vol_analysis and 'error' not in vol_analysis:
+                # Use volatility engine for position size adjustment
+                adjusted_size = self.volatility_engine.adjust_position_size_by_volatility(base_size, vol_analysis)
+                optimized_signal['optimized_position_size'] = adjusted_size
+            else:
+                # Fallback to basic position size calculation
+                confidence_multiplier = optimized_signal['final_confidence']
+                optimized_signal['optimized_position_size'] = base_size * confidence_multiplier
+            
+            # Risk-adjusted signal strength with volatility
+            risk_adjustment = 1.0 - abs(optimized_signal.get('var_95', 0.0)) * 10
+            
+            # Add volatility regime adjustment
+            vol_regime = optimized_signal.get('volatility_regime', {})
+            if vol_regime.get('regime') == 'high_volatility':
+                risk_adjustment *= 0.8  # Reduce risk in high volatility
+            elif vol_regime.get('regime') == 'low_volatility':
+                risk_adjustment *= 1.2  # Increase risk in low volatility
+            
+            optimized_signal['risk_adjusted_strength'] = optimized_signal['signal_strength'] * risk_adjustment
+            
+            # Ensure current_price is preserved
+            optimized_signal['current_price'] = current_price
+            
+            return optimized_signal
+            
+        except Exception as e:
+            logger.error(f"Error optimizing final signal with volatility: {str(e)}")
+            return signal

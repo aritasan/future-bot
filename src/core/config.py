@@ -207,8 +207,8 @@ def load_config() -> Dict[str, Any]:
                 # General risk parameters
                 'max_risk_per_trade': 0.02,  # 2% of account balance
                 'max_risk_per_position': 0.05,  # 5% of account balance
-                'min_stop_distance': 0.1,  # 10% minimum stop distance
-                'min_tp_distance': 0.1,  # 10% minimum take profit distance
+                'min_stop_distance': 0.03,  # 3% minimum stop distance
+                'min_tp_distance': 0.03,  # 3% minimum take profit distance
                 'take_profit_multiplier': 4.0,  # R:R ratio
                 
                 # IP monitoring configuration
