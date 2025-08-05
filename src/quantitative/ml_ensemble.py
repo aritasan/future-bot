@@ -727,7 +727,6 @@ class WorldQuantMLEnsemble:
                 'prediction_confidence': 0.0,
                 'error': str(e)
             }
-
     async def close(self) -> None:
         """Close the worldquantmlensemble and cleanup resources."""
         try:
@@ -746,3 +745,4 @@ class WorldQuantMLEnsemble:
         except Exception as e:
             logger.error(f"Error closing WorldQuantMLEnsemble: {str(e)}")
             raise
+

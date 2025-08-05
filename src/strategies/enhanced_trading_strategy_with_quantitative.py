@@ -16,6 +16,9 @@ import sys
 import psutil
 import gc
 from collections import OrderedDict
+from src.quantitative.factor_model import WorldQuantFactorModel
+from src.quantitative.ml_ensemble import WorldQuantMLEnsemble
+from src.quantitative.portfolio_optimizer import WorldQuantPortfolioOptimizer
 
 # Set event loop policy for Windows
 if sys.platform == 'win32':
@@ -32,6 +35,11 @@ from src.quantitative.quantitative_trading_system import QuantitativeTradingSyst
 from src.quantitative.statistical_validator import StatisticalValidator
 from src.quantitative.worldquant_dca_trailing import WorldQuantDCA, WorldQuantTrailingStop
 from src.quantitative.implied_volatility import ImpliedVolatilityEngine
+from src.quantitative.advanced_risk_management import DynamicRiskManager
+from src.quantitative.statistical_arbitrage import StatisticalArbitrageEngine
+from src.quantitative.advanced_ml_ensemble import AdvancedMLEnsemble
+from src.quantitative.market_microstructure import MarketMicrostructureAnalyzer
+from src.quantitative.risk_manager import RiskManager
 
 logger = logging.getLogger(__name__)
 
@@ -60,47 +68,35 @@ class EnhancedTradingStrategyWithQuantitative:
         self.cache_service = cache_service
         
         # Initialize quantitative components
-        self.quantitative_integration = QuantitativeIntegration(config)
         self.quantitative_system = QuantitativeTradingSystem(config)
+        self.statistical_validator = StatisticalValidator(config)
+        self.risk_manager = RiskManager(config)
+        self.factor_model = WorldQuantFactorModel(config)
+        self.ml_ensemble = WorldQuantMLEnsemble(config)
+        self.portfolio_optimizer = WorldQuantPortfolioOptimizer(config)
+        self.market_microstructure = MarketMicrostructureAnalyzer(config)
         
-        # Initialize statistical validator
-        significance_level = config.get('trading', {}).get('statistical_significance_level', 0.05)
-        min_sample_size = config.get('trading', {}).get('min_sample_size', 100)
-        self.statistical_validator = StatisticalValidator(significance_level, min_sample_size)
+        # Initialize new advanced modules
+        self.dynamic_risk_manager = DynamicRiskManager(config)
+        self.statistical_arbitrage_engine = StatisticalArbitrageEngine(config)
+        self.advanced_ml_ensemble = AdvancedMLEnsemble(config)
+        self.market_microstructure_analyzer = MarketMicrostructureAnalyzer(config)
         
-        # Performance tracking - WorldQuant Standards
-        self.signal_history = {}
-        self.quantitative_analysis_history = {}
-        self.data_cache = {}
-        
-        # Confidence performance tracking
-        self.confidence_performance = {
-            'buy': {'executions': 0, 'successes': 0, 'thresholds': []},
-            'sell': {'executions': 0, 'successes': 0, 'thresholds': []},
-            'thresholds': {
-                'buy': {'avg_threshold': 0.0, 'count': 0},
-                'sell': {'avg_threshold': 0.0, 'count': 0}
-            }
-        }
-        
-        # Real-time performance monitoring
-        self.performance_monitoring = {
-            'active': False,
-            'last_update': None,
-            'update_frequency': 30,  # seconds
-            'performance_metrics': {},
-            'alerts': [],
-            'performance_score': 0.0,
-            'risk_score': 0.0,
-            'stability_score': 0.0
-        }
-        
-        # Initialize WorldQuant DCA and Trailing Stop
+        # Initialize DCA and Trailing Stop
         self.worldquant_dca = WorldQuantDCA(config)
         self.worldquant_trailing = WorldQuantTrailingStop(config)
         
         # Initialize Implied Volatility Engine
         self.volatility_engine = ImpliedVolatilityEngine(config)
+        
+        # Initialize signal history
+        self.signal_history = {}
+        
+        # Initialize quantitative analysis history
+        self.quantitative_analysis_history = {}
+        
+        # Initialize confidence performance tracking
+        self.confidence_performance = {}
         
         # Initialize cache service if provided
         if self.cache_service:
@@ -1852,398 +1848,206 @@ class EnhancedTradingStrategyWithQuantitative:
             return {}
     
     async def _apply_advanced_risk_management(self, symbol: str, signal: Dict, market_data: Dict) -> Dict:
-        """Apply advanced risk management to signal."""
+        """
+        Apply advanced risk management using DynamicRiskManager.
+        """
         try:
-            risk_adjusted_signal = signal.copy()
+            # Get historical returns for risk calculation
+            returns = self._calculate_returns_from_market_data(market_data)
             
-            # Calculate dynamic VaR
-            if 'returns' in market_data and len(market_data['returns']) > 30:
-                var_95 = np.percentile(market_data['returns'], 5)
-                var_99 = np.percentile(market_data['returns'], 1)
-                
-                risk_adjusted_signal['var_95'] = var_95
-                risk_adjusted_signal['var_99'] = var_99
-                
-                # Adjust position size based on VaR
-                if abs(var_95) > 0.05:  # High volatility
-                    risk_adjusted_signal['position_size'] *= 0.5
-                    risk_adjusted_signal['reasons'].append('high_volatility_reduction')
+            # Calculate dynamic VaR with regime switching
+            regime = self._detect_volatility_regime(returns)
+            var_results = self.dynamic_risk_manager.calculate_dynamic_var(returns, regime)
             
-            # Correlation analysis with portfolio
-            if 'portfolio_returns' in market_data:
-                correlation = self._calculate_portfolio_correlation(symbol, market_data)
-                risk_adjusted_signal['portfolio_correlation'] = correlation
-                
-                # Reduce position if high correlation
-                if abs(correlation) > 0.7:
-                    risk_adjusted_signal['position_size'] *= 0.7
-                    risk_adjusted_signal['reasons'].append('high_correlation_reduction')
+            # Calculate portfolio risk attribution
+            portfolio_weights = {symbol: 1.0}  # Single asset portfolio
+            covariance_matrix = pd.DataFrame([[returns.var()]], index=[symbol], columns=[symbol])
+            risk_attribution = self.dynamic_risk_manager.calculate_portfolio_risk_attribution(
+                portfolio_weights, covariance_matrix
+            )
             
-            # Maximum drawdown protection
-            max_dd = self._calculate_max_drawdown(market_data.get('returns', []))
-            risk_adjusted_signal['max_drawdown'] = max_dd
+            # Run stress tests
+            stress_results = self.dynamic_risk_manager.run_stress_tests(
+                portfolio_weights, {symbol: returns}
+            )
             
-            if max_dd > 0.2:  # High drawdown
-                risk_adjusted_signal['position_size'] *= 0.6
-                risk_adjusted_signal['reasons'].append('drawdown_protection')
+            # Adjust signal based on risk analysis
+            adjusted_signal = signal.copy()
             
-            return risk_adjusted_signal
+            # Adjust position size based on VaR
+            if 'expected_shortfall' in var_results:
+                var_adjustment = min(1.0, 0.1 / abs(var_results['expected_shortfall'])) if var_results['expected_shortfall'] != 0 else 1.0
+                adjusted_signal['optimized_position_size'] *= var_adjustment
+            
+            # Add risk metrics to signal
+            adjusted_signal['risk_metrics'] = {
+                'dynamic_var': var_results,
+                'risk_attribution': risk_attribution,
+                'stress_test_results': stress_results,
+                'volatility_regime': regime
+            }
+            
+            logger.info(f"Applied advanced risk management for {symbol}")
+            return adjusted_signal
             
         except Exception as e:
             logger.error(f"Error applying advanced risk management: {str(e)}")
             return signal
-    
-    def _calculate_portfolio_correlation(self, symbol: str, market_data: Dict) -> float:
-        """Calculate correlation with existing portfolio."""
+
+    async def _apply_statistical_arbitrage_analysis(self, symbol: str, signal: Dict, market_data: Dict) -> Dict:
+        """
+        Apply statistical arbitrage analysis using StatisticalArbitrageEngine.
+        """
         try:
-            if 'returns' in market_data and 'portfolio_returns' in market_data:
-                symbol_returns = pd.Series(market_data['returns'])
-                portfolio_returns = pd.Series(market_data['portfolio_returns'].get(symbol, []))
-                
-                if len(symbol_returns) > 10 and len(portfolio_returns) > 10:
-                    # Align series
-                    min_length = min(len(symbol_returns), len(portfolio_returns))
-                    correlation = symbol_returns.iloc[-min_length:].corr(portfolio_returns.iloc[-min_length:])
-                    return correlation if not pd.isna(correlation) else 0.0
+            # Prepare market data for arbitrage analysis
+            market_data_dict = {symbol: market_data.get('close', pd.Series())}
             
-            return 0.0
+            # Generate pairs trading signals
+            pairs_signals = self.statistical_arbitrage_engine.generate_pairs_trading_signals(market_data_dict)
             
-        except Exception as e:
-            logger.error(f"Error calculating portfolio correlation: {str(e)}")
-            return 0.0
-    
-    def _calculate_max_drawdown(self, returns: List[float]) -> float:
-        """Calculate maximum drawdown from returns."""
-        try:
-            if not returns or len(returns) < 2:
-                return 0.0
+            # Generate mean reversion signals
+            mean_reversion_signals = self.statistical_arbitrage_engine.generate_mean_reversion_signals(market_data_dict)
             
-            returns_array = np.array(returns)
-            cumulative = np.cumprod(1 + returns_array)
-            running_max = np.maximum.accumulate(cumulative)
-            drawdown = (cumulative - running_max) / running_max
-            return float(abs(drawdown.min()))
+            # Generate momentum reversal signals
+            momentum_reversal_signals = self.statistical_arbitrage_engine.generate_momentum_reversal_signals(market_data_dict)
             
-        except Exception as e:
-            import traceback
-            logger.error(traceback.format_exc())
-            logger.error(f"Error calculating max drawdown: {str(e)}")
-            return 0.0
-    
-    async def _apply_statistical_arbitrage(self, symbol: str, signal: Dict, market_data: Dict) -> Dict:
-        """Apply statistical arbitrage analysis."""
-        try:
-            stat_arb_signal = signal.copy()
+            # Generate volatility arbitrage signals
+            volatility_arbitrage_signals = self.statistical_arbitrage_engine.generate_volatility_arbitrage_signals(market_data_dict)
             
-            # Cointegration analysis with major pairs
-            cointegration_signals = await self._analyze_cointegration(symbol, market_data)
-            stat_arb_signal['cointegration'] = cointegration_signals
-            
-            # Pairs trading opportunities
-            if cointegration_signals.get('cointegrated_pairs'):
-                stat_arb_signal['strength'] += 0.1
-                stat_arb_signal['reasons'].append('statistical_arbitrage')
-            
-            # Mean reversion analysis
-            mean_reversion = self._analyze_mean_reversion(market_data.get('returns', []))
-            stat_arb_signal['mean_reversion'] = mean_reversion
-            
-            if mean_reversion.get('is_mean_reverting'):
-                if mean_reversion.get('deviation') > 2:  # Strong deviation
-                    stat_arb_signal['strength'] += 0.15
-                    stat_arb_signal['reasons'].append('mean_reversion_opportunity')
-            
-            return stat_arb_signal
-            
-        except Exception as e:
-            logger.error(f"Error applying statistical arbitrage: {str(e)}")
-            return signal
-    
-    async def _analyze_cointegration(self, symbol: str, market_data: Dict) -> Dict:
-        """Analyze cointegration with other symbols."""
-        try:
-            # This would require data from multiple symbols
-            # For now, return basic structure
-            return {
-                'cointegrated_pairs': [],
-                'cointegration_score': 0.0,
-                'spread_zscore': 0.0
+            # Combine arbitrage signals
+            arbitrage_analysis = {
+                'pairs_trading': pairs_signals,
+                'mean_reversion': mean_reversion_signals,
+                'momentum_reversal': momentum_reversal_signals,
+                'volatility_arbitrage': volatility_arbitrage_signals
             }
             
-        except Exception as e:
-            logger.error(f"Error analyzing cointegration: {str(e)}")
-            return {}
-    
-    def _analyze_mean_reversion(self, returns: List[float]) -> Dict:
-        """Analyze mean reversion characteristics."""
-        try:
-            if not returns or len(returns) < 30:
-                return {'is_mean_reverting': False, 'deviation': 0.0}
+            # Adjust signal based on arbitrage analysis
+            adjusted_signal = signal.copy()
             
-            returns_array = np.array(returns)
-            mean = float(np.mean(returns_array))
-            std = float(np.std(returns_array))
-            current_return = float(returns_array[-1])
+            # Check for strong arbitrage opportunities
+            strong_signals = []
             
-            deviation = (current_return - mean) / std
+            for signal_type, signals in arbitrage_analysis.items():
+                if symbol in signals:
+                    symbol_signal = signals[symbol]
+                    if symbol_signal['signal']['confidence'] > 0.7:
+                        strong_signals.append({
+                            'type': signal_type,
+                            'action': symbol_signal['signal']['action'],
+                            'confidence': symbol_signal['signal']['confidence']
+                        })
             
-            return {
-                'is_mean_reverting': abs(deviation) > 1.5,
-                'deviation': float(deviation),
-                'mean': mean,
-                'std': std
-            }
-            
-        except Exception as e:
-            import traceback
-            logger.error(f"Error analyzing mean reversion: {str(e)}")
-            logger.error(traceback.format_exc())
-            return {'is_mean_reverting': False, 'deviation': 0.0}
-    
-    async def _apply_momentum_mean_reversion_analysis(self, symbol: str, signal: Dict, market_data: Dict) -> Dict:
-        """Apply momentum and mean reversion analysis."""
-        try:
-            momentum_signal = signal.copy()
-            
-            # Momentum analysis
-            if 'returns' in market_data and len(market_data['returns']) > 20:
-                returns = np.array(market_data['returns'])
-                
-                # Short-term momentum (5 periods)
-                short_momentum = float(np.mean(returns[-5:]))
-                
-                # Medium-term momentum (20 periods)
-                medium_momentum = float(np.mean(returns[-20:]))
-                
-                # Long-term momentum (60 periods)
-                long_momentum = float(np.mean(returns[-60:])) if len(returns) >= 60 else medium_momentum
-                
-                momentum_signal['momentum'] = {
-                    'short_term': short_momentum,
-                    'medium_term': medium_momentum,
-                    'long_term': long_momentum
+            # Boost signal if strong arbitrage opportunity found
+            if strong_signals:
+                best_signal = max(strong_signals, key=lambda x: x['confidence'])
+                adjusted_signal['arbitrage_boost'] = {
+                    'type': best_signal['type'],
+                    'action': best_signal['action'],
+                    'confidence': best_signal['confidence']
                 }
-                
-                # Momentum signal adjustment
-                if short_momentum > 0.01 and medium_momentum > 0.005:
-                    momentum_signal['strength'] += 0.1
-                    momentum_signal['reasons'].append('positive_momentum')
-                elif short_momentum < -0.01 and medium_momentum < -0.005:
-                    momentum_signal['strength'] -= 0.1
-                    momentum_signal['reasons'].append('negative_momentum')
-                
-                # Mean reversion signal
-                if abs(short_momentum) > 0.02 and abs(short_momentum - medium_momentum) > 0.01:
-                    if short_momentum > medium_momentum:
-                        momentum_signal['strength'] -= 0.05  # Revert from high
-                        momentum_signal['reasons'].append('momentum_reversion')
-                    else:
-                        momentum_signal['strength'] += 0.05  # Revert from low
-                        momentum_signal['reasons'].append('momentum_reversion')
+                adjusted_signal['quantitative_confidence'] = min(
+                    adjusted_signal['quantitative_confidence'] + 0.2, 1.0
+                )
             
-            return momentum_signal
+            adjusted_signal['arbitrage_analysis'] = arbitrage_analysis
+            
+            logger.info(f"Applied statistical arbitrage analysis for {symbol}")
+            return adjusted_signal
             
         except Exception as e:
-            logger.error(f"Error applying momentum analysis: {str(e)}")
+            logger.error(f"Error applying statistical arbitrage analysis: {str(e)}")
             return signal
-    
-    async def _apply_volatility_regime_analysis(self, symbol: str, signal: Dict, market_data: Dict) -> Dict:
-        """Apply advanced volatility regime analysis using WorldQuant Implied Volatility Engine."""
+
+    async def _apply_advanced_ml_analysis(self, symbol: str, signal: Dict, market_data: Dict) -> Dict:
+        """
+        Apply advanced machine learning analysis using AdvancedMLEnsemble.
+        """
         try:
-            volatility_signal = signal.copy()
+            # Prepare data for ML models
+            market_df = pd.DataFrame(market_data)
+            X, y = self.advanced_ml_ensemble.prepare_data(market_df)
             
-            if 'returns' in market_data and len(market_data['returns']) > 50:
-                returns = np.array(market_data['returns'])
+            # Make predictions with uncertainty quantification
+            if len(X) > 0:
+                ml_predictions = self.advanced_ml_ensemble.predict_with_uncertainty(X)
                 
-                # Use Implied Volatility Engine for advanced analysis
-                volatility_analysis = self.volatility_engine.analyze_volatility_surface(symbol, market_data)
+                # Adjust signal based on ML predictions
+                adjusted_signal = signal.copy()
                 
-                if 'error' not in volatility_analysis:
-                    # Get volatility consensus
-                    vol_consensus = volatility_analysis.get('volatility_consensus', {})
-                    mean_vol = vol_consensus.get('mean_volatility', 0.2)
-                    
-                    # Get regime analysis
-                    regime_analysis = volatility_analysis.get('regime_analysis', {})
-                    regime = regime_analysis.get('regime', 'normal_volatility')
-                    regime_score = regime_analysis.get('regime_score', 0.5)
-                    
-                    # Advanced volatility regime classification
-                    if regime == 'high_volatility':
-                        volatility_signal['position_size'] *= (1.0 - regime_score * 0.5)
-                        volatility_signal['reasons'].append('high_volatility_regime')
-                        volatility_signal['reasons'].append(f'volatility_score_{regime_score:.2f}')
-                    elif regime == 'low_volatility':
-                        volatility_signal['position_size'] *= (1.0 + regime_score * 0.3)
-                        volatility_signal['reasons'].append('low_volatility_regime')
-                        volatility_signal['reasons'].append(f'volatility_score_{regime_score:.2f}')
-                    else:
-                        volatility_signal['reasons'].append('normal_volatility_regime')
-                    
-                    # Add comprehensive volatility analysis
-                    volatility_signal['implied_volatility_analysis'] = volatility_analysis
-                    
-                    # Get volatility trading signals
-                    vol_signals = self.volatility_engine.get_volatility_trading_signals(volatility_analysis)
-                    volatility_signal['volatility_signals'] = vol_signals
-                    
-                    # Adjust position size based on volatility
-                    adjusted_size = self.volatility_engine.adjust_position_size_by_volatility(
-                        volatility_signal.get('position_size', 0.01), 
-                        volatility_analysis
+                # Use ensemble prediction
+                ensemble_prediction = ml_predictions.get('ensemble_prediction', 0.0)
+                ensemble_uncertainty = ml_predictions.get('ensemble_uncertainty', 0.0)
+                
+                # Adjust signal strength based on ML prediction
+                if ensemble_prediction > 0.05:  # Positive prediction
+                    adjusted_signal['ml_boost'] = min(ensemble_prediction * 2, 0.3)
+                    adjusted_signal['quantitative_confidence'] = min(
+                        adjusted_signal['quantitative_confidence'] + adjusted_signal['ml_boost'], 1.0
                     )
-                    volatility_signal['volatility_adjusted_position_size'] = adjusted_size
-                    
-                    # Calculate optimal stop loss based on volatility
-                    current_price = volatility_signal.get('current_price', 0.0)
-                    if current_price > 0:
-                        optimal_sl = self.volatility_engine.calculate_volatility_optimal_stop_loss(
-                            current_price, volatility_analysis, 'long'
-                        )
-                        volatility_signal['volatility_optimal_stop_loss'] = optimal_sl
-                    
-                    # Enhanced volatility regime information
-                    volatility_signal['volatility_regime'] = {
-                        'regime': regime,
-                        'regime_score': regime_score,
-                        'mean_volatility': mean_vol,
-                        'volatility_confidence': vol_consensus.get('volatility_confidence', 0.5),
-                        'volatility_dispersion': vol_consensus.get('volatility_dispersion', 0.0)
-                    }
-                else:
-                    # Fallback to basic volatility analysis
-                    rolling_vol = pd.Series(returns).rolling(20).std()
-                    current_vol = float(rolling_vol.iloc[-1])
-                    avg_vol = float(rolling_vol.mean())
-                    
-                    if current_vol > avg_vol * 1.5:
-                        regime = 'high_volatility'
-                        volatility_signal['position_size'] *= 0.7
-                        volatility_signal['reasons'].append('high_volatility_regime')
-                    elif current_vol < avg_vol * 0.7:
-                        regime = 'low_volatility'
-                        volatility_signal['position_size'] *= 1.2
-                        volatility_signal['reasons'].append('low_volatility_regime')
-                    else:
-                        regime = 'normal_volatility'
-                    
-                    volatility_signal['volatility_regime'] = {
-                        'regime': regime,
-                        'current_volatility': current_vol,
-                        'average_volatility': avg_vol,
-                        'volatility_ratio': current_vol / avg_vol
-                    }
-            
-            return volatility_signal
-            
-        except Exception as e:
-            logger.error(f"Error applying volatility regime analysis: {str(e)}")
-            return signal
-    
-    async def _apply_correlation_analysis(self, symbol: str, signal: Dict, market_data: Dict) -> Dict:
-        """Apply correlation analysis with market indices."""
-        try:
-            correlation_signal = signal.copy()
-            
-            # This would require market index data
-            # For now, implement basic correlation logic
-            correlation_signal['market_correlation'] = {
-                'btc_correlation': 0.0,
-                'eth_correlation': 0.0,
-                'market_beta': 1.0
-            }
-            
-            return correlation_signal
-            
-        except Exception as e:
-            logger.error(f"Error applying correlation analysis: {str(e)}")
-            return signal
-    
-    async def _optimize_final_signal(self, symbol: str, signal: Dict, market_data: Dict) -> Dict:
-        """Optimize final signal using machine learning techniques."""
-        try:
-            optimized_signal = signal.copy()
-            
-            # Preserve current_price
-            current_price = signal.get('current_price', 0.0)
-            
-            # Signal strength normalization - use 'strength' key instead of 'signal_strength'
-            signal_strength = optimized_signal.get('strength', 0.0)
-            optimized_signal['signal_strength'] = np.clip(signal_strength, -1.0, 1.0)
-            
-            # Confidence calculation
-            confidence_factors = [
-                abs(optimized_signal['signal_strength']),
-                optimized_signal.get('confidence', 0.0),
-                len(optimized_signal.get('reasons', [])) / 10.0  # More reasons = higher confidence
-            ]
-            
-            optimized_signal['final_confidence'] = float(np.mean(confidence_factors))
-            
-            # Position size optimization
-            base_size = optimized_signal.get('position_size', 0.01)
-            confidence_multiplier = optimized_signal['final_confidence']
-            volatility_adjustment = 1.0 / (1.0 + optimized_signal.get('volatility_regime', {}).get('volatility_ratio', 1.0))
-            
-            optimized_signal['optimized_position_size'] = base_size * confidence_multiplier * volatility_adjustment
-            
-            # Risk-adjusted signal strength
-            risk_adjustment = 1.0 - abs(optimized_signal.get('var_95', 0.0)) * 10
-            optimized_signal['risk_adjusted_strength'] = optimized_signal['signal_strength'] * risk_adjustment
-            
-            # Ensure current_price is preserved
-            optimized_signal['current_price'] = current_price
-            
-            return optimized_signal
-            
-        except Exception as e:
-            logger.error(f"Error optimizing final signal: {str(e)}")
-            return signal
-    
-    async def _optimize_position_size_advanced(self, symbol: str, base_size: float, market_data: Dict, signal: Dict) -> float:
-        """Advanced position size optimization using Kelly Criterion and risk metrics."""
-        try:
-            # Kelly Criterion calculation
-            if 'returns' in market_data and len(market_data['returns']) > 30:
-                returns = np.array(market_data['returns'])
-                positive_returns_mask = returns > 0
-                negative_returns_mask = returns < 0
-                positive_count = float(np.sum(positive_returns_mask))
-                negative_count = float(np.sum(negative_returns_mask))
+                elif ensemble_prediction < -0.05:  # Negative prediction
+                    adjusted_signal['ml_penalty'] = min(abs(ensemble_prediction) * 2, 0.3)
+                    adjusted_signal['quantitative_confidence'] = max(
+                        adjusted_signal['quantitative_confidence'] - adjusted_signal['ml_penalty'], 0.0
+                    )
                 
-                win_rate = positive_count / len(returns)
-                avg_win = float(np.mean(returns[positive_returns_mask])) if positive_count > 0 else 0.001
-                avg_loss = abs(float(np.mean(returns[negative_returns_mask]))) if negative_count > 0 else 0.001
+                # Add uncertainty information
+                adjusted_signal['ml_uncertainty'] = ensemble_uncertainty
+                adjusted_signal['ml_predictions'] = ml_predictions
                 
-                # Kelly fraction
-                kelly_fraction = (win_rate * avg_win - (1 - win_rate) * avg_loss) / avg_win
-                kelly_fraction = float(np.clip(kelly_fraction, 0.0, 0.25))  # Cap at 25%
+                # Adjust position size based on uncertainty
+                if ensemble_uncertainty > 0.1:  # High uncertainty
+                    current_size = adjusted_signal.get('optimized_position_size', 0.01)
+                    adjusted_signal['optimized_position_size'] = current_size * 0.8  # Reduce position size
+                
+                logger.info(f"Applied advanced ML analysis for {symbol}")
+                return adjusted_signal
+            
+            return signal
+            
+        except Exception as e:
+            logger.error(f"Error applying advanced ML analysis: {str(e)}")
+            return signal
+
+
+
+    def _calculate_returns_from_market_data(self, market_data: Dict) -> pd.Series:
+        """
+        Calculate returns from market data.
+        """
+        try:
+            if 'close' in market_data:
+                prices = pd.Series(market_data['close'])
+                returns = prices.pct_change().dropna()
+                return returns
             else:
-                kelly_fraction = 0.02  # Default 2%
-            
-            # Volatility adjustment
-            returns_array = market_data.get('returns', [0.01])
-            volatility = float(np.std(returns_array)) if returns_array else 0.01
-            volatility_adjustment = 1.0 / (1.0 + volatility * 10)
-            
-            # Correlation adjustment
-            correlation = signal.get('portfolio_correlation', 0.0)
-            correlation_adjustment = 1.0 - abs(correlation) * 0.5
-            
-            # Final position size
-            final_size = base_size * kelly_fraction * volatility_adjustment * correlation_adjustment
-            
-            # Safety limits
-            final_size = float(np.clip(final_size, 0.001, 0.1))  # Between 0.1% and 10%
-            
-            return final_size
-            
+                return pd.Series([0.0])
         except Exception as e:
-            import traceback
-            logger.error(f"Error optimizing position size: {str(e)}")
-            logger.error(traceback.format_exc())
-            return base_size 
-    
+            logger.error(f"Error calculating returns: {str(e)}")
+            return pd.Series([0.0])
+
+    def _detect_volatility_regime(self, returns: pd.Series) -> str:
+        """
+        Detect volatility regime for risk management.
+        """
+        try:
+            if len(returns) < 20:
+                return 'normal_volatility'
+            
+            current_vol = returns.rolling(window=20).std().iloc[-1]
+            avg_vol = returns.std()
+            
+            if current_vol > avg_vol * 1.5:
+                return 'high_volatility'
+            elif current_vol < avg_vol * 0.7:
+                return 'low_volatility'
+            else:
+                return 'normal_volatility'
+                
+        except Exception as e:
+            logger.error(f"Error detecting volatility regime: {str(e)}")
+            return 'normal_volatility'
+
     def _calculate_dynamic_thresholds(self, market_data: pd.DataFrame, 
                                     volatility_regime: str = None,
                                     risk_metrics: Dict = None) -> Dict[str, float]:
@@ -3920,3 +3724,9 @@ class EnhancedTradingStrategyWithQuantitative:
         except Exception as e:
             logger.error(f"Error optimizing final signal with volatility: {str(e)}")
             return signal
+
+    async def _apply_statistical_arbitrage(self, symbol: str, signal: Dict, market_data: Dict) -> Dict:
+        """
+        Apply statistical arbitrage analysis (alias for _apply_statistical_arbitrage_analysis).
+        """
+        return await self._apply_statistical_arbitrage_analysis(symbol, signal, market_data)

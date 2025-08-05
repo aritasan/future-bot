@@ -882,7 +882,6 @@ class WorldQuantFactorModel:
                 'favorable_factors': False,
                 'error': str(e)
             }
-
     async def close(self) -> None:
         """Close the worldquantfactormodel and cleanup resources."""
         try:
@@ -901,3 +900,4 @@ class WorldQuantFactorModel:
         except Exception as e:
             logger.error(f"Error closing WorldQuantFactorModel: {str(e)}")
             raise
+

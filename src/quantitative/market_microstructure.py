@@ -1,664 +1,703 @@
+#!/usr/bin/env python3
+"""
+Market Microstructure Module
+WorldQuant Standards Implementation
+
+Implements:
+- Order Flow Analysis
+- High-Frequency Trading capabilities
+- Market Impact Modeling
+- Liquidity Analysis
+"""
+
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Optional, Tuple
 import logging
+from typing import Dict, List, Optional, Tuple, Any
+import warnings
+warnings.filterwarnings('ignore')
 
 logger = logging.getLogger(__name__)
 
 class MarketMicrostructureAnalyzer:
     """
-    Advanced market microstructure analysis for quantitative trading.
-    Implements bid-ask spread, order flow, and market impact analysis.
+    Advanced Market Microstructure Analysis System following WorldQuant standards.
     """
     
     def __init__(self, config: Dict = None):
-        if config is None:
-            config = {}
-        self.config = config
-        self.min_tick_size = config.get('min_tick_size', 0.0001)
-        self.analysis_history = []
-        logger.info("MarketMicrostructureAnalyzer initialized")
-    
-    async def initialize(self) -> bool:
-        """Initialize the market microstructure analyzer."""
-        try:
-            # Clear any existing data
-            self.analysis_history.clear()
-            logger.info("MarketMicrostructureAnalyzer initialized successfully")
-            return True
-        except Exception as e:
-            logger.error(f"Error initializing MarketMicrostructureAnalyzer: {str(e)}")
-            return False
+        """Initialize Market Microstructure Analyzer."""
+        self.config = config or {}
+        self.order_flow_data = {}
+        self.liquidity_metrics = {}
+        self.market_impact_models = {}
+        self.hft_signals = {}
         
-    def analyze_market_structure(self, orderbook_data: Dict, trade_data: pd.DataFrame = None) -> Dict:
+        # Microstructure parameters
+        self.order_flow_window = self.config.get('order_flow_window', 100)
+        self.liquidity_threshold = self.config.get('liquidity_threshold', 0.1)
+        self.impact_decay_factor = self.config.get('impact_decay_factor', 0.95)
+        
+        logger.info("Market Microstructure Analyzer initialized")
+    
+    def analyze_order_flow(self, orderbook_data: Dict, trade_data: pd.DataFrame) -> Dict[str, Any]:
         """
-        Comprehensive market microstructure analysis.
+        Analyze order flow patterns.
         
         Args:
-            orderbook_data: Dictionary containing bid/ask data
-            trade_data: DataFrame of trade data
+            orderbook_data: Order book data
+            trade_data: Trade data DataFrame
             
         Returns:
-            Dict: Market microstructure metrics
+            Order flow analysis results
         """
         try:
-            results = {
-                'bid_ask_spread': self._calculate_bid_ask_spread(orderbook_data),
-                'spread_analysis': self._analyze_spread_dynamics(orderbook_data),
-                'order_flow_imbalance': self._calculate_order_flow_imbalance(orderbook_data),
-                'market_depth': self._analyze_market_depth(orderbook_data),
-                'price_impact': self._estimate_price_impact(orderbook_data),
-                'liquidity_metrics': self._calculate_liquidity_metrics(orderbook_data),
-                'volatility_metrics': self._calculate_volatility_metrics(orderbook_data),
-                'market_efficiency': self._assess_market_efficiency(orderbook_data)
-            }
+            order_flow_analysis = {}
             
-            if trade_data is not None:
-                results.update({
-                    'trade_analysis': self._analyze_trade_patterns(trade_data),
-                    'volume_analysis': self._analyze_volume_patterns(trade_data),
-                    'time_and_sales': self._analyze_time_and_sales(trade_data)
-                })
+            # 1. Bid-Ask Imbalance
+            order_flow_analysis['bid_ask_imbalance'] = self._calculate_bid_ask_imbalance(orderbook_data)
             
-            self._store_analysis_result(results)
-            return results
+            # 2. Order Flow Toxicity
+            order_flow_analysis['order_flow_toxicity'] = self._calculate_order_flow_toxicity(trade_data)
+            
+            # 3. Order Flow Imbalance
+            order_flow_analysis['order_flow_imbalance'] = self._calculate_order_flow_imbalance(trade_data)
+            
+            # 4. Market Impact
+            order_flow_analysis['market_impact'] = self._calculate_market_impact(orderbook_data, trade_data)
+            
+            # 5. Order Flow Signals
+            order_flow_analysis['signals'] = self._generate_order_flow_signals(order_flow_analysis)
+            
+            return order_flow_analysis
             
         except Exception as e:
-            logger.error(f"Error in market microstructure analysis: {str(e)}")
+            logger.error(f"Error analyzing order flow: {str(e)}")
             return {'error': str(e)}
     
-    def _calculate_bid_ask_spread(self, orderbook_data: Dict) -> Dict:
-        """Calculate bid-ask spread metrics."""
+    def _calculate_bid_ask_imbalance(self, orderbook_data: Dict) -> Dict[str, float]:
+        """
+        Calculate bid-ask imbalance.
+        
+        Args:
+            orderbook_data: Order book data
+            
+        Returns:
+            Bid-ask imbalance metrics
+        """
         try:
-            if 'bids' not in orderbook_data or 'asks' not in orderbook_data:
-                return {'error': 'Missing bid/ask data'}
+            imbalance_metrics = {}
             
-            # Handle different orderbook formats
-            bids = orderbook_data['bids']
-            asks = orderbook_data['asks']
+            # Extract bid and ask data
+            bids = orderbook_data.get('bids', [])
+            asks = orderbook_data.get('asks', [])
             
-            # Check if data is in list format [price, size]
-            if isinstance(bids, list) and len(bids) > 0:
-                if isinstance(bids[0], list):
-                    # Format: [[price, size], [price, size], ...]
-                    best_bid = max(bids, key=lambda x: float(x[0]))
-                    best_ask = min(asks, key=lambda x: float(x[0]))
-                    
-                    best_bid_price = float(best_bid[0])
-                    best_bid_size = float(best_bid[1])
-                    best_ask_price = float(best_ask[0])
-                    best_ask_size = float(best_ask[1])
-                else:
-                    # Format: [{'price': price, 'size': size}, ...]
-                    best_bid = max(bids, key=lambda x: float(x['price']))
-                    best_ask = min(asks, key=lambda x: float(x['price']))
-                    
-                    best_bid_price = float(best_bid['price'])
-                    best_bid_size = float(best_bid['size'])
-                    best_ask_price = float(best_ask['price'])
-                    best_ask_size = float(best_ask['size'])
-            else:
-                return {'error': 'Invalid orderbook format'}
+            if not bids or not asks:
+                return {'imbalance': 0.0, 'spread': 0.0, 'depth': 0.0}
             
-            spread = best_ask_price - best_bid_price
-            spread_bps = (spread / best_bid_price) * 10000  # Basis points
-            mid_price = (best_bid_price + best_ask_price) / 2
+            # Calculate total bid and ask volume
+            total_bid_volume = sum(bid[1] for bid in bids)
+            total_ask_volume = sum(ask[1] for ask in asks)
             
-            return {
-                'absolute_spread': spread,
-                'relative_spread_bps': spread_bps,
-                'mid_price': mid_price,
-                'best_bid': best_bid_price,
-                'best_ask': best_ask_price,
-                'bid_size': best_bid_size,
-                'ask_size': best_ask_size
-            }
-            
-        except Exception as e:
-            logger.error(f"Error calculating bid-ask spread: {str(e)}")
-            return {'error': str(e)}
-    
-    def _analyze_spread_dynamics(self, orderbook_data: Dict) -> Dict:
-        """Analyze spread dynamics and patterns."""
-        try:
-            if 'bids' not in orderbook_data or 'asks' not in orderbook_data:
-                return {'error': 'Missing bid/ask data'}
-            
-            bids = orderbook_data['bids']
-            asks = orderbook_data['asks']
-            
-            # Handle different orderbook formats
-            if isinstance(bids, list) and len(bids) > 0:
-                if isinstance(bids[0], list):
-                    # Format: [[price, size], [price, size], ...]
-                    bid_levels = sorted(bids, key=lambda x: float(x[0]), reverse=True)
-                    ask_levels = sorted(asks, key=lambda x: float(x[0]))
-                else:
-                    # Format: [{'price': price, 'size': size}, ...]
-                    bid_levels = sorted(bids, key=lambda x: float(x['price']), reverse=True)
-                    ask_levels = sorted(asks, key=lambda x: float(x['price']))
-            else:
-                return {'error': 'Invalid orderbook format'}
-            
-            spreads = []
-            for i in range(min(5, len(bid_levels), len(ask_levels))):
-                if isinstance(bid_levels[0], list):
-                    spread = float(ask_levels[i][0]) - float(bid_levels[i][0])
-                else:
-                    spread = float(ask_levels[i]['price']) - float(bid_levels[i]['price'])
-                spreads.append(spread)
-            
-            # Calculate spread statistics
-            spread_stats = {
-                'mean_spread': np.mean(spreads),
-                'std_spread': np.std(spreads),
-                'min_spread': np.min(spreads),
-                'max_spread': np.max(spreads),
-                'spread_skewness': self._calculate_skewness(spreads),
-                'spread_kurtosis': self._calculate_kurtosis(spreads)
-            }
-            
-            return spread_stats
-            
-        except Exception as e:
-            logger.error(f"Error analyzing spread dynamics: {str(e)}")
-            return {'error': str(e)}
-    
-    def _calculate_order_flow_imbalance(self, orderbook_data: Dict) -> Dict:
-        """Calculate order flow imbalance metrics."""
-        try:
-            if 'bids' not in orderbook_data or 'asks' not in orderbook_data:
-                return {'error': 'Missing bid/ask data'}
-            
-            bids = orderbook_data['bids']
-            asks = orderbook_data['asks']
-            
-            # Handle different orderbook formats
-            if isinstance(bids, list) and len(bids) > 0:
-                if isinstance(bids[0], list):
-                    # Format: [[price, size], [price, size], ...]
-                    total_bid_volume = sum(float(bid[1]) for bid in bids)
-                    total_ask_volume = sum(float(ask[1]) for ask in asks)
-                    weighted_bid_price = sum(float(bid[0]) * float(bid[1]) for bid in bids) / total_bid_volume if total_bid_volume > 0 else 0
-                    weighted_ask_price = sum(float(ask[0]) * float(ask[1]) for ask in asks) / total_ask_volume if total_ask_volume > 0 else 0
-                else:
-                    # Format: [{'price': price, 'size': size}, ...]
-                    total_bid_volume = sum(float(bid['size']) for bid in bids)
-                    total_ask_volume = sum(float(ask['size']) for ask in asks)
-                    weighted_bid_price = sum(float(bid['price']) * float(bid['size']) for bid in bids) / total_bid_volume if total_bid_volume > 0 else 0
-                    weighted_ask_price = sum(float(ask['price']) * float(ask['size']) for ask in asks) / total_ask_volume if total_ask_volume > 0 else 0
-            else:
-                return {'error': 'Invalid orderbook format'}
-            
-            # Calculate imbalance metrics
+            # Calculate imbalance
             total_volume = total_bid_volume + total_ask_volume
-            imbalance_ratio = (total_bid_volume - total_ask_volume) / total_volume if total_volume > 0 else 0
+            if total_volume > 0:
+                imbalance = (total_bid_volume - total_ask_volume) / total_volume
+            else:
+                imbalance = 0.0
             
-            return {
-                'total_bid_volume': total_bid_volume,
-                'total_ask_volume': total_ask_volume,
-                'imbalance_ratio': imbalance_ratio,
-                'weighted_bid_price': weighted_bid_price,
-                'weighted_ask_price': weighted_ask_price,
-                'volume_ratio': total_bid_volume / total_ask_volume if total_ask_volume > 0 else float('inf')
+            # Calculate spread
+            best_bid = max(bid[0] for bid in bids) if bids else 0
+            best_ask = min(ask[0] for ask in asks) if asks else 0
+            spread = best_ask - best_bid if best_ask > best_bid else 0
+            
+            # Calculate depth
+            depth = min(total_bid_volume, total_ask_volume)
+            
+            imbalance_metrics = {
+                'imbalance': float(imbalance),
+                'spread': float(spread),
+                'depth': float(depth),
+                'total_bid_volume': float(total_bid_volume),
+                'total_ask_volume': float(total_ask_volume)
             }
+            
+            return imbalance_metrics
+            
+        except Exception as e:
+            logger.error(f"Error calculating bid-ask imbalance: {str(e)}")
+            return {'imbalance': 0.0, 'spread': 0.0, 'depth': 0.0}
+    
+    def _calculate_order_flow_toxicity(self, trade_data: pd.DataFrame) -> Dict[str, float]:
+        """
+        Calculate order flow toxicity using VPIN (Volume-synchronized Probability of Informed Trading).
+        
+        Args:
+            trade_data: Trade data DataFrame
+            
+        Returns:
+            Order flow toxicity metrics
+        """
+        try:
+            toxicity_metrics = {}
+            
+            if trade_data.empty:
+                return {'vpin': 0.0, 'toxicity_score': 0.0, 'informed_trading_prob': 0.0}
+            
+            # Calculate trade direction
+            trade_data['direction'] = np.where(trade_data['price'] > trade_data['price'].shift(1), 1,
+                                             np.where(trade_data['price'] < trade_data['price'].shift(1), -1, 0))
+            
+            # Calculate volume-weighted trade direction
+            trade_data['vwap'] = (trade_data['price'] * trade_data['volume']).cumsum() / trade_data['volume'].cumsum()
+            trade_data['signed_volume'] = trade_data['direction'] * trade_data['volume']
+            
+            # Calculate VPIN
+            total_volume = trade_data['volume'].sum()
+            if total_volume > 0:
+                # Simplified VPIN calculation
+                absolute_signed_volume = abs(trade_data['signed_volume']).sum()
+                vpin = absolute_signed_volume / total_volume
+            else:
+                vpin = 0.0
+            
+            # Calculate toxicity score
+            toxicity_score = min(vpin * 10, 1.0)  # Normalize to [0, 1]
+            
+            # Estimate probability of informed trading
+            informed_trading_prob = toxicity_score * 0.8  # Simplified estimate
+            
+            toxicity_metrics = {
+                'vpin': float(vpin),
+                'toxicity_score': float(toxicity_score),
+                'informed_trading_prob': float(informed_trading_prob),
+                'total_volume': float(total_volume),
+                'absolute_signed_volume': float(absolute_signed_volume) if total_volume > 0 else 0.0
+            }
+            
+            return toxicity_metrics
+            
+        except Exception as e:
+            logger.error(f"Error calculating order flow toxicity: {str(e)}")
+            return {'vpin': 0.0, 'toxicity_score': 0.0, 'informed_trading_prob': 0.0}
+    
+    def _calculate_order_flow_imbalance(self, trade_data: pd.DataFrame) -> Dict[str, float]:
+        """
+        Calculate order flow imbalance.
+        
+        Args:
+            trade_data: Trade data DataFrame
+            
+        Returns:
+            Order flow imbalance metrics
+        """
+        try:
+            imbalance_metrics = {}
+            
+            if trade_data.empty:
+                return {'buy_volume': 0.0, 'sell_volume': 0.0, 'imbalance': 0.0, 'imbalance_ratio': 0.0}
+            
+            # Calculate buy and sell volumes
+            buy_trades = trade_data[trade_data['side'] == 'buy'] if 'side' in trade_data.columns else trade_data
+            sell_trades = trade_data[trade_data['side'] == 'sell'] if 'side' in trade_data.columns else trade_data
+            
+            buy_volume = buy_trades['volume'].sum() if not buy_trades.empty else 0
+            sell_volume = sell_trades['volume'].sum() if not sell_trades.empty else 0
+            
+            total_volume = buy_volume + sell_volume
+            
+            # Calculate imbalance
+            if total_volume > 0:
+                imbalance = (buy_volume - sell_volume) / total_volume
+                imbalance_ratio = buy_volume / sell_volume if sell_volume > 0 else float('inf')
+            else:
+                imbalance = 0.0
+                imbalance_ratio = 1.0
+            
+            imbalance_metrics = {
+                'buy_volume': float(buy_volume),
+                'sell_volume': float(sell_volume),
+                'imbalance': float(imbalance),
+                'imbalance_ratio': float(imbalance_ratio) if imbalance_ratio != float('inf') else 1.0,
+                'total_volume': float(total_volume)
+            }
+            
+            return imbalance_metrics
             
         except Exception as e:
             logger.error(f"Error calculating order flow imbalance: {str(e)}")
+            return {'buy_volume': 0.0, 'sell_volume': 0.0, 'imbalance': 0.0, 'imbalance_ratio': 0.0}
+    
+    def _calculate_market_impact(self, orderbook_data: Dict, trade_data: pd.DataFrame) -> Dict[str, float]:
+        """
+        Calculate market impact of trades.
+        
+        Args:
+            orderbook_data: Order book data
+            trade_data: Trade data DataFrame
+            
+        Returns:
+            Market impact metrics
+        """
+        try:
+            impact_metrics = {}
+            
+            if trade_data.empty:
+                return {'permanent_impact': 0.0, 'temporary_impact': 0.0, 'total_impact': 0.0}
+            
+            # Calculate price impact
+            trade_data['price_change'] = trade_data['price'].diff()
+            trade_data['volume_impact'] = trade_data['volume'] * trade_data['price_change']
+            
+            # Permanent impact (long-term price change)
+            permanent_impact = trade_data['price_change'].rolling(window=20).mean().iloc[-1] if len(trade_data) >= 20 else 0
+            
+            # Temporary impact (immediate price change)
+            temporary_impact = trade_data['price_change'].iloc[-1] if len(trade_data) > 0 else 0
+            
+            # Total impact
+            total_impact = permanent_impact + temporary_impact
+            
+            # Impact decay
+            impact_decay = self.impact_decay_factor
+            
+            impact_metrics = {
+                'permanent_impact': float(permanent_impact),
+                'temporary_impact': float(temporary_impact),
+                'total_impact': float(total_impact),
+                'impact_decay': float(impact_decay),
+                'avg_volume_impact': float(trade_data['volume_impact'].mean()) if 'volume_impact' in trade_data.columns else 0.0
+            }
+            
+            return impact_metrics
+            
+        except Exception as e:
+            logger.error(f"Error calculating market impact: {str(e)}")
+            return {'permanent_impact': 0.0, 'temporary_impact': 0.0, 'total_impact': 0.0}
+    
+    def _generate_order_flow_signals(self, order_flow_analysis: Dict) -> Dict[str, Any]:
+        """
+        Generate trading signals based on order flow analysis.
+        
+        Args:
+            order_flow_analysis: Order flow analysis results
+            
+        Returns:
+            Trading signals
+        """
+        try:
+            signals = {
+                'action': 'hold',
+                'confidence': 0.0,
+                'reasoning': []
+            }
+            
+            # Extract metrics
+            imbalance = order_flow_analysis.get('bid_ask_imbalance', {}).get('imbalance', 0.0)
+            toxicity = order_flow_analysis.get('order_flow_toxicity', {}).get('toxicity_score', 0.0)
+            flow_imbalance = order_flow_analysis.get('order_flow_imbalance', {}).get('imbalance', 0.0)
+            market_impact = order_flow_analysis.get('market_impact', {}).get('total_impact', 0.0)
+            
+            # Generate signals based on order flow patterns
+            confidence_factors = []
+            
+            # Strong buy signal conditions
+            if imbalance > 0.2 and flow_imbalance > 0.1 and toxicity < 0.3:
+                signals['action'] = 'buy'
+                confidence_factors.append(0.3)
+                signals['reasoning'].append('Strong bid-ask imbalance favoring buys')
+                signals['reasoning'].append('Positive order flow imbalance')
+                signals['reasoning'].append('Low order flow toxicity')
+            
+            # Strong sell signal conditions
+            elif imbalance < -0.2 and flow_imbalance < -0.1 and toxicity < 0.3:
+                signals['action'] = 'sell'
+                confidence_factors.append(0.3)
+                signals['reasoning'].append('Strong bid-ask imbalance favoring sells')
+                signals['reasoning'].append('Negative order flow imbalance')
+                signals['reasoning'].append('Low order flow toxicity')
+            
+            # Moderate signals
+            elif imbalance > 0.1 and flow_imbalance > 0.05:
+                signals['action'] = 'buy'
+                confidence_factors.append(0.2)
+                signals['reasoning'].append('Moderate positive order flow')
+            
+            elif imbalance < -0.1 and flow_imbalance < -0.05:
+                signals['action'] = 'sell'
+                confidence_factors.append(0.2)
+                signals['reasoning'].append('Moderate negative order flow')
+            
+            # High toxicity warning
+            if toxicity > 0.7:
+                signals['reasoning'].append('High order flow toxicity - exercise caution')
+                confidence_factors = [c * 0.5 for c in confidence_factors]  # Reduce confidence
+            
+            # Calculate final confidence
+            if confidence_factors:
+                signals['confidence'] = min(sum(confidence_factors), 1.0)
+            else:
+                signals['reasoning'].append('No clear order flow signal')
+            
+            return signals
+            
+        except Exception as e:
+            logger.error(f"Error generating order flow signals: {str(e)}")
+            return {'action': 'hold', 'confidence': 0.0, 'reasoning': ['Error in signal generation']}
+    
+    def analyze_liquidity(self, orderbook_data: Dict, trade_data: pd.DataFrame) -> Dict[str, Any]:
+        """
+        Analyze market liquidity.
+        
+        Args:
+            orderbook_data: Order book data
+            trade_data: Trade data DataFrame
+            
+        Returns:
+            Liquidity analysis results
+        """
+        try:
+            liquidity_analysis = {}
+            
+            # 1. Bid-Ask Spread Analysis
+            liquidity_analysis['spread_analysis'] = self._analyze_spread(orderbook_data)
+            
+            # 2. Market Depth Analysis
+            liquidity_analysis['depth_analysis'] = self._analyze_market_depth(orderbook_data)
+            
+            # 3. Liquidity Crisis Detection
+            liquidity_analysis['crisis_detection'] = self._detect_liquidity_crisis(orderbook_data, trade_data)
+            
+            # 4. Liquidity Metrics
+            liquidity_analysis['metrics'] = self._calculate_liquidity_metrics(orderbook_data, trade_data)
+            
+            return liquidity_analysis
+            
+        except Exception as e:
+            logger.error(f"Error analyzing liquidity: {str(e)}")
             return {'error': str(e)}
     
-    def _analyze_market_depth(self, orderbook_data: Dict) -> Dict:
-        """Analyze market depth and liquidity distribution."""
+    def _analyze_spread(self, orderbook_data: Dict) -> Dict[str, float]:
+        """
+        Analyze bid-ask spread patterns.
+        """
         try:
-            if 'bids' not in orderbook_data or 'asks' not in orderbook_data:
-                return {'error': 'Missing bid/ask data'}
+            spread_analysis = {}
             
-            bids = orderbook_data['bids']
-            asks = orderbook_data['asks']
+            bids = orderbook_data.get('bids', [])
+            asks = orderbook_data.get('asks', [])
             
-            # Handle different orderbook formats
-            if isinstance(bids, list) and len(bids) > 0:
-                if isinstance(bids[0], list):
-                    # Format: [[price, size], [price, size], ...]
-                    bid_levels = sorted(bids, key=lambda x: float(x[0]), reverse=True)
-                    ask_levels = sorted(asks, key=lambda x: float(x[0]))
-                    
-                    cumulative_bid_volume = []
-                    cumulative_ask_volume = []
-                    
-                    for i, bid in enumerate(bid_levels[:10]):  # Top 10 levels
-                        cumulative_volume = sum(float(bid_levels[j][1]) for j in range(i + 1))
-                        cumulative_bid_volume.append({
-                            'level': i + 1,
-                            'price': float(bid[0]),
-                            'cumulative_volume': cumulative_volume
-                        })
-                    
-                    for i, ask in enumerate(ask_levels[:10]):  # Top 10 levels
-                        cumulative_volume = sum(float(ask_levels[j][1]) for j in range(i + 1))
-                        cumulative_ask_volume.append({
-                            'level': i + 1,
-                            'price': float(ask[0]),
-                            'cumulative_volume': cumulative_volume
-                        })
-                    
-                    # Calculate depth metrics
-                    total_bid_depth = sum(float(bid[1]) for bid in bid_levels[:5])
-                    total_ask_depth = sum(float(ask[1]) for ask in ask_levels[:5])
-                else:
-                    # Format: [{'price': price, 'size': size}, ...]
-                    bid_levels = sorted(bids, key=lambda x: float(x['price']), reverse=True)
-                    ask_levels = sorted(asks, key=lambda x: float(x['price']))
-                    
-                    cumulative_bid_volume = []
-                    cumulative_ask_volume = []
-                    
-                    for i, bid in enumerate(bid_levels[:10]):  # Top 10 levels
-                        cumulative_volume = sum(float(bid_levels[j]['size']) for j in range(i + 1))
-                        cumulative_bid_volume.append({
-                            'level': i + 1,
-                            'price': float(bid['price']),
-                            'cumulative_volume': cumulative_volume
-                        })
-                    
-                    for i, ask in enumerate(ask_levels[:10]):  # Top 10 levels
-                        cumulative_volume = sum(float(ask_levels[j]['size']) for j in range(i + 1))
-                        cumulative_ask_volume.append({
-                            'level': i + 1,
-                            'price': float(ask['price']),
-                            'cumulative_volume': cumulative_volume
-                        })
-                    
-                    # Calculate depth metrics
-                    total_bid_depth = sum(float(bid['size']) for bid in bid_levels[:5])
-                    total_ask_depth = sum(float(ask['size']) for ask in ask_levels[:5])
-            else:
-                return {'error': 'Invalid orderbook format'}
+            if not bids or not asks:
+                return {'spread': 0.0, 'spread_ratio': 0.0, 'mid_price': 0.0}
             
-            return {
-                'cumulative_bid_depth': cumulative_bid_volume,
-                'cumulative_ask_depth': cumulative_ask_volume,
-                'total_bid_depth_5_levels': total_bid_depth,
-                'total_ask_depth_5_levels': total_ask_depth,
-                'depth_imbalance': (total_bid_depth - total_ask_depth) / (total_bid_depth + total_ask_depth) if (total_bid_depth + total_ask_depth) > 0 else 0
+            # Calculate spread
+            best_bid = max(bid[0] for bid in bids) if bids else 0
+            best_ask = min(ask[0] for ask in asks) if asks else 0
+            spread = best_ask - best_bid if best_ask > best_bid else 0
+            
+            # Calculate mid price
+            mid_price = (best_bid + best_ask) / 2 if best_bid > 0 and best_ask > 0 else 0
+            
+            # Calculate spread ratio
+            spread_ratio = spread / mid_price if mid_price > 0 else 0
+            
+            spread_analysis = {
+                'spread': float(spread),
+                'spread_ratio': float(spread_ratio),
+                'mid_price': float(mid_price),
+                'best_bid': float(best_bid),
+                'best_ask': float(best_ask)
             }
+            
+            return spread_analysis
+            
+        except Exception as e:
+            logger.error(f"Error analyzing spread: {str(e)}")
+            return {'spread': 0.0, 'spread_ratio': 0.0, 'mid_price': 0.0}
+    
+    def _analyze_market_depth(self, orderbook_data: Dict) -> Dict[str, float]:
+        """
+        Analyze market depth at different price levels.
+        """
+        try:
+            depth_analysis = {}
+            
+            bids = orderbook_data.get('bids', [])
+            asks = orderbook_data.get('asks', [])
+            
+            # Calculate depth at different levels
+            bid_depth_1 = sum(bid[1] for bid in bids[:5]) if len(bids) >= 5 else sum(bid[1] for bid in bids)
+            ask_depth_1 = sum(ask[1] for ask in asks[:5]) if len(asks) >= 5 else sum(ask[1] for ask in asks)
+            
+            bid_depth_2 = sum(bid[1] for bid in bids[:10]) if len(bids) >= 10 else bid_depth_1
+            ask_depth_2 = sum(ask[1] for ask in asks[:10]) if len(asks) >= 10 else ask_depth_1
+            
+            total_depth = bid_depth_1 + ask_depth_1
+            
+            depth_analysis = {
+                'bid_depth_1': float(bid_depth_1),
+                'ask_depth_1': float(ask_depth_1),
+                'bid_depth_2': float(bid_depth_2),
+                'ask_depth_2': float(ask_depth_2),
+                'total_depth': float(total_depth),
+                'depth_imbalance': float((bid_depth_1 - ask_depth_1) / total_depth) if total_depth > 0 else 0.0
+            }
+            
+            return depth_analysis
             
         except Exception as e:
             logger.error(f"Error analyzing market depth: {str(e)}")
-            return {'error': str(e)}
+            return {'bid_depth_1': 0.0, 'ask_depth_1': 0.0, 'total_depth': 0.0, 'depth_imbalance': 0.0}
     
-    def _estimate_price_impact(self, orderbook_data: Dict) -> Dict:
-        """Estimate price impact of trades."""
+    def _detect_liquidity_crisis(self, orderbook_data: Dict, trade_data: pd.DataFrame) -> Dict[str, Any]:
+        """
+        Detect liquidity crisis conditions.
+        """
         try:
-            if 'bids' not in orderbook_data or 'asks' not in orderbook_data:
-                return {'error': 'Missing bid/ask data'}
+            crisis_analysis = {
+                'crisis_detected': False,
+                'crisis_score': 0.0,
+                'warning_signals': []
+            }
             
-            bids = orderbook_data['bids']
-            asks = orderbook_data['asks']
+            # Calculate crisis indicators
+            spread_analysis = self._analyze_spread(orderbook_data)
+            depth_analysis = self._analyze_market_depth(orderbook_data)
             
-            # Handle different orderbook formats
-            if isinstance(bids, list) and len(bids) > 0:
-                if isinstance(bids[0], list):
-                    # Format: [[price, size], [price, size], ...]
-                    bid_levels = sorted(bids, key=lambda x: float(x[0]), reverse=True)
-                    ask_levels = sorted(asks, key=lambda x: float(x[0]))
-                else:
-                    # Format: [{'price': price, 'size': size}, ...]
-                    bid_levels = sorted(bids, key=lambda x: float(x['price']), reverse=True)
-                    ask_levels = sorted(asks, key=lambda x: float(x['price']))
-            else:
-                return {'error': 'Invalid orderbook format'}
+            crisis_score = 0.0
+            warning_signals = []
             
-            # Calculate price impact for different trade sizes
-            trade_sizes = [1000, 5000, 10000, 50000, 100000]  # Example trade sizes
-            price_impacts = {}
+            # High spread indicator
+            if spread_analysis['spread_ratio'] > 0.01:  # 1% spread
+                crisis_score += 0.3
+                warning_signals.append('High bid-ask spread')
             
-            for size in trade_sizes:
-                # Buy impact (consuming asks)
-                remaining_size = size
-                total_cost = 0
-                ask_impact = 0
-                
-                for ask in ask_levels:
-                    if remaining_size <= 0:
-                        break
-                    if isinstance(ask, list):
-                        fill_size = min(remaining_size, float(ask[1]))
-                        total_cost += fill_size * float(ask[0])
-                    else:
-                        fill_size = min(remaining_size, float(ask['size']))
-                        total_cost += fill_size * float(ask['price'])
-                    remaining_size -= fill_size
-                
-                if size - remaining_size > 0:
-                    avg_buy_price = total_cost / (size - remaining_size)
-                    if isinstance(ask_levels[0], list):
-                        base_price = float(ask_levels[0][0])
-                    else:
-                        base_price = float(ask_levels[0]['price'])
-                    ask_impact = (avg_buy_price - base_price) / base_price
-                
-                # Sell impact (consuming bids)
-                remaining_size = size
-                total_proceeds = 0
-                bid_impact = 0
-                
-                for bid in bid_levels:
-                    if remaining_size <= 0:
-                        break
-                    if isinstance(bid, list):
-                        fill_size = min(remaining_size, float(bid[1]))
-                        total_proceeds += fill_size * float(bid[0])
-                    else:
-                        fill_size = min(remaining_size, float(bid['size']))
-                        total_proceeds += fill_size * float(bid['price'])
-                    remaining_size -= fill_size
-                
-                if size - remaining_size > 0:
-                    avg_sell_price = total_proceeds / (size - remaining_size)
-                    if isinstance(bid_levels[0], list):
-                        base_price = float(bid_levels[0][0])
-                    else:
-                        base_price = float(bid_levels[0]['price'])
-                    bid_impact = (base_price - avg_sell_price) / base_price
-                
-                price_impacts[f'trade_size_{size}'] = {
-                    'buy_impact_bps': ask_impact * 10000,
-                    'sell_impact_bps': bid_impact * 10000,
-                    'avg_impact_bps': (ask_impact + bid_impact) * 5000
-                }
+            # Low depth indicator
+            if depth_analysis['total_depth'] < self.liquidity_threshold:
+                crisis_score += 0.3
+                warning_signals.append('Low market depth')
             
-            return price_impacts
+            # Volume spike indicator
+            if not trade_data.empty:
+                recent_volume = trade_data['volume'].tail(10).mean()
+                avg_volume = trade_data['volume'].mean()
+                if recent_volume > avg_volume * 3:  # 3x average volume
+                    crisis_score += 0.2
+                    warning_signals.append('Volume spike detected')
+            
+            # Price volatility indicator
+            if not trade_data.empty:
+                price_volatility = trade_data['price'].pct_change().std()
+                if price_volatility > 0.05:  # 5% volatility
+                    crisis_score += 0.2
+                    warning_signals.append('High price volatility')
+            
+            crisis_analysis['crisis_score'] = min(crisis_score, 1.0)
+            crisis_analysis['crisis_detected'] = crisis_score > 0.5
+            crisis_analysis['warning_signals'] = warning_signals
+            
+            return crisis_analysis
             
         except Exception as e:
-            logger.error(f"Error estimating price impact: {str(e)}")
-            return {'error': str(e)}
+            logger.error(f"Error detecting liquidity crisis: {str(e)}")
+            return {'crisis_detected': False, 'crisis_score': 0.0, 'warning_signals': []}
     
-    def _calculate_liquidity_metrics(self, orderbook_data: Dict) -> Dict:
-        """Calculate liquidity metrics."""
+    def _calculate_liquidity_metrics(self, orderbook_data: Dict, trade_data: pd.DataFrame) -> Dict[str, float]:
+        """
+        Calculate comprehensive liquidity metrics.
+        """
         try:
-            if 'bids' not in orderbook_data or 'asks' not in orderbook_data:
-                return {'error': 'Missing bid/ask data'}
+            metrics = {}
             
-            # Calculate Amihud illiquidity ratio (proxy)
-            spread = self._calculate_bid_ask_spread(orderbook_data)
-            if 'error' in spread:
-                return {'error': spread['error']}
+            # Extract basic metrics
+            spread_analysis = self._analyze_spread(orderbook_data)
+            depth_analysis = self._analyze_market_depth(orderbook_data)
             
-            bids = orderbook_data['bids']
-            asks = orderbook_data['asks']
-            
-            # Handle different orderbook formats
-            if isinstance(bids, list) and len(bids) > 0:
-                if isinstance(bids[0], list):
-                    # Format: [[price, size], ...]
-                    total_volume = sum(float(bid[1]) for bid in bids) + sum(float(ask[1]) for ask in asks)
-                    bid_levels = sorted(bids, key=lambda x: float(x[0]), reverse=True)
-                    ask_levels = sorted(asks, key=lambda x: float(x[0]))
-                    # Top 5 levels
-                    total_bid_volume = sum(float(bid[1]) for bid in bid_levels[:5])
-                    total_ask_volume = sum(float(ask[1]) for ask in ask_levels[:5])
-                else:
-                    # Format: [{'price': price, 'size': size}, ...]
-                    total_volume = sum(float(bid['size']) for bid in bids) + sum(float(ask['size']) for ask in asks)
-                    bid_levels = sorted(bids, key=lambda x: float(x['price']), reverse=True)
-                    ask_levels = sorted(asks, key=lambda x: float(x['price']))
-                    total_bid_volume = sum(float(bid['size']) for bid in bid_levels[:5])
-                    total_ask_volume = sum(float(ask['size']) for ask in ask_levels[:5])
+            # Amihud illiquidity ratio
+            if not trade_data.empty:
+                returns = trade_data['price'].pct_change().abs()
+                volume = trade_data['volume']
+                amihud_ratio = (returns / volume).mean() if volume.sum() > 0 else 0
             else:
-                return {'error': 'Invalid orderbook format'}
+                amihud_ratio = 0
             
-            mid_price = spread['mid_price']
-            # Simple Kyle's lambda approximation
-            kyle_lambda = spread['absolute_spread'] / (total_bid_volume + total_ask_volume) if (total_bid_volume + total_ask_volume) > 0 else 0
+            # Kyle's lambda (price impact)
+            if not trade_data.empty and len(trade_data) > 1:
+                signed_volume = trade_data['volume'] * np.sign(trade_data['price'].diff())
+                price_changes = trade_data['price'].diff()
+                
+                # Simple linear regression
+                if len(signed_volume) > 1:
+                    correlation = np.corrcoef(signed_volume.dropna(), price_changes.dropna())[0, 1]
+                    kyle_lambda = abs(correlation) if not np.isnan(correlation) else 0
+                else:
+                    kyle_lambda = 0
+            else:
+                kyle_lambda = 0
             
-            return {
-                'amihud_illiquidity': spread['absolute_spread'] / (mid_price * total_volume) if (mid_price * total_volume) > 0 else float('inf'),
-                'turnover_ratio': total_volume / mid_price if mid_price > 0 else 0,
-                'kyle_lambda': kyle_lambda,
-                'liquidity_score': 1 / (1 + kyle_lambda) if kyle_lambda > 0 else 1
+            metrics = {
+                'spread': spread_analysis['spread'],
+                'spread_ratio': spread_analysis['spread_ratio'],
+                'total_depth': depth_analysis['total_depth'],
+                'depth_imbalance': depth_analysis['depth_imbalance'],
+                'amihud_ratio': float(amihud_ratio),
+                'kyle_lambda': float(kyle_lambda),
+                'liquidity_score': self._calculate_liquidity_score(spread_analysis, depth_analysis)
             }
+            
+            return metrics
+            
         except Exception as e:
             logger.error(f"Error calculating liquidity metrics: {str(e)}")
-            return {'error': str(e)}
+            return {'spread': 0.0, 'total_depth': 0.0, 'liquidity_score': 0.0}
     
-    def _calculate_volatility_metrics(self, orderbook_data: Dict) -> Dict:
-        """Calculate volatility metrics from orderbook."""
+    def _calculate_liquidity_score(self, spread_analysis: Dict, depth_analysis: Dict) -> float:
+        """
+        Calculate overall liquidity score.
+        """
         try:
-            if 'bids' not in orderbook_data or 'asks' not in orderbook_data:
-                return {'error': 'Missing bid/ask data'}
+            # Normalize metrics
+            spread_score = max(0, 1 - spread_analysis['spread_ratio'] * 100)  # Lower spread = higher score
+            depth_score = min(1, depth_analysis['total_depth'] / 1000)  # Normalize depth
             
-            bids = orderbook_data['bids']
-            asks = orderbook_data['asks']
+            # Combined liquidity score
+            liquidity_score = (spread_score * 0.6 + depth_score * 0.4)
             
-            # Handle different orderbook formats
-            if isinstance(bids, list) and len(bids) > 0:
-                if isinstance(bids[0], list):
-                    # Format: [[price, size], [price, size], ...]
-                    bid_levels = sorted(bids, key=lambda x: float(x[0]), reverse=True)
-                    ask_levels = sorted(asks, key=lambda x: float(x[0]))
-                else:
-                    # Format: [{'price': price, 'size': size}, ...]
-                    bid_levels = sorted(bids, key=lambda x: float(x['price']), reverse=True)
-                    ask_levels = sorted(asks, key=lambda x: float(x['price']))
-            else:
-                return {'error': 'Invalid orderbook format'}
-            
-            # Calculate price volatility from bid-ask spreads
-            spreads = []
-            
-            for i in range(min(5, len(bid_levels), len(ask_levels))):
-                if isinstance(bid_levels[0], list):
-                    spread = float(ask_levels[i][0]) - float(bid_levels[i][0])
-                else:
-                    spread = float(ask_levels[i]['price']) - float(bid_levels[i]['price'])
-                spreads.append(spread)
-            
-            if len(spreads) > 1:
-                spread_volatility = np.std(spreads)
-                spread_mean = np.mean(spreads)
-                coefficient_of_variation = spread_volatility / spread_mean if spread_mean > 0 else 0
-            else:
-                spread_volatility = 0
-                spread_mean = spreads[0] if spreads else 0
-                coefficient_of_variation = 0
-            
-            return {
-                'spread_volatility': spread_volatility,
-                'spread_mean': spread_mean,
-                'coefficient_of_variation': coefficient_of_variation,
-                'spread_range': np.max(spreads) - np.min(spreads) if spreads else 0
-            }
+            return float(liquidity_score)
             
         except Exception as e:
-            logger.error(f"Error calculating volatility metrics: {str(e)}")
-            return {'error': str(e)}
-    
-    def _assess_market_efficiency(self, orderbook_data: Dict) -> Dict:
-        """Assess market efficiency metrics."""
-        try:
-            if 'bids' not in orderbook_data or 'asks' not in orderbook_data:
-                return {'error': 'Missing bid/ask data'}
-            
-            # Calculate efficiency metrics
-            spread = self._calculate_bid_ask_spread(orderbook_data)
-            if 'error' in spread:
-                return {'error': spread['error']}
-            
-            # Market efficiency score (lower spread = more efficient)
-            efficiency_score = 1 / (1 + spread['relative_spread_bps'] / 100)
-            
-            # Calculate order book imbalance
-            imbalance = self._calculate_order_flow_imbalance(orderbook_data)
-            if 'error' in imbalance:
-                return {'error': imbalance['error']}
-            
-            return {
-                'efficiency_score': efficiency_score,
-                'spread_efficiency': 1 / (1 + spread['relative_spread_bps']),
-                'depth_efficiency': 1 / (1 + abs(imbalance['imbalance_ratio'])),
-                'overall_efficiency': (efficiency_score + (1 / (1 + abs(imbalance['imbalance_ratio'])))) / 2
-            }
-            
-        except Exception as e:
-            logger.error(f"Error assessing market efficiency: {str(e)}")
-            return {'error': str(e)}
-    
-    def _analyze_trade_patterns(self, trade_data: pd.DataFrame) -> Dict:
-        """Analyze trade patterns and characteristics."""
-        try:
-            if trade_data.empty:
-                return {'error': 'No trade data available'}
-            
-            # Calculate trade statistics
-            trade_sizes = trade_data['size'] if 'size' in trade_data.columns else pd.Series([1] * len(trade_data))
-            trade_prices = trade_data['price'] if 'price' in trade_data.columns else pd.Series([0] * len(trade_data))
-            
-            # Calculate trade patterns
-            large_trades = trade_sizes[trade_sizes > trade_sizes.quantile(0.9)]
-            small_trades = trade_sizes[trade_sizes < trade_sizes.quantile(0.1)]
-            
-            return {
-                'total_trades': len(trade_data),
-                'avg_trade_size': trade_sizes.mean(),
-                'median_trade_size': trade_sizes.median(),
-                'large_trade_ratio': len(large_trades) / len(trade_data),
-                'small_trade_ratio': len(small_trades) / len(trade_data),
-                'price_volatility': trade_prices.std(),
-                'size_volatility': trade_sizes.std()
-            }
-            
-        except Exception as e:
-            logger.error(f"Error analyzing trade patterns: {str(e)}")
-            return {'error': str(e)}
-    
-    def _analyze_volume_patterns(self, trade_data: pd.DataFrame) -> Dict:
-        """Analyze volume patterns and distribution."""
-        try:
-            if trade_data.empty:
-                return {'error': 'No trade data available'}
-            
-            # Calculate volume metrics
-            volumes = trade_data['size'] if 'size' in trade_data.columns else pd.Series([1] * len(trade_data))
-            
-            # Volume distribution analysis
-            volume_quantiles = volumes.quantile([0.1, 0.25, 0.5, 0.75, 0.9])
-            
-            # Calculate volume concentration
-            total_volume = volumes.sum()
-            top_10_percent_volume = volumes.nlargest(int(len(volumes) * 0.1)).sum()
-            concentration_ratio = top_10_percent_volume / total_volume if total_volume > 0 else 0
-            
-            return {
-                'total_volume': total_volume,
-                'avg_volume': volumes.mean(),
-                'volume_std': volumes.std(),
-                'volume_quantiles': volume_quantiles.to_dict(),
-                'concentration_ratio': concentration_ratio,
-                'volume_skewness': self._calculate_skewness(volumes),
-                'volume_kurtosis': self._calculate_kurtosis(volumes)
-            }
-            
-        except Exception as e:
-            logger.error(f"Error analyzing volume patterns: {str(e)}")
-            return {'error': str(e)}
-    
-    def _analyze_time_and_sales(self, trade_data: pd.DataFrame) -> Dict:
-        """Analyze time and sales data."""
-        try:
-            if trade_data.empty:
-                return {'error': 'No trade data available'}
-            
-            # Time-based analysis
-            if 'timestamp' in trade_data.columns:
-                trade_data['timestamp'] = pd.to_datetime(trade_data['timestamp'])
-                trade_data = trade_data.sort_values('timestamp')
-                
-                # Calculate time intervals between trades
-                time_intervals = trade_data['timestamp'].diff().dropna()
-                avg_interval = time_intervals.mean()
-                
-                # Calculate trade frequency
-                total_time = (trade_data['timestamp'].max() - trade_data['timestamp'].min()).total_seconds()
-                trade_frequency = len(trade_data) / total_time if total_time > 0 else 0
-                
-                return {
-                    'avg_time_interval': avg_interval,
-                    'trade_frequency': trade_frequency,
-                    'time_interval_std': time_intervals.std(),
-                    'total_trading_time': total_time
-                }
-            else:
-                return {'error': 'No timestamp data available'}
-                
-        except Exception as e:
-            logger.error(f"Error analyzing time and sales: {str(e)}")
-            return {'error': str(e)}
-    
-    def _calculate_skewness(self, data: pd.Series) -> float:
-        """Calculate skewness of data."""
-        try:
-            return data.skew()
-        except:
+            logger.error(f"Error calculating liquidity score: {str(e)}")
             return 0.0
     
-    def _calculate_kurtosis(self, data: pd.Series) -> float:
-        """Calculate kurtosis of data."""
+    def generate_hft_signals(self, market_data: Dict) -> Dict[str, Any]:
+        """
+        Generate High-Frequency Trading signals.
+        
+        Args:
+            market_data: Market data including orderbook and trades
+            
+        Returns:
+            HFT signals
+        """
         try:
-            return data.kurtosis()
-        except:
-            return 0.0
-    
-    def _store_analysis_result(self, result: Dict):
-        """Store analysis result in history."""
-        self.analysis_history.append({
-            'timestamp': pd.Timestamp.now(),
-            'result': result
-        })
-    
-    def get_analysis_summary(self) -> Dict:
-        """Get summary of all analysis results."""
-        if not self.analysis_history:
-            return {'message': 'No analysis history available'}
-        
-        summary = {
-            'total_analyses': len(self.analysis_history),
-            'recent_analyses': self.analysis_history[-5:],
-            'average_spreads': [],
-            'average_imbalances': []
-        }
-        
-        for record in self.analysis_history:
-            result = record['result']
+            hft_signals = {}
             
-            if 'bid_ask_spread' in result and 'relative_spread_bps' in result['bid_ask_spread']:
-                summary['average_spreads'].append(result['bid_ask_spread']['relative_spread_bps'])
+            # 1. Latency Arbitrage Signals
+            hft_signals['latency_arbitrage'] = self._generate_latency_arbitrage_signals(market_data)
             
-            if 'order_flow_imbalance' in result and 'imbalance_ratio' in result['order_flow_imbalance']:
-                summary['average_imbalances'].append(result['order_flow_imbalance']['imbalance_ratio'])
-        
-        if summary['average_spreads']:
-            summary['avg_spread_bps'] = np.mean(summary['average_spreads'])
-        
-        if summary['average_imbalances']:
-            summary['avg_imbalance'] = np.mean(summary['average_imbalances'])
-        
-        return summary 
-    async def close(self) -> None:
-        """Close the marketmicrostructureanalyzer and cleanup resources."""
-        try:
-            logger.info("Closing MarketMicrostructureAnalyzer...")
+            # 2. Market Making Signals
+            hft_signals['market_making'] = self._generate_market_making_signals(market_data)
             
-            # Clear any stored data
-            if hasattr(self, 'analysis_cache'):
-                self.analysis_cache.clear()
-            if hasattr(self, 'history'):
-                self.history.clear()
-            if hasattr(self, 'metrics_history'):
-                self.metrics_history.clear()
+            # 3. Statistical Arbitrage Signals
+            hft_signals['statistical_arbitrage'] = self._generate_statistical_arbitrage_signals(market_data)
             
-            logger.info("MarketMicrostructureAnalyzer closed successfully")
+            # 4. Microsecond-level signals
+            hft_signals['microsecond_signals'] = self._generate_microsecond_signals(market_data)
+            
+            return hft_signals
             
         except Exception as e:
-            logger.error(f"Error closing MarketMicrostructureAnalyzer: {str(e)}")
-            raise
+            logger.error(f"Error generating HFT signals: {str(e)}")
+            return {'error': str(e)}
+    
+    def _generate_latency_arbitrage_signals(self, market_data: Dict) -> Dict[str, Any]:
+        """
+        Generate latency arbitrage signals.
+        """
+        try:
+            signals = {
+                'action': 'hold',
+                'confidence': 0.0,
+                'reasoning': []
+            }
+            
+            # Placeholder for latency arbitrage logic
+            # In production, this would analyze cross-exchange price differences
+            
+            return signals
+            
+        except Exception as e:
+            logger.error(f"Error generating latency arbitrage signals: {str(e)}")
+            return {'action': 'hold', 'confidence': 0.0, 'reasoning': ['Error in signal generation']}
+    
+    def _generate_market_making_signals(self, market_data: Dict) -> Dict[str, Any]:
+        """
+        Generate market making signals.
+        """
+        try:
+            signals = {
+                'action': 'hold',
+                'confidence': 0.0,
+                'reasoning': []
+            }
+            
+            # Placeholder for market making logic
+            # In production, this would analyze spread and depth for market making opportunities
+            
+            return signals
+            
+        except Exception as e:
+            logger.error(f"Error generating market making signals: {str(e)}")
+            return {'action': 'hold', 'confidence': 0.0, 'reasoning': ['Error in signal generation']}
+    
+    def _generate_statistical_arbitrage_signals(self, market_data: Dict) -> Dict[str, Any]:
+        """
+        Generate statistical arbitrage signals at microsecond level.
+        """
+        try:
+            signals = {
+                'action': 'hold',
+                'confidence': 0.0,
+                'reasoning': []
+            }
+            
+            # Placeholder for statistical arbitrage logic
+            # In production, this would analyze short-term price patterns
+            
+            return signals
+            
+        except Exception as e:
+            logger.error(f"Error generating statistical arbitrage signals: {str(e)}")
+            return {'action': 'hold', 'confidence': 0.0, 'reasoning': ['Error in signal generation']}
+    
+    def _generate_microsecond_signals(self, market_data: Dict) -> Dict[str, Any]:
+        """
+        Generate microsecond-level trading signals.
+        """
+        try:
+            signals = {
+                'action': 'hold',
+                'confidence': 0.0,
+                'reasoning': []
+            }
+            
+            # Placeholder for microsecond signal logic
+            # In production, this would analyze ultra-high-frequency patterns
+            
+            return signals
+            
+        except Exception as e:
+            logger.error(f"Error generating microsecond signals: {str(e)}")
+            return {'action': 'hold', 'confidence': 0.0, 'reasoning': ['Error in signal generation']}
+    
+    def get_microstructure_summary(self) -> Dict[str, Any]:
+        """Get comprehensive microstructure analysis summary."""
+        try:
+            summary = {
+                'microstructure_analyzer_status': 'active',
+                'order_flow_analyses': len(self.order_flow_data),
+                'liquidity_analyses': len(self.liquidity_metrics),
+                'market_impact_models': len(self.market_impact_models),
+                'hft_signals_generated': len(self.hft_signals),
+                'total_analyses': (
+                    len(self.order_flow_data) +
+                    len(self.liquidity_metrics) +
+                    len(self.market_impact_models) +
+                    len(self.hft_signals)
+                )
+            }
+            
+            return summary
+            
+        except Exception as e:
+            logger.error(f"Error getting microstructure summary: {str(e)}")
+            return {'error': str(e)}
