@@ -548,55 +548,88 @@ async def main():
                 cycle_count += 1
                 logger.info(f"=== Starting cycle {cycle_count} ===")
                 
-                # Clear previous tasks
-                tasks.clear()
-                
-                # Process symbols in batches
-                batch_size = max_concurrent_tasks
-                symbol_batches = [symbols[i:i + batch_size] for i in range(0, len(symbols), batch_size)]
-                
-                logger.info(f"Created {len(symbol_batches)} batches for cycle {cycle_count}")
-                
-                for batch in symbol_batches:
-                    task = asyncio.create_task(process_symbol_batch(batch))
-                    tasks.append(task)
-                
-                logger.info(f"Created {len(tasks)} tasks for cycle {cycle_count}")
-                
-                # Start portfolio analysis task
-                portfolio_task = asyncio.create_task(
-                    run_portfolio_analysis(strategy, symbols, cache_service)
-                )
-                tasks.append(portfolio_task)
-                
-                logger.info(f"Added portfolio task, total tasks: {len(tasks)}")
-                
-                # Wait for all tasks to complete or shutdown signal
                 try:
-                    logger.info(f"Waiting for {len(tasks)} tasks to complete in cycle {cycle_count}")
-                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    # Clear previous tasks
+                    tasks.clear()
                     
-                    # Check for exceptions in results
-                    exceptions = [r for r in results if isinstance(r, Exception)]
-                    if exceptions:
-                        logger.error(f"Found {len(exceptions)} exceptions in cycle {cycle_count}:")
-                        for i, exc in enumerate(exceptions):
-                            logger.error(f"Exception {i+1}: {str(exc)}")
+                    # Process symbols in batches
+                    batch_size = max_concurrent_tasks
+                    symbol_batches = [symbols[i:i + batch_size] for i in range(0, len(symbols), batch_size)]
                     
-                    logger.info(f"=== Completed cycle {cycle_count} ===")
+                    logger.info(f"Created {len(symbol_batches)} batches for cycle {cycle_count}")
                     
-                    # Wait before starting next cycle (5 minutes)
-                    logger.info("Waiting 5 minutes before starting next cycle...")
-                    await asyncio.sleep(300)  # 5 minutes
+                    for batch in symbol_batches:
+                        task = asyncio.create_task(process_symbol_batch(batch))
+                        tasks.append(task)
                     
-                except asyncio.CancelledError:
-                    logger.info("Main task gathering cancelled")
-                    raise
-                except Exception as e:
-                    logger.error(f"Error in cycle {cycle_count}: {str(e)}")
-                    logger.error(f"Cycle {cycle_count} traceback: {traceback.format_exc()}")
-                    # Wait a bit before retrying
-                    await asyncio.sleep(60)  # 1 minute
+                    logger.info(f"Created {len(tasks)} tasks for cycle {cycle_count}")
+                    
+                    # Start portfolio analysis task
+                    portfolio_task = asyncio.create_task(
+                        run_portfolio_analysis(strategy, symbols, cache_service)
+                    )
+                    tasks.append(portfolio_task)
+                    
+                    logger.info(f"Added portfolio task, total tasks: {len(tasks)}")
+                    
+                    # Wait for all tasks to complete or shutdown signal
+                    try:
+                        logger.info(f"Waiting for {len(tasks)} tasks to complete in cycle {cycle_count}")
+                        results = await asyncio.gather(*tasks, return_exceptions=True)
+                        
+                        # Check for exceptions in results
+                        exceptions = [r for r in results if isinstance(r, Exception)]
+                        if exceptions:
+                            logger.error(f"Found {len(exceptions)} exceptions in cycle {cycle_count}:")
+                            for i, exc in enumerate(exceptions):
+                                logger.error(f"Exception {i+1}: {str(exc)}")
+                        
+                        logger.info(f"=== Completed cycle {cycle_count} ===")
+                        
+                        # Wait before starting next cycle (5 minutes) with robust error handling
+                        logger.info("Waiting 5 minutes before starting next cycle...")
+                        try:
+                            # Use wait_for with shutdown event to allow graceful interruption
+                            await asyncio.wait_for(shutdown_event.wait(), timeout=30)  # 5 minutes
+                            if shutdown_event.is_set():
+                                logger.info("Shutdown event detected during cycle wait, stopping bot")
+                                break
+                        except asyncio.TimeoutError:
+                            logger.info("5-minute wait completed, continuing to next cycle")
+                        except asyncio.CancelledError:
+                            logger.info("Cycle wait cancelled, stopping bot")
+                            raise
+                        except Exception as e:
+                            logger.error(f"Error during cycle wait: {str(e)}")
+                            logger.error(f"Cycle wait traceback: {traceback.format_exc()}")
+                            # Continue to next cycle even if wait fails
+                            logger.info("Continuing to next cycle despite wait error")
+                        
+                    except asyncio.CancelledError:
+                        logger.info("Main task gathering cancelled")
+                        raise
+                    except Exception as e:
+                        logger.error(f"Error in cycle {cycle_count}: {str(e)}")
+                        logger.error(f"Cycle {cycle_count} traceback: {traceback.format_exc()}")
+                        # Wait a bit before retrying
+                        try:
+                            await asyncio.sleep(60)  # 1 minute
+                        except Exception as wait_error:
+                            logger.error(f"Error during retry wait: {str(wait_error)}")
+                            # Continue to next cycle even if retry wait fails
+                            logger.info("Continuing to next cycle despite retry wait error")
+                
+                except Exception as cycle_error:
+                    logger.error(f"Critical error in cycle {cycle_count}: {str(cycle_error)}")
+                    logger.error(f"Critical cycle error traceback: {traceback.format_exc()}")
+                    # Don't break the loop, continue to next cycle
+                    logger.info(f"Continuing to next cycle despite critical error in cycle {cycle_count}")
+                    try:
+                        await asyncio.sleep(30)  # Wait 30 seconds before next cycle
+                    except Exception as wait_error:
+                        logger.error(f"Error during critical error recovery wait: {str(wait_error)}")
+                        # Continue anyway
+                        logger.info("Continuing to next cycle despite recovery wait error")
             
         except Exception as e:
             logger.error(f"Error during initialization: {str(e)}")
