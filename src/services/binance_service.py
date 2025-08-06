@@ -174,9 +174,35 @@ class BinanceService:
             # Check margin before placing order
             margin_check = await self._check_margin_for_order(order_params)
             if not margin_check['sufficient']:
-                logger.error(f"Insufficient margin for {symbol} {order_params['side']}: {margin_check['reason']}")
-                logger.error(f"Required: {margin_check['required']}, Available: {margin_check['available']}")
-                return None
+                logger.warning(f"Insufficient margin for {symbol} {order_params['side']}: {margin_check['reason']}")
+                logger.warning(f"Required: {margin_check['required']}, Available: {margin_check['available']}")
+                
+                # Try to reduce amount until we have sufficient margin
+                original_amount = float(order_params['amount'])
+                current_amount = original_amount
+                min_amount = 0.001  # Minimum amount to try
+                
+                while current_amount >= min_amount:
+                    # Reduce amount by half
+                    current_amount = current_amount / 2
+                    
+                    # Update order params with new amount
+                    adjusted_order_params = order_params.copy()
+                    adjusted_order_params['amount'] = current_amount
+                    
+                    # Check margin with adjusted amount
+                    adjusted_margin_check = await self._check_margin_for_order(adjusted_order_params)
+                    
+                    if adjusted_margin_check['sufficient']:
+                        logger.info(f"Adjusted order amount from {original_amount} to {current_amount} for {symbol}")
+                        order_params = adjusted_order_params
+                        break
+                    else:
+                        logger.debug(f"Still insufficient margin with amount {current_amount}, trying smaller amount...")
+                else:
+                    # If we can't find a sufficient amount even with minimum
+                    logger.error(f"Could not find sufficient amount for {symbol} even with minimum amount {min_amount}")
+                    return None
             
             logger.info(f"Margin check passed for {symbol} {order_params['side']}: Required {margin_check['required']}, Available {margin_check['available']}")
 
@@ -253,7 +279,9 @@ class BinanceService:
                 'sufficient': bool,
                 'required': float,
                 'available': float,
-                'reason': str
+                'reason': str,
+                'position_value': float,
+                'margin_buffer': float
             }
         """
         try:
@@ -264,7 +292,9 @@ class BinanceService:
                     'sufficient': False,
                     'required': 0,
                     'available': 0,
-                    'reason': 'Could not fetch account balance'
+                    'reason': 'Could not fetch account balance',
+                    'position_value': 0,
+                    'margin_buffer': 0
                 }
             
             # Get available USDT balance
@@ -281,7 +311,9 @@ class BinanceService:
                     'sufficient': False,
                     'required': 0,
                     'available': available_usdt,
-                    'reason': f'Could not get current price for {symbol}'
+                    'reason': f'Could not get current price for {symbol}',
+                    'position_value': 0,
+                    'margin_buffer': 0
                 }
             
             # Calculate required margin (position value + buffer)
@@ -296,7 +328,9 @@ class BinanceService:
                 'sufficient': sufficient,
                 'required': required_margin,
                 'available': available_usdt,
-                'reason': 'Insufficient USDT balance' if not sufficient else 'Sufficient margin'
+                'reason': 'Insufficient USDT balance' if not sufficient else 'Sufficient margin',
+                'position_value': position_value,
+                'margin_buffer': margin_buffer
             }
             
         except Exception as e:
@@ -305,7 +339,9 @@ class BinanceService:
                 'sufficient': False,
                 'required': 0,
                 'available': 0,
-                'reason': f'Error checking margin: {str(e)}'
+                'reason': f'Error checking margin: {str(e)}',
+                'position_value': 0,
+                'margin_buffer': 0
             }
     
     def set_notification_callback(self, callback: Optional[Callable]) -> None:

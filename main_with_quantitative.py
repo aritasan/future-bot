@@ -20,6 +20,7 @@ logging.getLogger('websockets.server').setLevel(logging.WARNING)
 
 
 import signal
+import sys
 import traceback
 from logging.handlers import RotatingFileHandler
 import os
@@ -512,17 +513,25 @@ async def main():
             async def process_symbol_batch(symbol_batch: List[str]):
                 """Process a batch of symbols."""
                 nonlocal processed_count
-                async with semaphore:
-                    for symbol in symbol_batch:
-                        processed_count += 1
-                        logger.info(f"Processing symbol {processed_count}/{total_symbols}: {symbol}")
-                        try:
-                            await process_symbol_with_quantitative(
-                                symbol, binance_service, telegram_service, discord_service,
-                                health_monitor, strategy, indicator_service, cache_service
-                            )
-                        except Exception as e:
-                            logger.error(f"Error processing symbol {symbol}: {str(e)}")
+                try:
+                    async with semaphore:
+                        logger.info(f"Processing batch of {len(symbol_batch)} symbols")
+                        for symbol in symbol_batch:
+                            processed_count += 1
+                            logger.info(f"Processing symbol {processed_count}/{total_symbols}: {symbol}")
+                            try:
+                                await process_symbol_with_quantitative(
+                                    symbol, binance_service, telegram_service, discord_service,
+                                    health_monitor, strategy, indicator_service, cache_service
+                                )
+                            except Exception as e:
+                                logger.error(f"Error processing symbol {symbol}: {str(e)}")
+                                logger.error(f"Symbol {symbol} traceback: {traceback.format_exc()}")
+                        
+                        logger.info(f"Completed batch processing for {len(symbol_batch)} symbols")
+                except Exception as e:
+                    logger.error(f"Error in process_symbol_batch: {str(e)}")
+                    logger.error(f"Batch processing traceback: {traceback.format_exc()}")
             
             logger.info(f"Starting continuous processing of {total_symbols} symbols with max {max_concurrent_tasks} concurrent batches")
             
@@ -546,9 +555,13 @@ async def main():
                 batch_size = max_concurrent_tasks
                 symbol_batches = [symbols[i:i + batch_size] for i in range(0, len(symbols), batch_size)]
                 
+                logger.info(f"Created {len(symbol_batches)} batches for cycle {cycle_count}")
+                
                 for batch in symbol_batches:
                     task = asyncio.create_task(process_symbol_batch(batch))
                     tasks.append(task)
+                
+                logger.info(f"Created {len(tasks)} tasks for cycle {cycle_count}")
                 
                 # Start portfolio analysis task
                 portfolio_task = asyncio.create_task(
@@ -556,9 +569,20 @@ async def main():
                 )
                 tasks.append(portfolio_task)
                 
+                logger.info(f"Added portfolio task, total tasks: {len(tasks)}")
+                
                 # Wait for all tasks to complete or shutdown signal
                 try:
-                    await asyncio.gather(*tasks, return_exceptions=True)
+                    logger.info(f"Waiting for {len(tasks)} tasks to complete in cycle {cycle_count}")
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    
+                    # Check for exceptions in results
+                    exceptions = [r for r in results if isinstance(r, Exception)]
+                    if exceptions:
+                        logger.error(f"Found {len(exceptions)} exceptions in cycle {cycle_count}:")
+                        for i, exc in enumerate(exceptions):
+                            logger.error(f"Exception {i+1}: {str(exc)}")
+                    
                     logger.info(f"=== Completed cycle {cycle_count} ===")
                     
                     # Wait before starting next cycle (5 minutes)
@@ -570,6 +594,7 @@ async def main():
                     raise
                 except Exception as e:
                     logger.error(f"Error in cycle {cycle_count}: {str(e)}")
+                    logger.error(f"Cycle {cycle_count} traceback: {traceback.format_exc()}")
                     # Wait a bit before retrying
                     await asyncio.sleep(60)  # 1 minute
             
