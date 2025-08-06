@@ -39,6 +39,22 @@ class MarketMicrostructureAnalyzer:
         
         logger.info("Market Microstructure Analyzer initialized")
     
+    async def initialize(self) -> bool:
+        """Initialize the market microstructure analyzer."""
+        try:
+            # Initialize any required components
+            self.order_flow_data = {}
+            self.liquidity_metrics = {}
+            self.market_impact_models = {}
+            self.hft_signals = {}
+            
+            logger.info("Market Microstructure Analyzer initialized successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error initializing Market Microstructure Analyzer: {str(e)}")
+            return False
+    
     def analyze_order_flow(self, orderbook_data: Dict, trade_data: pd.DataFrame) -> Dict[str, Any]:
         """
         Analyze order flow patterns.

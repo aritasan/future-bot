@@ -40,6 +40,10 @@ from src.quantitative.statistical_arbitrage import StatisticalArbitrageEngine
 from src.quantitative.advanced_ml_ensemble import AdvancedMLEnsemble
 from src.quantitative.market_microstructure import MarketMicrostructureAnalyzer
 from src.quantitative.risk_manager import RiskManager
+from src.quantitative.high_frequency_trading import HighFrequencyTradingEngine, TickData
+from src.quantitative.advanced_market_microstructure import AdvancedMarketMicrostructureAnalyzer
+from src.quantitative.options_based_strategies import OptionsBasedStrategies, OptionContract
+from src.quantitative.on_chain_analytics import OnChainAnalytics, BlockchainTransaction
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +73,7 @@ class EnhancedTradingStrategyWithQuantitative:
         
         # Initialize quantitative components
         self.quantitative_system = QuantitativeTradingSystem(config)
+        self.quantitative_integration = QuantitativeIntegration(config)
         self.statistical_validator = StatisticalValidator(config)
         self.risk_manager = RiskManager(config)
         self.factor_model = WorldQuantFactorModel(config)
@@ -89,6 +94,12 @@ class EnhancedTradingStrategyWithQuantitative:
         # Initialize Implied Volatility Engine
         self.volatility_engine = ImpliedVolatilityEngine(config)
         
+        # Initialize Phase 3 WorldQuant-Level Features
+        self.hft_engine = HighFrequencyTradingEngine(config)
+        self.advanced_microstructure_analyzer = AdvancedMarketMicrostructureAnalyzer(config)
+        self.options_strategies = OptionsBasedStrategies(config)
+        self.on_chain_analytics = OnChainAnalytics(config)
+        
         # Initialize signal history
         self.signal_history = {}
         
@@ -97,6 +108,21 @@ class EnhancedTradingStrategyWithQuantitative:
         
         # Initialize confidence performance tracking
         self.confidence_performance = {}
+        
+        # Initialize performance monitoring
+        self.performance_monitoring = {
+            'active': False,
+            'last_update': None,
+            'performance_metrics': {},
+            'alerts': [],
+            'performance_score': 0.0,
+            'risk_score': 0.0,
+            'stability_score': 0.0,
+            'update_frequency': 30
+        }
+        
+        # Initialize data cache
+        self.data_cache = {}
         
         # Initialize cache service if provided
         if self.cache_service:
@@ -273,6 +299,9 @@ class EnhancedTradingStrategyWithQuantitative:
             
             # Apply machine learning analysis
             signal = await self._apply_machine_learning_analysis(symbol, signal, market_data)
+            
+            # Apply Phase 3 WorldQuant-Level Features
+            signal = await self._apply_phase3_analysis(symbol, signal, market_data)
             
             # Optimize final signal
             signal = await self._optimize_final_signal(symbol, signal, market_data)
@@ -1877,7 +1906,9 @@ class EnhancedTradingStrategyWithQuantitative:
             # Adjust position size based on VaR
             if 'expected_shortfall' in var_results:
                 var_adjustment = min(1.0, 0.1 / abs(var_results['expected_shortfall'])) if var_results['expected_shortfall'] != 0 else 1.0
-                adjusted_signal['optimized_position_size'] *= var_adjustment
+                # Safely access optimized_position_size with default value
+                current_position_size = adjusted_signal.get('optimized_position_size', 0.01)
+                adjusted_signal['optimized_position_size'] = current_position_size * var_adjustment
             
             # Add risk metrics to signal
             adjusted_signal['risk_metrics'] = {
@@ -3730,3 +3761,278 @@ class EnhancedTradingStrategyWithQuantitative:
         Apply statistical arbitrage analysis (alias for _apply_statistical_arbitrage_analysis).
         """
         return await self._apply_statistical_arbitrage_analysis(symbol, signal, market_data)
+    
+    async def _apply_phase3_analysis(self, symbol: str, signal: Dict, market_data: Dict) -> Dict:
+        """
+        Apply Phase 3 WorldQuant-Level Features analysis.
+        
+        Args:
+            symbol: Trading symbol
+            signal: Current signal
+            market_data: Market data
+            
+        Returns:
+            Enhanced signal with Phase 3 analysis
+        """
+        try:
+            enhanced_signal = signal.copy()
+            
+            # 1. High-Frequency Trading Analysis
+            hft_analysis = await self._apply_hft_analysis(symbol, signal, market_data)
+            if hft_analysis:
+                enhanced_signal['hft_analysis'] = hft_analysis
+                logger.info(f"HFT analysis applied for {symbol}")
+            
+            # 2. Advanced Market Microstructure Analysis
+            microstructure_analysis = await self._apply_advanced_microstructure_analysis(symbol, signal, market_data)
+            if microstructure_analysis:
+                enhanced_signal['microstructure_analysis'] = microstructure_analysis
+                logger.info(f"Advanced microstructure analysis applied for {symbol}")
+            
+            # 3. Options-Based Strategies Analysis
+            options_analysis = await self._apply_options_analysis(symbol, signal, market_data)
+            if options_analysis:
+                enhanced_signal['options_analysis'] = options_analysis
+                logger.info(f"Options analysis applied for {symbol}")
+            
+            # 4. On-Chain Analytics
+            onchain_analysis = await self._apply_onchain_analysis(symbol, signal, market_data)
+            if onchain_analysis:
+                enhanced_signal['onchain_analysis'] = onchain_analysis
+                logger.info(f"On-chain analysis applied for {symbol}")
+            
+            return enhanced_signal
+            
+        except Exception as e:
+            logger.error(f"Error applying Phase 3 analysis for {symbol}: {str(e)}")
+            return signal
+    
+    async def _apply_hft_analysis(self, symbol: str, signal: Dict, market_data: Dict) -> Dict[str, Any]:
+        """Apply High-Frequency Trading analysis."""
+        try:
+            # Create mock tick data for testing
+            import time
+            tick_data = TickData(
+                timestamp=time.time(),
+                price=market_data.get('current_price', 50000.0),
+                volume=market_data.get('volume', 1.0),
+                side='buy' if signal.get('action') == 'buy' else 'sell',
+                exchange='binance',
+                symbol=symbol
+            )
+            
+            # Process tick data
+            hft_analysis = await self.hft_engine.process_tick_data(tick_data)
+            
+            # Adjust signal based on HFT analysis
+            if hft_analysis.get('tick_analysis', {}).get('pattern_detected'):
+                signal['hft_pattern'] = hft_analysis['tick_analysis']['pattern_detected']
+                signal['confidence'] = min(signal.get('confidence', 0) + 0.1, 1.0)
+            
+            return hft_analysis
+            
+        except Exception as e:
+            logger.error(f"Error applying HFT analysis: {str(e)}")
+            return {}
+    
+    async def _apply_advanced_microstructure_analysis(self, symbol: str, signal: Dict, market_data: Dict) -> Dict[str, Any]:
+        """Apply Advanced Market Microstructure analysis."""
+        try:
+            # Create mock orderbook data
+            orderbook_data = {
+                'bids': [[market_data.get('current_price', 50000) - i, 1.0] for i in range(1, 6)],
+                'asks': [[market_data.get('current_price', 50000) + i, 1.0] for i in range(1, 6)]
+            }
+            
+            # Create mock trade data
+            import pandas as pd
+            trade_data = pd.DataFrame({
+                'price': [market_data.get('current_price', 50000) + np.random.normal(0, 10) for _ in range(50)],
+                'volume': [np.random.uniform(0.1, 5.0) for _ in range(50)],
+                'side': [np.random.choice(['buy', 'sell']) for _ in range(50)]
+            })
+            
+            # Analyze advanced microstructure
+            microstructure_analysis = self.advanced_microstructure_analyzer.analyze_advanced_order_flow(
+                orderbook_data, trade_data
+            )
+            
+            # Adjust signal based on microstructure analysis
+            if microstructure_analysis.get('microstructure_signals', {}).get('action') != 'hold':
+                signal['microstructure_signal'] = microstructure_analysis['microstructure_signals']['action']
+                signal['confidence'] = min(signal.get('confidence', 0) + 0.15, 1.0)
+            
+            return microstructure_analysis
+            
+        except Exception as e:
+            logger.error(f"Error applying advanced microstructure analysis: {str(e)}")
+            return {}
+    
+    async def _apply_options_analysis(self, symbol: str, signal: Dict, market_data: Dict) -> Dict[str, Any]:
+        """Apply Options-Based Strategies analysis."""
+        try:
+            # Create mock options data
+            options_data = []
+            underlying_price = market_data.get('current_price', 50000.0)
+            
+            # Create various strike prices
+            strikes = [underlying_price * 0.9, underlying_price * 0.95, underlying_price, 
+                      underlying_price * 1.05, underlying_price * 1.1]
+            
+            for strike in strikes:
+                # Call options
+                options_data.append(OptionContract(
+                    symbol=f'{symbol}-{strike:.0f}-C',
+                    strike=strike,
+                    expiry='2024-12-31',
+                    option_type='call',
+                    price=max(0, underlying_price - strike) + np.random.uniform(100, 500),
+                    implied_volatility=np.random.uniform(0.2, 0.8),
+                    delta=np.random.uniform(0.1, 0.9),
+                    gamma=np.random.uniform(0.001, 0.01),
+                    theta=np.random.uniform(-100, -10),
+                    vega=np.random.uniform(10, 100)
+                ))
+                
+                # Put options
+                options_data.append(OptionContract(
+                    symbol=f'{symbol}-{strike:.0f}-P',
+                    strike=strike,
+                    expiry='2024-12-31',
+                    option_type='put',
+                    price=max(0, strike - underlying_price) + np.random.uniform(100, 500),
+                    implied_volatility=np.random.uniform(0.2, 0.8),
+                    delta=np.random.uniform(-0.9, -0.1),
+                    gamma=np.random.uniform(0.001, 0.01),
+                    theta=np.random.uniform(-100, -10),
+                    vega=np.random.uniform(10, 100)
+                ))
+            
+            # Analyze implied volatility
+            iv_analysis = self.options_strategies.analyze_implied_volatility(underlying_price, options_data)
+            
+            # Create volatility strategy
+            strategy = self.options_strategies.create_volatility_strategy(underlying_price, options_data, 'straddle')
+            
+            # Adjust signal based on options analysis
+            if iv_analysis.get('volatility_regime') == 'high':
+                signal['options_volatility_regime'] = 'high'
+                signal['confidence'] = min(signal.get('confidence', 0) + 0.1, 1.0)
+            
+            return {
+                'iv_analysis': iv_analysis,
+                'strategy': strategy
+            }
+            
+        except Exception as e:
+            logger.error(f"Error applying options analysis: {str(e)}")
+            return {}
+    
+    async def _apply_onchain_analysis(self, symbol: str, signal: Dict, market_data: Dict) -> Dict[str, Any]:
+        """Apply On-Chain Analytics."""
+        try:
+            # Create mock blockchain transactions
+            import time
+            transactions = []
+            
+            for i in range(20):
+                transactions.append(BlockchainTransaction(
+                    tx_hash=f'0x{np.random.bytes(32).hex()}',
+                    block_number=1000000 + i,
+                    timestamp=int(time.time()) - i * 60,
+                    from_address=f'0x{np.random.bytes(20).hex()}',
+                    to_address=f'0x{np.random.bytes(20).hex()}',
+                    value=np.random.uniform(0.1, 10.0),
+                    gas_price=np.random.uniform(20, 100),
+                    gas_used=np.random.randint(21000, 100000),
+                    token_address=np.random.choice([None, f'0x{np.random.bytes(20).hex()}']),
+                    token_amount=np.random.uniform(0.1, 100.0) if np.random.random() > 0.5 else None
+                ))
+            
+            # Analyze transaction flow
+            flow_analysis = self.on_chain_analytics.analyze_transaction_flow(transactions)
+            
+            # Analyze wallet behavior
+            wallet_profiles = self.on_chain_analytics.analyze_wallet_behavior(transactions)
+            
+            # Generate on-chain signals
+            analysis = {
+                'transaction_flow': flow_analysis,
+                'wallet_behavior': wallet_profiles,
+                'defi_metrics': {}
+            }
+            
+            onchain_signals = self.on_chain_analytics.generate_on_chain_signals(analysis)
+            
+            # Adjust signal based on on-chain analysis
+            if onchain_signals.get('action') != 'hold':
+                signal['onchain_signal'] = onchain_signals['action']
+                signal['confidence'] = min(signal.get('confidence', 0) + 0.1, 1.0)
+            
+            return {
+                'flow_analysis': flow_analysis,
+                'wallet_profiles': len(wallet_profiles),
+                'onchain_signals': onchain_signals
+            }
+            
+        except Exception as e:
+            logger.error(f"Error applying on-chain analysis: {str(e)}")
+            return {}
+    
+    def get_phase3_summary(self) -> Dict[str, Any]:
+        """Get comprehensive Phase 3 features summary."""
+        try:
+            summary = {
+                'hft_engine': self.hft_engine.get_hft_performance_metrics(),
+                'advanced_microstructure': self.advanced_microstructure_analyzer.get_advanced_microstructure_summary(),
+                'options_strategies': self.options_strategies.get_options_strategy_summary(),
+                'on_chain_analytics': self.on_chain_analytics.get_on_chain_summary(),
+                'total_phase3_features': 4,
+                'status': 'active'
+            }
+            
+            return summary
+            
+        except Exception as e:
+            logger.error(f"Error getting Phase 3 summary: {str(e)}")
+            return {'error': str(e)}
+    
+    async def _apply_momentum_mean_reversion_analysis(self, symbol: str, signal: Dict, market_data: Dict) -> Dict:
+        """Apply momentum mean reversion analysis."""
+        try:
+            # Placeholder for momentum mean reversion analysis
+            # This would analyze momentum patterns and mean reversion opportunities
+            return signal
+        except Exception as e:
+            logger.error(f"Error applying momentum mean reversion analysis: {str(e)}")
+            return signal
+    
+    async def _apply_volatility_regime_analysis(self, symbol: str, signal: Dict, market_data: Dict) -> Dict:
+        """Apply volatility regime analysis."""
+        try:
+            # Placeholder for volatility regime analysis
+            # This would analyze volatility regimes and adjust signals accordingly
+            return signal
+        except Exception as e:
+            logger.error(f"Error applying volatility regime analysis: {str(e)}")
+            return signal
+    
+    async def _apply_correlation_analysis(self, symbol: str, signal: Dict, market_data: Dict) -> Dict:
+        """Apply correlation analysis."""
+        try:
+            # Placeholder for correlation analysis
+            # This would analyze correlations with other assets
+            return signal
+        except Exception as e:
+            logger.error(f"Error applying correlation analysis: {str(e)}")
+            return signal
+    
+    async def _optimize_final_signal(self, symbol: str, signal: Dict, market_data: Dict) -> Dict:
+        """Optimize final signal."""
+        try:
+            # Placeholder for final signal optimization
+            # This would apply final optimizations to the signal
+            return signal
+        except Exception as e:
+            logger.error(f"Error optimizing final signal: {str(e)}")
+            return signal

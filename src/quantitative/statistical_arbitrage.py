@@ -170,15 +170,15 @@ class StatisticalArbitrageEngine:
                 return 1.0
             
             # OLS regression: price1 = alpha + beta * price2
-            from sklearn.linear_model import LinearRegression
-            
-            X = valid_data['price2'].values.reshape(-1, 1)
+            # Use numpy polyfit instead of sklearn LinearRegression
+            X = valid_data['price2'].values
             y = valid_data['price1'].values
             
-            model = LinearRegression()
-            model.fit(X, y)
+            # Fit linear regression using numpy
+            coeffs = np.polyfit(X, y, 1)
+            beta = coeffs[0]  # slope coefficient
             
-            return float(model.coef_[0])
+            return float(beta)
             
         except Exception as e:
             logger.error(f"Error calculating hedge ratio: {str(e)}")
@@ -240,14 +240,19 @@ class StatisticalArbitrageEngine:
             Z-score
         """
         try:
+            if len(series) == 0:
+                return 0.0
+                
             if window is None:
                 mean = series.mean()
                 std = series.std()
             else:
+                if len(series) < window:
+                    return 0.0
                 mean = series.rolling(window=window).mean().iloc[-1]
                 std = series.rolling(window=window).std().iloc[-1]
             
-            if std == 0:
+            if std == 0 or pd.isna(std):
                 return 0.0
             
             return float((series.iloc[-1] - mean) / std)
@@ -401,6 +406,9 @@ class StatisticalArbitrageEngine:
         Calculate Augmented Dickey-Fuller test p-value.
         """
         try:
+            if len(returns) < 10:
+                return 1.0
+                
             from statsmodels.tsa.stattools import adfuller
             adf_result = adfuller(returns.dropna())
             return float(adf_result[1])
@@ -559,6 +567,9 @@ class StatisticalArbitrageEngine:
         Calculate Relative Strength Index.
         """
         try:
+            if len(price_series) < period + 1:
+                return 50.0
+                
             delta = price_series.diff()
             gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
@@ -566,6 +577,9 @@ class StatisticalArbitrageEngine:
             rs = gain / loss
             rsi = 100 - (100 / (1 + rs))
             
+            if len(rsi) == 0 or pd.isna(rsi.iloc[-1]):
+                return 50.0
+                
             return float(rsi.iloc[-1])
             
         except Exception as e:
@@ -577,11 +591,17 @@ class StatisticalArbitrageEngine:
         Calculate MACD.
         """
         try:
+            if len(price_series) < 26:
+                return 0.0
+                
             ema12 = price_series.ewm(span=12).mean()
             ema26 = price_series.ewm(span=26).mean()
             macd = ema12 - ema26
             signal = macd.ewm(span=9).mean()
             
+            if len(macd) == 0 or len(signal) == 0:
+                return 0.0
+                
             return float(macd.iloc[-1] - signal.iloc[-1])
             
         except Exception as e:
@@ -593,12 +613,18 @@ class StatisticalArbitrageEngine:
         Calculate position within Bollinger Bands.
         """
         try:
+            if len(price_series) < period:
+                return 0.5
+                
             sma = price_series.rolling(window=period).mean()
             std = price_series.rolling(window=period).std()
             
             upper_band = sma + (2 * std)
             lower_band = sma - (2 * std)
             
+            if len(sma) == 0 or len(std) == 0:
+                return 0.5
+                
             current_price = price_series.iloc[-1]
             bb_position = (current_price - lower_band.iloc[-1]) / (upper_band.iloc[-1] - lower_band.iloc[-1])
             
@@ -613,10 +639,13 @@ class StatisticalArbitrageEngine:
         Calculate momentum strength.
         """
         try:
+            if len(price_series) < 20:
+                return 0.0
+                
             # Calculate momentum over different periods
-            momentum_5 = price_series.pct_change(5).iloc[-1]
-            momentum_10 = price_series.pct_change(10).iloc[-1]
-            momentum_20 = price_series.pct_change(20).iloc[-1]
+            momentum_5 = price_series.pct_change(5).iloc[-1] if len(price_series) >= 5 else 0.0
+            momentum_10 = price_series.pct_change(10).iloc[-1] if len(price_series) >= 10 else 0.0
+            momentum_20 = price_series.pct_change(20).iloc[-1] if len(price_series) >= 20 else 0.0
             
             # Weighted average
             strength = (0.5 * momentum_5 + 0.3 * momentum_10 + 0.2 * momentum_20)
@@ -698,24 +727,44 @@ class StatisticalArbitrageEngine:
         Calculate volatility indicators.
         """
         try:
+            if len(price_series) < self.volatility_window:
+                return {}
+                
             indicators = {}
             
             # Calculate returns
             returns = price_series.pct_change().dropna()
             
+            if len(returns) < self.volatility_window:
+                return {}
+            
             # 1. Historical volatility
-            indicators['historical_volatility'] = float(returns.rolling(window=self.volatility_window).std().iloc[-1])
+            vol_rolling = returns.rolling(window=self.volatility_window).std()
+            if len(vol_rolling) == 0 or pd.isna(vol_rolling.iloc[-1]):
+                indicators['historical_volatility'] = 0.0
+            else:
+                indicators['historical_volatility'] = float(vol_rolling.iloc[-1])
             
             # 2. Volatility of volatility
             vol_series = returns.rolling(window=10).std()
-            indicators['vol_of_vol'] = float(vol_series.rolling(window=20).std().iloc[-1])
+            if len(vol_series) >= 20:
+                vol_of_vol_rolling = vol_series.rolling(window=20).std()
+                if len(vol_of_vol_rolling) > 0 and not pd.isna(vol_of_vol_rolling.iloc[-1]):
+                    indicators['vol_of_vol'] = float(vol_of_vol_rolling.iloc[-1])
+                else:
+                    indicators['vol_of_vol'] = 0.0
+            else:
+                indicators['vol_of_vol'] = 0.0
             
             # 3. Volatility skewness
-            indicators['vol_skewness'] = float(vol_series.skew())
+            if len(vol_series) > 0:
+                indicators['vol_skewness'] = float(vol_series.skew())
+            else:
+                indicators['vol_skewness'] = 0.0
             
             # 4. Volatility regime
-            current_vol = indicators['historical_volatility']
-            avg_vol = vol_series.mean()
+            current_vol = indicators.get('historical_volatility', 0.0)
+            avg_vol = vol_series.mean() if len(vol_series) > 0 else 0.0
             indicators['vol_regime'] = 'high' if current_vol > avg_vol * 1.5 else 'low' if current_vol < avg_vol * 0.7 else 'normal'
             
             return indicators

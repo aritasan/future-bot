@@ -134,7 +134,7 @@ async def process_symbol_with_quantitative(
                 await cache_service.cache_market_data(symbol, "5m", signals, ttl=300)  # 5 minutes TTL
         
         if signals:
-            logger.info(f"Generated quantitative signals for {symbol}: {signals}")
+            # logger.info(f"Generated quantitative signals for {symbol}: {signals}")
             
             # Process signals
             await asyncio.wait_for(strategy.process_trading_signals(signals), timeout=60)
