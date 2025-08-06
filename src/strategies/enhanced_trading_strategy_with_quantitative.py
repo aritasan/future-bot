@@ -3980,9 +3980,121 @@ class EnhancedTradingStrategyWithQuantitative:
     async def _apply_momentum_mean_reversion_analysis(self, symbol: str, signal: Dict, market_data: Dict) -> Dict:
         """Apply momentum mean reversion analysis."""
         try:
-            # Placeholder for momentum mean reversion analysis
-            # This would analyze momentum patterns and mean reversion opportunities
-            return signal
+            logger.info(f"Applying momentum mean reversion analysis for {symbol}")
+            
+            # Get market data for analysis
+            if not market_data or 'returns' not in market_data:
+                logger.warning(f"No returns data available for {symbol}")
+                return signal
+            
+            returns = market_data['returns']
+            if len(returns) < 20:  # Need minimum data for analysis
+                logger.warning(f"Insufficient data for momentum analysis on {symbol}")
+                return signal
+            
+            # 1. Calculate momentum indicators
+            momentum_analysis = {}
+            
+            # Price momentum (12-period)
+            price_momentum = (returns.iloc[-1] - returns.iloc[-12]) / returns.iloc[-12] if len(returns) >= 12 else 0
+            
+            # Volume momentum
+            if 'volume' in market_data:
+                volume_data = market_data['volume']
+                if len(volume_data) >= 12:
+                    volume_momentum = (volume_data.iloc[-1] - volume_data.iloc[-12]) / volume_data.iloc[-12]
+                else:
+                    volume_momentum = 0
+            else:
+                volume_momentum = 0
+            
+            # 2. Calculate mean reversion indicators
+            mean_reversion_analysis = {}
+            
+            # Bollinger Bands for mean reversion
+            if 'bollinger_bands' in market_data:
+                bb_data = market_data['bollinger_bands']
+                current_price = market_data.get('current_price', returns.iloc[-1])
+                
+                if 'upper' in bb_data and 'lower' in bb_data:
+                    bb_position = (current_price - bb_data['lower']) / (bb_data['upper'] - bb_data['lower'])
+                    mean_reversion_analysis['bb_position'] = bb_position
+                    
+                    # Mean reversion signal based on BB position
+                    if bb_position > 0.8:  # Near upper band
+                        mean_reversion_analysis['signal'] = 'sell'
+                        mean_reversion_analysis['strength'] = min(bb_position - 0.8, 0.2) * 5  # Scale to 0-1
+                    elif bb_position < 0.2:  # Near lower band
+                        mean_reversion_analysis['signal'] = 'buy'
+                        mean_reversion_analysis['strength'] = min(0.2 - bb_position, 0.2) * 5  # Scale to 0-1
+                    else:
+                        mean_reversion_analysis['signal'] = 'hold'
+                        mean_reversion_analysis['strength'] = 0.0
+            
+            # 3. RSI for momentum/mean reversion
+            if 'rsi' in market_data:
+                rsi_value = market_data['rsi']
+                if rsi_value > 70:
+                    momentum_analysis['rsi_signal'] = 'overbought'
+                    momentum_analysis['rsi_strength'] = (rsi_value - 70) / 30
+                elif rsi_value < 30:
+                    momentum_analysis['rsi_signal'] = 'oversold'
+                    momentum_analysis['rsi_strength'] = (30 - rsi_value) / 30
+                else:
+                    momentum_analysis['rsi_signal'] = 'neutral'
+                    momentum_analysis['rsi_strength'] = 0.0
+            
+            # 4. Statistical arbitrage analysis
+            if hasattr(self, 'statistical_arbitrage_engine'):
+                try:
+                    arb_analysis = await self.statistical_arbitrage_engine.analyze_mean_reversion(
+                        symbol, returns, market_data
+                    )
+                    momentum_analysis['arbitrage'] = arb_analysis
+                except Exception as e:
+                    logger.warning(f"Error in statistical arbitrage analysis: {str(e)}")
+            
+            # 5. Combine momentum and mean reversion signals
+            combined_signal = signal.copy()
+            
+            # Adjust signal based on momentum
+            if price_momentum > 0.05:  # Strong positive momentum
+                combined_signal['momentum_signal'] = 'buy'
+                combined_signal['momentum_strength'] = min(price_momentum * 10, 1.0)
+            elif price_momentum < -0.05:  # Strong negative momentum
+                combined_signal['momentum_signal'] = 'sell'
+                combined_signal['momentum_strength'] = min(abs(price_momentum) * 10, 1.0)
+            else:
+                combined_signal['momentum_signal'] = 'hold'
+                combined_signal['momentum_strength'] = 0.0
+            
+            # Adjust signal based on mean reversion
+            if mean_reversion_analysis.get('signal') != 'hold':
+                combined_signal['mean_reversion_signal'] = mean_reversion_analysis['signal']
+                combined_signal['mean_reversion_strength'] = mean_reversion_analysis['strength']
+                
+                # If momentum and mean reversion conflict, reduce confidence
+                if (combined_signal['momentum_signal'] != 'hold' and 
+                    combined_signal['momentum_signal'] != combined_signal['mean_reversion_signal']):
+                    combined_signal['confidence'] = max(combined_signal.get('confidence', 0) - 0.2, 0.0)
+                    logger.info(f"Momentum and mean reversion signals conflict for {symbol}")
+            
+            # 6. Final signal adjustment
+            if combined_signal.get('momentum_strength', 0) > 0.7:
+                combined_signal['confidence'] = min(combined_signal.get('confidence', 0) + 0.15, 1.0)
+                logger.info(f"Strong momentum signal for {symbol}: {combined_signal['momentum_signal']}")
+            
+            if combined_signal.get('mean_reversion_strength', 0) > 0.7:
+                combined_signal['confidence'] = min(combined_signal.get('confidence', 0) + 0.15, 1.0)
+                logger.info(f"Strong mean reversion signal for {symbol}: {combined_signal['mean_reversion_signal']}")
+            
+            # Store analysis results
+            combined_signal['momentum_analysis'] = momentum_analysis
+            combined_signal['mean_reversion_analysis'] = mean_reversion_analysis
+            
+            logger.info(f"Momentum mean reversion analysis completed for {symbol}")
+            return combined_signal
+            
         except Exception as e:
             logger.error(f"Error applying momentum mean reversion analysis: {str(e)}")
             return signal
@@ -3990,9 +4102,128 @@ class EnhancedTradingStrategyWithQuantitative:
     async def _apply_volatility_regime_analysis(self, symbol: str, signal: Dict, market_data: Dict) -> Dict:
         """Apply volatility regime analysis."""
         try:
-            # Placeholder for volatility regime analysis
-            # This would analyze volatility regimes and adjust signals accordingly
-            return signal
+            logger.info(f"Applying volatility regime analysis for {symbol}")
+            
+            # Get market data for analysis
+            if not market_data or 'returns' not in market_data:
+                logger.warning(f"No returns data available for {symbol}")
+                return signal
+            
+            returns = market_data['returns']
+            if len(returns) < 30:  # Need minimum data for regime analysis
+                logger.warning(f"Insufficient data for volatility regime analysis on {symbol}")
+                return signal
+            
+            # 1. Calculate volatility metrics
+            volatility_analysis = {}
+            
+            # Rolling volatility (20-period)
+            rolling_vol = returns.rolling(window=20).std().iloc[-1]
+            volatility_analysis['rolling_volatility'] = rolling_vol
+            
+            # Historical volatility (252-period annualized)
+            if len(returns) >= 252:
+                annualized_vol = returns.std() * np.sqrt(252)
+                volatility_analysis['annualized_volatility'] = annualized_vol
+            else:
+                annualized_vol = rolling_vol * np.sqrt(252)
+                volatility_analysis['annualized_volatility'] = annualized_vol
+            
+            # 2. Detect volatility regime
+            regime_analysis = {}
+            
+            # Calculate volatility percentiles
+            vol_percentile = np.percentile(returns.rolling(window=20).std().dropna(), 75)
+            
+            if rolling_vol > vol_percentile * 1.5:
+                regime = 'high_volatility'
+                regime_analysis['regime'] = 'high_volatility'
+                regime_analysis['confidence'] = min((rolling_vol - vol_percentile) / vol_percentile, 1.0)
+            elif rolling_vol < vol_percentile * 0.5:
+                regime = 'low_volatility'
+                regime_analysis['regime'] = 'low_volatility'
+                regime_analysis['confidence'] = min((vol_percentile - rolling_vol) / vol_percentile, 1.0)
+            else:
+                regime = 'normal_volatility'
+                regime_analysis['regime'] = 'normal_volatility'
+                regime_analysis['confidence'] = 0.5
+            
+            # 3. Use implied volatility if available
+            if hasattr(self, 'volatility_engine'):
+                try:
+                    iv_analysis = await self.volatility_engine.analyze_volatility_regime(
+                        symbol, market_data
+                    )
+                    regime_analysis['implied_volatility'] = iv_analysis
+                    
+                    # Adjust regime based on implied volatility
+                    if iv_analysis.get('regime') != regime:
+                        # Weighted average of historical and implied volatility
+                        regime_analysis['final_regime'] = regime if regime_analysis['confidence'] > 0.7 else iv_analysis.get('regime', regime)
+                    else:
+                        regime_analysis['final_regime'] = regime
+                        regime_analysis['confidence'] = min(regime_analysis['confidence'] + 0.2, 1.0)
+                        
+                except Exception as e:
+                    logger.warning(f"Error in implied volatility analysis: {str(e)}")
+                    regime_analysis['final_regime'] = regime
+            
+            # 4. Use advanced risk management for regime analysis
+            if hasattr(self, 'dynamic_risk_manager'):
+                try:
+                    risk_analysis = self.dynamic_risk_manager.calculate_dynamic_var(
+                        returns, regime_analysis.get('final_regime', regime)
+                    )
+                    regime_analysis['risk_metrics'] = risk_analysis
+                except Exception as e:
+                    logger.warning(f"Error in dynamic risk analysis: {str(e)}")
+            
+            # 5. Adjust signal based on volatility regime
+            adjusted_signal = signal.copy()
+            
+            # High volatility regime adjustments
+            if regime_analysis.get('final_regime') == 'high_volatility':
+                # Reduce position size in high volatility
+                adjusted_signal['position_size_multiplier'] = 0.5
+                adjusted_signal['stop_loss_multiplier'] = 1.5  # Wider stops
+                adjusted_signal['confidence'] = max(adjusted_signal.get('confidence', 0) - 0.1, 0.0)
+                logger.info(f"High volatility regime detected for {symbol}, reducing position size")
+            
+            # Low volatility regime adjustments
+            elif regime_analysis.get('final_regime') == 'low_volatility':
+                # Increase position size in low volatility
+                adjusted_signal['position_size_multiplier'] = 1.2
+                adjusted_signal['stop_loss_multiplier'] = 0.8  # Tighter stops
+                adjusted_signal['confidence'] = min(adjusted_signal.get('confidence', 0) + 0.1, 1.0)
+                logger.info(f"Low volatility regime detected for {symbol}, increasing position size")
+            
+            # Normal volatility regime
+            else:
+                adjusted_signal['position_size_multiplier'] = 1.0
+                adjusted_signal['stop_loss_multiplier'] = 1.0
+                logger.info(f"Normal volatility regime detected for {symbol}")
+            
+            # 6. Volatility-based signal enhancement
+            if regime_analysis.get('confidence', 0) > 0.8:
+                # Strong regime detection
+                if regime_analysis.get('final_regime') == 'high_volatility':
+                    # In high volatility, prefer mean reversion strategies
+                    if adjusted_signal.get('action') == 'buy' and adjusted_signal.get('confidence', 0) > 0.6:
+                        adjusted_signal['strategy_type'] = 'mean_reversion'
+                        logger.info(f"High volatility regime: applying mean reversion strategy for {symbol}")
+                elif regime_analysis.get('final_regime') == 'low_volatility':
+                    # In low volatility, prefer momentum strategies
+                    if adjusted_signal.get('action') == 'buy' and adjusted_signal.get('confidence', 0) > 0.6:
+                        adjusted_signal['strategy_type'] = 'momentum'
+                        logger.info(f"Low volatility regime: applying momentum strategy for {symbol}")
+            
+            # Store analysis results
+            adjusted_signal['volatility_analysis'] = volatility_analysis
+            adjusted_signal['regime_analysis'] = regime_analysis
+            
+            logger.info(f"Volatility regime analysis completed for {symbol}: {regime_analysis.get('final_regime', 'unknown')}")
+            return adjusted_signal
+            
         except Exception as e:
             logger.error(f"Error applying volatility regime analysis: {str(e)}")
             return signal
@@ -4000,9 +4231,179 @@ class EnhancedTradingStrategyWithQuantitative:
     async def _apply_correlation_analysis(self, symbol: str, signal: Dict, market_data: Dict) -> Dict:
         """Apply correlation analysis."""
         try:
-            # Placeholder for correlation analysis
-            # This would analyze correlations with other assets
-            return signal
+            logger.info(f"Applying correlation analysis for {symbol}")
+            
+            # Get market data for analysis
+            if not market_data or 'returns' not in market_data:
+                logger.warning(f"No returns data available for {symbol}")
+                return signal
+            
+            returns = market_data['returns']
+            if len(returns) < 30:  # Need minimum data for correlation analysis
+                logger.warning(f"Insufficient data for correlation analysis on {symbol}")
+                return signal
+            
+            # 1. Calculate correlation metrics
+            correlation_analysis = {}
+            
+            # Get benchmark returns (BTC/USDT as default benchmark)
+            benchmark_symbol = 'BTCUSDT'
+            benchmark_returns = None
+            
+            try:
+                # Try to get benchmark data from cache or market data
+                if 'benchmark_returns' in market_data:
+                    benchmark_returns = market_data['benchmark_returns']
+                elif hasattr(self, 'cache_service') and self.cache_service:
+                    # Get benchmark data from cache
+                    benchmark_data = await self.cache_service.get(f"{benchmark_symbol}_returns")
+                    if benchmark_data:
+                        benchmark_returns = pd.Series(benchmark_data)
+                
+                # If no benchmark data available, use market average
+                if benchmark_returns is None or len(benchmark_returns) < 30:
+                    # Calculate market average returns from available symbols
+                    market_returns = await self._get_market_average_returns()
+                    if market_returns is not None:
+                        benchmark_returns = pd.Series(market_returns)
+                    else:
+                        logger.warning(f"No benchmark data available for {symbol}")
+                        return signal
+                        
+            except Exception as e:
+                logger.warning(f"Error getting benchmark data: {str(e)}")
+                return signal
+            
+            # 2. Calculate correlation metrics
+            # Align returns data
+            min_length = min(len(returns), len(benchmark_returns))
+            if min_length < 30:
+                logger.warning(f"Insufficient aligned data for correlation analysis on {symbol}")
+                return signal
+            
+            aligned_returns = returns.iloc[-min_length:]
+            aligned_benchmark = benchmark_returns.iloc[-min_length:]
+            
+            # Calculate correlation
+            correlation = aligned_returns.corr(aligned_benchmark)
+            correlation_analysis['benchmark_correlation'] = correlation
+            
+            # Calculate rolling correlation (20-period)
+            if min_length >= 20:
+                rolling_corr = aligned_returns.rolling(window=20).corr(aligned_benchmark).iloc[-1]
+                correlation_analysis['rolling_correlation'] = rolling_corr
+            else:
+                rolling_corr = correlation
+                correlation_analysis['rolling_correlation'] = rolling_corr
+            
+            # 3. Calculate beta (market sensitivity)
+            if not pd.isna(correlation) and correlation != 0:
+                # Beta = correlation * (asset_volatility / market_volatility)
+                asset_vol = returns.std()
+                market_vol = benchmark_returns.std()
+                
+                if market_vol > 0:
+                    beta = correlation * (asset_vol / market_vol)
+                    correlation_analysis['beta'] = beta
+                else:
+                    beta = 1.0
+                    correlation_analysis['beta'] = beta
+            else:
+                beta = 1.0
+                correlation_analysis['beta'] = beta
+            
+            # 4. Calculate sector/category correlations
+            sector_correlations = {}
+            
+            # Define crypto sectors
+            crypto_sectors = {
+                'defi': ['UNIUSDT', 'AAVEUSDT', 'COMPUSDT', 'SUSHIUSDT'],
+                'layer1': ['ETHUSDT', 'ADAUSDT', 'DOTUSDT', 'SOLUSDT'],
+                'layer2': ['MATICUSDT', 'OPUSDT', 'ARBUSDT'],
+                'meme': ['DOGEUSDT', 'SHIBUSDT', 'PEPEUSDT'],
+                'exchange': ['BNBUSDT', 'FTTUSDT', 'OKBUSDT']
+            }
+            
+            # Calculate sector correlations
+            for sector, symbols in crypto_sectors.items():
+                sector_returns = []
+                for sector_symbol in symbols:
+                    try:
+                        if hasattr(self, 'cache_service') and self.cache_service:
+                            sector_data = await self.cache_service.get(f"{sector_symbol}_returns")
+                            if sector_data and len(sector_data) >= min_length:
+                                sector_returns.append(pd.Series(sector_data).iloc[-min_length:])
+                    except Exception:
+                        continue
+                
+                if sector_returns:
+                    # Calculate average sector returns
+                    sector_df = pd.concat(sector_returns, axis=1)
+                    avg_sector_returns = sector_df.mean(axis=1)
+                    
+                    # Calculate correlation with sector
+                    sector_corr = aligned_returns.corr(avg_sector_returns)
+                    sector_correlations[sector] = sector_corr
+            
+            correlation_analysis['sector_correlations'] = sector_correlations
+            
+            # 5. Adjust signal based on correlation analysis
+            adjusted_signal = signal.copy()
+            
+            # High correlation with market (beta > 1.2)
+            if beta > 1.2:
+                adjusted_signal['market_sensitivity'] = 'high'
+                adjusted_signal['position_size_multiplier'] = 0.8  # Reduce size for high beta
+                logger.info(f"High market sensitivity detected for {symbol} (beta={beta:.2f})")
+            
+            # Low correlation with market (beta < 0.8)
+            elif beta < 0.8:
+                adjusted_signal['market_sensitivity'] = 'low'
+                adjusted_signal['position_size_multiplier'] = 1.2  # Increase size for low beta
+                logger.info(f"Low market sensitivity detected for {symbol} (beta={beta:.2f})")
+            
+            # Normal correlation
+            else:
+                adjusted_signal['market_sensitivity'] = 'normal'
+                adjusted_signal['position_size_multiplier'] = 1.0
+                logger.info(f"Normal market sensitivity for {symbol} (beta={beta:.2f})")
+            
+            # 6. Sector-based adjustments
+            if sector_correlations:
+                # Find highest sector correlation
+                max_sector = max(sector_correlations.items(), key=lambda x: abs(x[1]) if not pd.isna(x[1]) else 0)
+                max_sector_name, max_sector_corr = max_sector
+                
+                if not pd.isna(max_sector_corr) and abs(max_sector_corr) > 0.7:
+                    adjusted_signal['primary_sector'] = max_sector_name
+                    adjusted_signal['sector_correlation'] = max_sector_corr
+                    
+                    # Adjust based on sector performance
+                    if max_sector_corr > 0.7:
+                        adjusted_signal['sector_alignment'] = 'positive'
+                        adjusted_signal['confidence'] = min(adjusted_signal.get('confidence', 0) + 0.1, 1.0)
+                        logger.info(f"Strong positive sector correlation for {symbol} with {max_sector_name}")
+                    elif max_sector_corr < -0.7:
+                        adjusted_signal['sector_alignment'] = 'negative'
+                        adjusted_signal['confidence'] = max(adjusted_signal.get('confidence', 0) - 0.1, 0.0)
+                        logger.info(f"Strong negative sector correlation for {symbol} with {max_sector_name}")
+            
+            # 7. Correlation-based signal enhancement
+            if abs(correlation) > 0.8:
+                # High correlation with market
+                if correlation > 0.8:
+                    adjusted_signal['correlation_signal'] = 'market_following'
+                    logger.info(f"High positive correlation with market for {symbol}")
+                else:
+                    adjusted_signal['correlation_signal'] = 'market_contrarian'
+                    logger.info(f"High negative correlation with market for {symbol}")
+            
+            # Store analysis results
+            adjusted_signal['correlation_analysis'] = correlation_analysis
+            
+            logger.info(f"Correlation analysis completed for {symbol}: beta={beta:.2f}, correlation={correlation:.2f}")
+            return adjusted_signal
+            
         except Exception as e:
             logger.error(f"Error applying correlation analysis: {str(e)}")
             return signal
@@ -4010,9 +4411,198 @@ class EnhancedTradingStrategyWithQuantitative:
     async def _optimize_final_signal(self, symbol: str, signal: Dict, market_data: Dict) -> Dict:
         """Optimize final signal."""
         try:
-            # Placeholder for final signal optimization
-            # This would apply final optimizations to the signal
-            return signal
+            logger.info(f"Optimizing final signal for {symbol}")
+            
+            # Create optimized signal
+            optimized_signal = signal.copy()
+            
+            # 1. Apply all quantitative analysis layers
+            analysis_layers = []
+            
+            # Momentum and mean reversion analysis
+            if hasattr(self, '_apply_momentum_mean_reversion_analysis'):
+                try:
+                    momentum_result = await self._apply_momentum_mean_reversion_analysis(symbol, optimized_signal, market_data)
+                    if momentum_result != optimized_signal:
+                        analysis_layers.append('momentum_mean_reversion')
+                        optimized_signal = momentum_result
+                except Exception as e:
+                    logger.warning(f"Error in momentum analysis: {str(e)}")
+            
+            # Volatility regime analysis
+            if hasattr(self, '_apply_volatility_regime_analysis'):
+                try:
+                    volatility_result = await self._apply_volatility_regime_analysis(symbol, optimized_signal, market_data)
+                    if volatility_result != optimized_signal:
+                        analysis_layers.append('volatility_regime')
+                        optimized_signal = volatility_result
+                except Exception as e:
+                    logger.warning(f"Error in volatility analysis: {str(e)}")
+            
+            # Correlation analysis
+            if hasattr(self, '_apply_correlation_analysis'):
+                try:
+                    correlation_result = await self._apply_correlation_analysis(symbol, optimized_signal, market_data)
+                    if correlation_result != optimized_signal:
+                        analysis_layers.append('correlation')
+                        optimized_signal = correlation_result
+                except Exception as e:
+                    logger.warning(f"Error in correlation analysis: {str(e)}")
+            
+            # 2. Apply advanced quantitative analysis
+            if hasattr(self, '_apply_advanced_risk_management'):
+                try:
+                    risk_result = await self._apply_advanced_risk_management(symbol, optimized_signal, market_data)
+                    if risk_result != optimized_signal:
+                        analysis_layers.append('advanced_risk')
+                        optimized_signal = risk_result
+                except Exception as e:
+                    logger.warning(f"Error in advanced risk analysis: {str(e)}")
+            
+            # Statistical arbitrage analysis
+            if hasattr(self, '_apply_statistical_arbitrage_analysis'):
+                try:
+                    arb_result = await self._apply_statistical_arbitrage_analysis(symbol, optimized_signal, market_data)
+                    if arb_result != optimized_signal:
+                        analysis_layers.append('statistical_arbitrage')
+                        optimized_signal = arb_result
+                except Exception as e:
+                    logger.warning(f"Error in statistical arbitrage analysis: {str(e)}")
+            
+            # Advanced ML analysis
+            if hasattr(self, '_apply_advanced_ml_analysis'):
+                try:
+                    ml_result = await self._apply_advanced_ml_analysis(symbol, optimized_signal, market_data)
+                    if ml_result != optimized_signal:
+                        analysis_layers.append('advanced_ml')
+                        optimized_signal = ml_result
+                except Exception as e:
+                    logger.warning(f"Error in advanced ML analysis: {str(e)}")
+            
+            # 3. Apply Phase 3 WorldQuant-Level features
+            if hasattr(self, '_apply_phase3_analysis'):
+                try:
+                    phase3_result = await self._apply_phase3_analysis(symbol, optimized_signal, market_data)
+                    if phase3_result != optimized_signal:
+                        analysis_layers.append('phase3_features')
+                        optimized_signal = phase3_result
+                except Exception as e:
+                    logger.warning(f"Error in Phase 3 analysis: {str(e)}")
+            
+            # 4. Apply implied volatility analysis
+            if hasattr(self, '_apply_implied_volatility_analysis'):
+                try:
+                    iv_result = await self._apply_implied_volatility_analysis(symbol, optimized_signal, market_data)
+                    if iv_result != optimized_signal:
+                        analysis_layers.append('implied_volatility')
+                        optimized_signal = iv_result
+                except Exception as e:
+                    logger.warning(f"Error in implied volatility analysis: {str(e)}")
+            
+            # 5. Final signal optimization
+            final_optimization = {}
+            
+            # Confidence aggregation
+            confidence_scores = []
+            if optimized_signal.get('confidence') is not None:
+                confidence_scores.append(optimized_signal['confidence'])
+            if optimized_signal.get('momentum_strength') is not None:
+                confidence_scores.append(optimized_signal['momentum_strength'] * 0.3)
+            if optimized_signal.get('mean_reversion_strength') is not None:
+                confidence_scores.append(optimized_signal['mean_reversion_strength'] * 0.3)
+            if optimized_signal.get('correlation_analysis', {}).get('beta') is not None:
+                beta = optimized_signal['correlation_analysis']['beta']
+                if 0.8 <= beta <= 1.2:
+                    confidence_scores.append(0.2)
+            
+            if confidence_scores:
+                final_confidence = sum(confidence_scores) / len(confidence_scores)
+                optimized_signal['final_confidence'] = min(final_confidence, 1.0)
+                final_optimization['confidence_aggregation'] = final_confidence
+            
+            # Position size optimization
+            position_multipliers = []
+            if optimized_signal.get('position_size_multiplier') is not None:
+                position_multipliers.append(optimized_signal['position_size_multiplier'])
+            if optimized_signal.get('volatility_analysis', {}).get('regime') == 'low_volatility':
+                position_multipliers.append(1.2)
+            elif optimized_signal.get('volatility_analysis', {}).get('regime') == 'high_volatility':
+                position_multipliers.append(0.8)
+            
+            if position_multipliers:
+                final_position_multiplier = sum(position_multipliers) / len(position_multipliers)
+                optimized_signal['final_position_multiplier'] = final_position_multiplier
+                final_optimization['position_size_optimization'] = final_position_multiplier
+            
+            # Stop loss optimization
+            stop_loss_multipliers = []
+            if optimized_signal.get('stop_loss_multiplier') is not None:
+                stop_loss_multipliers.append(optimized_signal['stop_loss_multiplier'])
+            if optimized_signal.get('volatility_analysis', {}).get('regime') == 'high_volatility':
+                stop_loss_multipliers.append(1.5)
+            elif optimized_signal.get('volatility_analysis', {}).get('regime') == 'low_volatility':
+                stop_loss_multipliers.append(0.8)
+            
+            if stop_loss_multipliers:
+                final_stop_loss_multiplier = sum(stop_loss_multipliers) / len(stop_loss_multipliers)
+                optimized_signal['final_stop_loss_multiplier'] = final_stop_loss_multiplier
+                final_optimization['stop_loss_optimization'] = final_stop_loss_multiplier
+            
+            # 6. Risk-adjusted final decision
+            if optimized_signal.get('final_confidence', 0) >= 0.7:
+                # High confidence signal
+                if optimized_signal.get('action') == 'buy':
+                    optimized_signal['final_action'] = 'buy'
+                    optimized_signal['signal_strength'] = 'strong'
+                elif optimized_signal.get('action') == 'sell':
+                    optimized_signal['final_action'] = 'sell'
+                    optimized_signal['signal_strength'] = 'strong'
+                else:
+                    optimized_signal['final_action'] = 'hold'
+                    optimized_signal['signal_strength'] = 'weak'
+            elif optimized_signal.get('final_confidence', 0) >= 0.5:
+                # Medium confidence signal
+                optimized_signal['final_action'] = optimized_signal.get('action', 'hold')
+                optimized_signal['signal_strength'] = 'medium'
+            else:
+                # Low confidence signal
+                optimized_signal['final_action'] = 'hold'
+                optimized_signal['signal_strength'] = 'weak'
+            
+            # 7. Final validation
+            if optimized_signal.get('final_action') != 'hold':
+                # Additional validation for non-hold signals
+                validation_passed = True
+                
+                # Check if signal conflicts with market conditions
+                if (optimized_signal.get('correlation_analysis', {}).get('beta', 1.0) > 1.5 and 
+                    optimized_signal.get('final_action') == 'buy'):
+                    # High beta asset in bullish market - reduce confidence
+                    optimized_signal['final_confidence'] = max(optimized_signal.get('final_confidence', 0) - 0.1, 0.0)
+                
+                # Check volatility regime compatibility
+                if (optimized_signal.get('volatility_analysis', {}).get('regime') == 'high_volatility' and 
+                    optimized_signal.get('final_action') != 'hold'):
+                    # High volatility - require higher confidence
+                    if optimized_signal.get('final_confidence', 0) < 0.8:
+                        optimized_signal['final_action'] = 'hold'
+                        optimized_signal['signal_strength'] = 'weak'
+                        validation_passed = False
+                
+                if not validation_passed:
+                    logger.info(f"Signal validation failed for {symbol}, reverting to hold")
+            
+            # 8. Store optimization results
+            optimized_signal['final_optimization'] = final_optimization
+            optimized_signal['analysis_layers_applied'] = analysis_layers
+            
+            logger.info(f"Final signal optimization completed for {symbol}: "
+                       f"action={optimized_signal.get('final_action', 'hold')}, "
+                       f"confidence={optimized_signal.get('final_confidence', 0):.3f}, "
+                       f"strength={optimized_signal.get('signal_strength', 'weak')}")
+            
+            return optimized_signal
+            
         except Exception as e:
             logger.error(f"Error optimizing final signal: {str(e)}")
             return signal
