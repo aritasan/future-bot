@@ -211,6 +211,19 @@ def load_config() -> Dict[str, Any]:
                 'min_tp_distance': 0.03,  # 3% minimum take profit distance
                 'take_profit_multiplier': 4.0,  # R:R ratio
                 
+                # Fixed percentage SL/TP parameters
+                'fixed_percentage_sl_tp': {
+                    'enabled': True,  # Enable fixed percentage SL/TP
+                    'long': {
+                        'stop_loss_percentage': 0.10,  # 10% SL for LONG positions
+                        'take_profit_percentage': 0.20  # 20% TP for LONG positions
+                    },
+                    'short': {
+                        'stop_loss_percentage': 0.10,  # 10% SL for SHORT positions
+                        'take_profit_percentage': 0.05  # 5% TP for SHORT positions
+                    }
+                },
+                
                 # IP monitoring configuration
                 'ip_monitor': {
                     'enabled': os.getenv('IP_MONITOR_ENABLED', 'true').lower() == 'true',

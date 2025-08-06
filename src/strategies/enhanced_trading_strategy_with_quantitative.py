@@ -1442,97 +1442,77 @@ class EnhancedTradingStrategyWithQuantitative:
             logger.error(f"Error closing SHORT position for {symbol}: {str(e)}")
     
     async def _calculate_stop_loss(self, symbol: str, position_type: str, current_price: float, atr: float) -> float:
-        """Calculate stop loss price based on ATR and market conditions."""
+        """Calculate stop loss price based on fixed percentage."""
         try:
-            # Get stop loss multiplier from config
-            stop_loss_multiplier = float(self.config.get('risk_management', {}).get('stop_loss_atr_multiplier', 2.0))
+            # Get fixed percentage SL/TP config
+            fixed_config = self.config.get('risk_management', {}).get('fixed_percentage_sl_tp', {})
             
-            # Calculate base stop loss using ATR
-            if is_long_side(position_type):
-                stop_loss = float(current_price) - (float(atr) * stop_loss_multiplier)
-                # For long positions, ensure stop loss is always positive
-                k = stop_loss_multiplier
-                while stop_loss <= 0 and k > 0:  # Add k > 0 check to avoid infinite loop
-                    k = k * 0.8  # Reduce multiplier by 20% each time for smoother adjustment
-                    stop_loss = float(current_price) - (float(atr) * k)
-                    
-                # Set minimum stop loss if still <= 0
-                if stop_loss <= 0:
-                    stop_loss = float(current_price) * 0.02  # Set to 2% of current price as minimum
-            else:
-                stop_loss = float(current_price) + (float(atr) * stop_loss_multiplier/2)
-            
-            # Get market conditions
-            market_conditions = await self._get_market_conditions(symbol)
-            
-            # Adjust stop loss based on volatility
-            volatility = market_conditions.get('volatility', 0.0)  # Default to 0.0 if not present
-            if volatility > 0.02:  # Consider high volatility if > 2%
-                # Increase stop loss distance in high volatility
+            if fixed_config.get('enabled', False):
+                # Use fixed percentage approach
                 if is_long_side(position_type):
-                    stop_loss = float(current_price) - (float(atr) * stop_loss_multiplier * 1.5)
-                    k = stop_loss_multiplier
-                    while stop_loss <= 0 and k > 0:  # Add k > 0 check to avoid infinite loop
-                        k = k * 0.8  # Reduce multiplier by 20% each time for smoother adjustment
-                        stop_loss = float(current_price) - (float(atr) * k)
-                    
-                    # Set minimum stop loss if still <= 0
-                    if stop_loss <= 0:
-                        stop_loss = float(current_price) * 0.01  # Set to 1% of current price as minimum
+                    # For LONG positions: SL = current_price * (1 - 10%)
+                    stop_loss_percentage = fixed_config.get('long', {}).get('stop_loss_percentage', 0.10)
+                    stop_loss = float(current_price) * (1 - stop_loss_percentage)
                 else:
-                    stop_loss = float(current_price) + (float(atr) * stop_loss_multiplier * 1.5/2)
-            
-
-            # Ensure minimum distance from current price
-            min_distance = float(self.config.get('risk_management', {}).get('min_stop_distance', 0.01))
-            if is_long_side(position_type):
-                # For LONG positions, ensure stop loss is below current price
-                stop_loss = min(stop_loss, float(current_price) * (1 - min_distance))
+                    # For SHORT positions: SL = current_price * (1 + 10%)
+                    stop_loss_percentage = fixed_config.get('short', {}).get('stop_loss_percentage', 0.10)
+                    stop_loss = float(current_price) * (1 + stop_loss_percentage)
+                
+                logger.info(f"Calculated fixed percentage stop loss for {symbol} {position_type.lower()}: {stop_loss} (current price: {current_price})")
+                return stop_loss
             else:
-                # For SHORT positions, ensure stop loss is above current price
-                stop_loss = max(stop_loss, float(current_price) * (1 + min_distance))
-            
-            logger.info(f"Calculated stop loss for {symbol} {position_type.lower()}: {stop_loss} (current price: {current_price})")
-            return stop_loss
+                # Fallback to original ATR-based calculation
+                stop_loss_multiplier = float(self.config.get('risk_management', {}).get('stop_loss_atr_multiplier', 2.0))
+                
+                if is_long_side(position_type):
+                    stop_loss = float(current_price) - (float(atr) * stop_loss_multiplier)
+                    if stop_loss <= 0:
+                        stop_loss = float(current_price) * 0.02
+                    stop_loss = min(stop_loss, current_price * 0.8)
+                else:
+                    stop_loss = float(current_price) + (float(atr) * stop_loss_multiplier/2)
+                    stop_loss = max(stop_loss, current_price * 1.1)
+                
+                logger.info(f"Calculated ATR-based stop loss for {symbol} {position_type.lower()}: {stop_loss} (current price: {current_price})")
+                return stop_loss
             
         except Exception as e:
             logger.error(f"Error calculating stop loss for {symbol}: {str(e)}")
             return None
 
     async def _calculate_take_profit(self, symbol: str, position_type: str, current_price: float, stop_loss: float) -> float:
-        """Calculate take profit price based on risk-reward ratio."""
+        """Calculate take profit price based on fixed percentage."""
         try:
-            # Get risk-reward ratio from config
-            risk_reward_ratio = self.config.get('risk_management', {}).get('take_profit_multiplier', 2.0)
+            # Get fixed percentage SL/TP config
+            fixed_config = self.config.get('risk_management', {}).get('fixed_percentage_sl_tp', {})
             
-            # Calculate price difference between current price and stop loss
-            price_diff = abs(current_price - stop_loss)
-            
-            # Calculate take profit based on risk-reward ratio
-            if is_long_side(position_type):
-                take_profit = current_price + (price_diff * risk_reward_ratio)
-            else:
-                take_profit = current_price - (price_diff * risk_reward_ratio/8)
-            
-            # Ensure minimum distance from current price
-            min_distance = float(self.config.get('risk_management', {}).get('min_tp_distance', 0.01))
-            if is_long_side(position_type):
-                # For LONG positions, ensure take profit is above current price
-                take_profit = max(take_profit, current_price * (1 + min_distance))
-            else:
-                # For SHORT positions, ensure take profit is below current price
-                take_profit = min(take_profit, current_price * (1.03 - min_distance))
+            if fixed_config.get('enabled', False):
+                # Use fixed percentage approach
+                if is_long_side(position_type):
+                    # For LONG positions: TP = current_price * (1 + 20%)
+                    take_profit_percentage = fixed_config.get('long', {}).get('take_profit_percentage', 0.20)
+                    take_profit = float(current_price) * (1 + take_profit_percentage)
+                else:
+                    # For SHORT positions: TP = current_price * (1 - 5%)
+                    take_profit_percentage = fixed_config.get('short', {}).get('take_profit_percentage', 0.05)
+                    take_profit = float(current_price) * (1 - take_profit_percentage)
                 
-                # Additional validation for SHORT positions
-                if take_profit <= 0:
-                    # If take profit is negative, set it to a reasonable percentage below current price
-                    take_profit = current_price * 0.5  # 50% below current price
-                elif take_profit >= current_price:
-                    # If take profit is above current price, set it to a reasonable percentage below
-                    take_profit = current_price * 0.9  # 10% below current price
-            
-            logger.info(f"Calculated take profit for {symbol} {position_type.lower()}: {take_profit} (current price: {current_price})")
-            return take_profit
+                logger.info(f"Calculated fixed percentage take profit for {symbol} {position_type.lower()}: {take_profit} (current price: {current_price})")
+                return take_profit
+            else:
+                # Fallback to original risk-reward ratio calculation
+                risk_reward_ratio = self.config.get('risk_management', {}).get('take_profit_multiplier', 2.0)
+                price_diff = abs(current_price - stop_loss)
+                
+                if is_long_side(position_type):
+                    take_profit = current_price + (price_diff * risk_reward_ratio)
+                    take_profit = max(take_profit, current_price * 1.2)
+                else:
+                    take_profit = current_price - (price_diff * risk_reward_ratio/8)
+                    take_profit = max(take_profit, current_price * 0.95)
+                
+                logger.info(f"Calculated risk-reward based take profit for {symbol} {position_type.lower()}: {take_profit} (current price: {current_price})")
+                return take_profit
             
         except Exception as e:
             logger.error(f"Error calculating take profit for {symbol}: {str(e)}")
