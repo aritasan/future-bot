@@ -232,71 +232,54 @@ async def run_portfolio_analysis(
     symbols: List[str],
     cache_service: CacheService
 ) -> None:
-    """Run periodic portfolio analysis."""
+    """Run portfolio analysis once per cycle."""
     try:
-        while is_running:
+        logger.info("Running portfolio optimization analysis...")
+        
+        # Check cache for portfolio analysis
+        cached_optimization = await cache_service.get_portfolio_analysis("optimization")
+        if cached_optimization:
+            logger.info("Using cached portfolio optimization results")
+            optimization_results = cached_optimization
+        else:
+            # Analyze portfolio optimization
             try:
-                logger.info("Running portfolio optimization analysis...")
-                
-                # Check cache for portfolio analysis
-                cached_optimization = await cache_service.get_portfolio_analysis("optimization")
-                if cached_optimization:
-                    logger.info("Using cached portfolio optimization results")
-                    optimization_results = cached_optimization
-                else:
-                    # Analyze portfolio optimization
-                    try:
-                        optimization_results = await asyncio.wait_for(strategy.analyze_portfolio_optimization(symbols), timeout=120)
-                        if optimization_results and 'error' not in optimization_results:
-                            # Cache optimization results
-                            await cache_service.cache_portfolio_analysis("optimization", optimization_results, ttl=3600)  # 1 hour TTL
-                    except Exception as e:
-                        logger.error(f"Error in portfolio optimization analysis: {str(e)}")
-                        optimization_results = None
-                
-                # Check cache for factor analysis
-                cached_factors = await cache_service.get_portfolio_analysis("factors")
-                if cached_factors:
-                    logger.info("Using cached factor analysis results")
-                    factor_results = cached_factors
-                else:
-                    # Analyze factor exposures
-                    try:
-                        factor_results = await asyncio.wait_for(strategy.analyze_factor_exposures(symbols), timeout=120)
-                        if factor_results and 'error' not in factor_results:
-                            # Cache factor results
-                            await cache_service.cache_portfolio_analysis("factors", factor_results, ttl=3600)  # 1 hour TTL
-                    except Exception as e:
-                        logger.error(f"Error in factor analysis: {str(e)}")
-                        factor_results = None
-                
-                # Get performance metrics
-                metrics = await asyncio.wait_for(strategy.get_performance_metrics(), timeout=60)
-                # Cache performance metrics
-                await cache_service.cache_performance_metrics(metrics, ttl=1800)  # 30 minutes TTL
-                
-                # Wait 6 hours before next analysis - use wait_for with shutdown event
-                try:
-                    await asyncio.wait_for(shutdown_event.wait(), timeout=21600)  # 6 hours
-                    if shutdown_event.is_set():
-                        break
-                except asyncio.TimeoutError:
-                    continue
-                
-            except asyncio.CancelledError:
-                logger.info("Portfolio analysis task received cancellation.")
-                raise
+                optimization_results = await asyncio.wait_for(strategy.analyze_portfolio_optimization(symbols), timeout=120)
+                if optimization_results and 'error' not in optimization_results:
+                    # Cache optimization results
+                    await cache_service.cache_portfolio_analysis("optimization", optimization_results, ttl=3600)  # 1 hour TTL
             except Exception as e:
-                logger.error(f"Error in portfolio analysis: {str(e)}")
-                try:
-                    await asyncio.wait_for(shutdown_event.wait(), timeout=3600)
-                    if shutdown_event.is_set():
-                        break
-                except asyncio.CancelledError:
-                    raise
-                
+                logger.error(f"Error in portfolio optimization analysis: {str(e)}")
+                optimization_results = None
+        
+        # Check cache for factor analysis
+        cached_factors = await cache_service.get_portfolio_analysis("factors")
+        if cached_factors:
+            logger.info("Using cached factor analysis results")
+            factor_results = cached_factors
+        else:
+            # Analyze factor exposures
+            try:
+                factor_results = await asyncio.wait_for(strategy.analyze_factor_exposures(symbols), timeout=120)
+                if factor_results and 'error' not in factor_results:
+                    # Cache factor results
+                    await cache_service.cache_portfolio_analysis("factors", factor_results, ttl=3600)  # 1 hour TTL
+            except Exception as e:
+                logger.error(f"Error in factor analysis: {str(e)}")
+                factor_results = None
+        
+        # Get performance metrics
+        try:
+            metrics = await asyncio.wait_for(strategy.get_performance_metrics(), timeout=60)
+            # Cache performance metrics
+            await cache_service.cache_performance_metrics(metrics, ttl=1800)  # 30 minutes TTL
+        except Exception as e:
+            logger.error(f"Error getting performance metrics: {str(e)}")
+        
+        logger.info("Portfolio analysis completed for this cycle")
+        
     except asyncio.CancelledError:
-        logger.info("run_portfolio_analysis cancelled.")
+        logger.info("Portfolio analysis task received cancellation.")
         raise
     except Exception as e:
         logger.error(f"Fatal error in portfolio analysis: {str(e)}")
@@ -564,9 +547,9 @@ async def main():
                     
                     logger.info(f"Created {len(tasks)} tasks for cycle {cycle_count}")
                     
-                    # Start portfolio analysis task
+                    # Start portfolio analysis task with timeout
                     portfolio_task = asyncio.create_task(
-                        run_portfolio_analysis(strategy, symbols, cache_service)
+                        asyncio.wait_for(run_portfolio_analysis(strategy, symbols, cache_service), timeout=300)  # 5 minutes timeout
                     )
                     tasks.append(portfolio_task)
                     
@@ -575,7 +558,9 @@ async def main():
                     # Wait for all tasks to complete or shutdown signal
                     try:
                         logger.info(f"Waiting for {len(tasks)} tasks to complete in cycle {cycle_count}")
+                        logger.info("Starting asyncio.gather() for cycle tasks...")
                         results = await asyncio.gather(*tasks, return_exceptions=True)
+                        logger.info(f"asyncio.gather() completed for cycle {cycle_count}")
                         
                         # Check for exceptions in results
                         exceptions = [r for r in results if isinstance(r, Exception)]
@@ -590,7 +575,8 @@ async def main():
                         logger.info("Waiting 5 minutes before starting next cycle...")
                         try:
                             # Use wait_for with shutdown event to allow graceful interruption
-                            await asyncio.wait_for(shutdown_event.wait(), timeout=30)  # 5 minutes
+                            logger.info("Starting 5-minute wait with timeout protection...")
+                            await asyncio.wait_for(shutdown_event.wait(), timeout=300)  # 5 minutes
                             if shutdown_event.is_set():
                                 logger.info("Shutdown event detected during cycle wait, stopping bot")
                                 break
@@ -604,7 +590,7 @@ async def main():
                             logger.error(f"Cycle wait traceback: {traceback.format_exc()}")
                             # Continue to next cycle even if wait fails
                             logger.info("Continuing to next cycle despite wait error")
-                        
+                
                     except asyncio.CancelledError:
                         logger.info("Main task gathering cancelled")
                         raise
@@ -618,7 +604,7 @@ async def main():
                             logger.error(f"Error during retry wait: {str(wait_error)}")
                             # Continue to next cycle even if retry wait fails
                             logger.info("Continuing to next cycle despite retry wait error")
-                
+                    
                 except Exception as cycle_error:
                     logger.error(f"Critical error in cycle {cycle_count}: {str(cycle_error)}")
                     logger.error(f"Critical cycle error traceback: {traceback.format_exc()}")
