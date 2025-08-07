@@ -166,30 +166,27 @@ class RateLimiter:
             self._request_history['second'].popleft()
     
     async def execute(self, func: Callable, *args, request_type: str = 'default', **kwargs) -> Any:
-        """Execute a function with rate limiting.
-        
-        Args:
-            func: Function to execute
-            *args: Function arguments
-            request_type: Type of request for priority
-            **kwargs: Function keyword arguments
+        """Execute a function with rate limiting."""
+        try:
+            # Create future for the result
+            future = asyncio.Future()
             
-        Returns:
-            Function result
-        """
-        # Create future for the result
-        future = asyncio.Future()
-        
-        # Calculate priority based on request type and timestamp
-        priority = self._request_weights.get(request_type, self._request_weights['default'])
-        timestamp = time.time()
-        request_id = f"{request_type}_{timestamp}_{id(func)}"
-        
-        # Add to priority queue
-        await self._priority_queue.put((priority, timestamp, request_id, func, args, kwargs, future))
-        
-        # Wait for result
-        return await future
+            # Calculate priority based on request type and timestamp
+            priority = self._request_weights.get(request_type, self._request_weights['default'])
+            timestamp = time.time()
+            request_id = f"{request_type}_{timestamp}_{id(func)}"
+            
+            # Add to priority queue
+            await self._priority_queue.put((priority, timestamp, request_id, func, args, kwargs, future))
+            
+            # Wait for result
+            return await future
+        except asyncio.CancelledError:
+            logger.warning(f"Rate limiter request cancelled for {request_type}")
+            return None
+        except Exception as e:
+            logger.error(f"Rate limiter error: {str(e)}")
+            return None
     
     async def handle_429_error(self, error: Exception):
         """Handle 429 rate limit error."""

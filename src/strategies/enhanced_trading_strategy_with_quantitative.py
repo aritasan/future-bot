@@ -44,6 +44,7 @@ from src.quantitative.high_frequency_trading import HighFrequencyTradingEngine, 
 from src.quantitative.advanced_market_microstructure import AdvancedMarketMicrostructureAnalyzer
 from src.quantitative.options_based_strategies import OptionsBasedStrategies, OptionContract
 from src.quantitative.on_chain_analytics import OnChainAnalytics, BlockchainTransaction
+from src.quantitative.alternative_data_integration import AlternativeDataEngine
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +99,9 @@ class EnhancedTradingStrategyWithQuantitative:
         self.hft_engine = HighFrequencyTradingEngine(config)
         self.advanced_microstructure_analyzer = AdvancedMarketMicrostructureAnalyzer(config)
         self.options_strategies = OptionsBasedStrategies(config)
+        
+        # Initialize Alternative Data Engine
+        self.alternative_data_engine = AlternativeDataEngine(config)
         self.on_chain_analytics = OnChainAnalytics(config)
         
         # Initialize signal history

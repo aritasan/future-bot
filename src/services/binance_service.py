@@ -783,6 +783,9 @@ class BinanceService:
                 # logger.info(f"Current price for {symbol}: {price}")
                 return price
             return None
+        except asyncio.CancelledError:
+            logger.warning(f"Price request cancelled for {symbol}")
+            return None
         except Exception as e:
             logger.error(f"Error getting current price for {symbol}: {str(e)}")
             return None

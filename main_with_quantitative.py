@@ -128,30 +128,61 @@ async def process_symbol_with_quantitative(
             signals = cached_signals
         else:
             # Generate signals with quantitative analysis
-            signals = await asyncio.wait_for(strategy.generate_signals(symbol, indicator_service), timeout=60)
-            
-            # Cache the signals
-            if signals:
-                await cache_service.cache_market_data(symbol, "5m", signals, ttl=300)  # 5 minutes TTL
+            try:
+                signals = await asyncio.wait_for(strategy.generate_signals(symbol, indicator_service), timeout=60)
+                
+                # Cache the signals
+                if signals:
+                    await cache_service.cache_market_data(symbol, "5m", signals, ttl=300)  # 5 minutes TTL
+            except asyncio.TimeoutError:
+                logger.warning(f"Timeout generating signals for {symbol}")
+                signals = None
+            except asyncio.CancelledError:
+                logger.info(f"Signal generation cancelled for {symbol}")
+                signals = None
+            except Exception as e:
+                logger.error(f"Error generating signals for {symbol}: {str(e)}")
+                signals = None
         
         if signals:
             # logger.info(f"Generated quantitative signals for {symbol}: {signals}")
             
-            # Process signals
-            await asyncio.wait_for(strategy.process_trading_signals(signals), timeout=60)
+            # Process signals with better timeout handling
+            try:
+                await asyncio.wait_for(strategy.process_trading_signals(signals), timeout=60)
+            except asyncio.TimeoutError:
+                logger.warning(f"Timeout processing trading signals for {symbol}")
+            except asyncio.CancelledError:
+                logger.info(f"Signal processing cancelled for {symbol}")
+            except Exception as e:
+                logger.error(f"Error processing trading signals for {symbol}: {str(e)}")
             
-            # Get quantitative recommendations
-            recommendations = await asyncio.wait_for(strategy.get_quantitative_recommendations(symbol), timeout=60)
-            if recommendations and 'error' not in recommendations:
-                logger.info(f"Quantitative recommendations for {symbol}: {recommendations}")
-                # Cache recommendations
-                await cache_service.cache_analysis(symbol, "quantitative_recommendations", recommendations, ttl=600)  # 10 minutes TTL
+            # Get quantitative recommendations with better timeout handling
+            try:
+                recommendations = await asyncio.wait_for(strategy.get_quantitative_recommendations(symbol), timeout=60)
+                if recommendations and 'error' not in recommendations:
+                    logger.info(f"Quantitative recommendations for {symbol}: {recommendations}")
+                    # Cache recommendations
+                    await cache_service.cache_analysis(symbol, "quantitative_recommendations", recommendations, ttl=600)  # 10 minutes TTL
+            except asyncio.TimeoutError:
+                logger.warning(f"Timeout getting quantitative recommendations for {symbol}")
+            except asyncio.CancelledError:
+                logger.info(f"Recommendations request cancelled for {symbol}")
+            except Exception as e:
+                logger.error(f"Error getting quantitative recommendations for {symbol}: {str(e)}")
             
             # Send notifications if significant
             if signals.get('quantitative_confidence', 0) > 0.7:
-                await asyncio.wait_for(send_quantitative_notification(
-                    symbol, signals, recommendations, telegram_service, discord_service
-                ), timeout=60)
+                try:
+                    await asyncio.wait_for(send_quantitative_notification(
+                        symbol, signals, recommendations, telegram_service, discord_service
+                    ), timeout=60)
+                except asyncio.TimeoutError:
+                    logger.warning(f"Timeout sending notification for {symbol}")
+                except asyncio.CancelledError:
+                    logger.info(f"Notification cancelled for {symbol}")
+                except Exception as e:
+                    logger.error(f"Error sending notification for {symbol}: {str(e)}")
         
         # Health check
         if health_monitor:
