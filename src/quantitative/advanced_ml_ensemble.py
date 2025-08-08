@@ -174,6 +174,23 @@ class AdvancedMLEnsemble:
         try:
             features = market_data.copy()
             
+            # Check if required columns exist
+            required_columns = ['close', 'high', 'low', 'open']
+            missing_columns = [col for col in required_columns if col not in features.columns]
+            
+            if missing_columns:
+                logger.warning(f"Missing required columns for feature engineering: {missing_columns}")
+                # Create default values for missing columns
+                for col in missing_columns:
+                    if col == 'close':
+                        features['close'] = features.get('price', 100.0)  # Default price
+                    elif col == 'high':
+                        features['high'] = features.get('close', features.get('price', 100.0)) * 1.01
+                    elif col == 'low':
+                        features['low'] = features.get('close', features.get('price', 100.0)) * 0.99
+                    elif col == 'open':
+                        features['open'] = features.get('close', features.get('price', 100.0))
+            
             # Technical indicators
             features['sma_5'] = features['close'].rolling(window=5).mean()
             features['sma_20'] = features['close'].rolling(window=20).mean()
@@ -257,6 +274,18 @@ class AdvancedMLEnsemble:
         Create sequences for time series models.
         """
         try:
+            # Check if 'close' column exists
+            if 'close' not in features.columns:
+                logger.warning("'close' column not found in features, using first numeric column as target")
+                # Find first numeric column as target
+                numeric_columns = features.select_dtypes(include=[np.number]).columns
+                if len(numeric_columns) > 0:
+                    target_column = numeric_columns[0]
+                    features['close'] = features[target_column]
+                else:
+                    logger.error("No numeric columns found for target variable")
+                    return np.array([]), np.array([])
+            
             # Normalize features
             features_normalized = self._normalize_features(features)
             

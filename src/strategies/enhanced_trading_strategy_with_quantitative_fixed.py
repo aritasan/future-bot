@@ -1262,9 +1262,9 @@ class EnhancedTradingStrategyWithQuantitative:
             market_data = await self._get_comprehensive_market_data(symbol)
             validation = await self.quantitative_system.validate_signal(signals, market_data)
             
-            # if not validation.get('is_valid', False):
-            #     logger.info(f"Signal for {symbol} failed quantitative validation")
-            #     return
+            if not validation.get('is_valid', False):
+                logger.info(f"Signal for {symbol} failed quantitative validation")
+                return
             
             logger.info(f"Signal for {symbol} is valid")
             

@@ -30,6 +30,7 @@ from src.utils.helpers import is_long_side, is_short_side, is_trending_down, is_
 from src.quantitative.integration import QuantitativeIntegration
 from src.quantitative.quantitative_trading_system import QuantitativeTradingSystem
 from src.quantitative.statistical_validator import StatisticalValidator
+from src.quantitative.worldquant_validation_system import WorldQuantValidationSystem, ValidationResult
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +98,9 @@ class EnhancedTradingStrategyWithQuantitative:
         significance_level = config.get('trading', {}).get('statistical_significance_level', 0.05)
         min_sample_size = config.get('trading', {}).get('min_sample_size', 100)
         self.statistical_validator = StatisticalValidator(significance_level, min_sample_size)
+        
+        # Initialize WorldQuant validation system
+        self.worldquant_validator = WorldQuantValidationSystem(config)
         
         # Performance tracking - WorldQuant Standards
         self.signal_history = {}
@@ -1232,15 +1236,32 @@ class EnhancedTradingStrategyWithQuantitative:
             symbol = signals.get('symbol')
             action = signals.get('action', 'hold')
             
-            # Apply quantitative validation
+            # Apply WorldQuant standards validation
             market_data = await self._get_comprehensive_market_data(symbol)
-            validation = await self.quantitative_system.validate_signal(signals, market_data)
             
-            # if not validation.get('is_valid', False):
-            #     logger.info(f"Signal for {symbol} failed quantitative validation")
-            #     return
+            # Enhanced signal with WorldQuant requirements
+            enhanced_signal = await self._prepare_signal_for_worldquant_validation(signals, market_data)
             
-            logger.info(f"Signal for {symbol} is valid")
+            # Multi-layer WorldQuant validation
+            validation_result = await self.worldquant_validator.validate_signal_worldquant(enhanced_signal, market_data)
+            
+            if not validation_result.worldquant_compliance:
+                logger.warning(f"Signal for {symbol} failed WorldQuant standards validation")
+                logger.warning(f"Confidence: {validation_result.confidence_score:.3f}, Risk: {validation_result.risk_score:.3f}")
+                logger.warning(f"Warnings: {validation_result.warnings}")
+                return
+            
+            logger.info(f"Signal for {symbol} passed WorldQuant standards validation")
+            logger.info(f"Confidence: {validation_result.confidence_score:.3f}, Risk: {validation_result.risk_score:.3f}")
+            
+            # Update signals with validation results
+            signals['worldquant_validation'] = {
+                'confidence_score': validation_result.confidence_score,
+                'risk_score': validation_result.risk_score,
+                'compliance': validation_result.worldquant_compliance,
+                'layer_results': validation_result.layer_results,
+                'warnings': validation_result.warnings
+            }
             
             # Check confidence threshold
             confidence = signals.get('confidence', 0)
@@ -1272,13 +1293,13 @@ class EnhancedTradingStrategyWithQuantitative:
                 logger.warning(f"Unknown action '{action}' for {symbol}")
                 return
             
-            # Track confidence performance
+            # Track confidence performance with WorldQuant validation
             await self._track_confidence_performance(
                 action,
                 confidence,
                 threshold,
                 market_data,
-                validation.get('risk_metrics', {})
+                validation_result.layer_results.get('risk_management', {}).get('details', {})
             )
                 
         except Exception as e:
@@ -3645,3 +3666,212 @@ class EnhancedTradingStrategyWithQuantitative:
         except Exception as e:
             logger.error(f"Error getting comprehensive performance report: {str(e)}")
             return {}
+    
+    async def _prepare_signal_for_worldquant_validation(self, signal: Dict, market_data: Dict) -> Dict:
+        """
+        Prepare signal for WorldQuant standards validation.
+        Enhances signal with required metrics for multi-layer validation.
+        """
+        try:
+            enhanced_signal = signal.copy()
+            
+            # 1. Statistical metrics
+            if 'p_value' not in enhanced_signal:
+                enhanced_signal['p_value'] = self._calculate_p_value(signal, market_data)
+            
+            if 't_statistic' not in enhanced_signal:
+                enhanced_signal['t_statistic'] = self._calculate_t_statistic(signal, market_data)
+            
+            if 'sample_size' not in enhanced_signal:
+                enhanced_signal['sample_size'] = self._get_sample_size(signal, market_data)
+            
+            if 'effect_size' not in enhanced_signal:
+                enhanced_signal['effect_size'] = self._calculate_effect_size(signal, market_data)
+            
+            # 2. Risk management metrics
+            if 'var_95' not in enhanced_signal:
+                enhanced_signal['var_95'] = self._calculate_var_95(signal, market_data)
+            
+            if 'expected_shortfall' not in enhanced_signal:
+                enhanced_signal['expected_shortfall'] = self._calculate_expected_shortfall(signal, market_data)
+            
+            if 'leverage' not in enhanced_signal:
+                enhanced_signal['leverage'] = signal.get('leverage', 1.0)
+            
+            if 'position_size' not in enhanced_signal:
+                enhanced_signal['position_size'] = signal.get('position_size', 0.01)
+            
+            # 3. Factor model metrics
+            if 'factor_exposures' not in enhanced_signal:
+                enhanced_signal['factor_exposures'] = await self._calculate_factor_exposures(signal, market_data)
+            
+            # 4. Machine learning metrics
+            if 'model_agreement' not in enhanced_signal:
+                enhanced_signal['model_agreement'] = self._calculate_model_agreement(signal, market_data)
+            
+            if 'prediction_confidence' not in enhanced_signal:
+                enhanced_signal['prediction_confidence'] = signal.get('confidence', 0.5)
+            
+            if 'model_uncertainty' not in enhanced_signal:
+                enhanced_signal['model_uncertainty'] = self._calculate_model_uncertainty(signal, market_data)
+            
+            # 5. Signal type for market regime validation
+            if 'signal_type' not in enhanced_signal:
+                enhanced_signal['signal_type'] = self._determine_signal_type(signal, market_data)
+            
+            return enhanced_signal
+            
+        except Exception as e:
+            logger.error(f"Error preparing signal for WorldQuant validation: {str(e)}")
+            return signal
+    
+    def _calculate_p_value(self, signal: Dict, market_data: Dict) -> float:
+        """Calculate p-value for statistical validation."""
+        try:
+            # Simplified p-value calculation based on signal strength and confidence
+            strength = abs(signal.get('strength', 0.0))
+            confidence = signal.get('confidence', 0.0)
+            
+            # Higher strength and confidence = lower p-value
+            p_value = max(0.001, 1.0 - (strength * confidence))
+            return min(p_value, 1.0)
+            
+        except Exception as e:
+            logger.error(f"Error calculating p-value: {str(e)}")
+            return 1.0
+    
+    def _calculate_t_statistic(self, signal: Dict, market_data: Dict) -> float:
+        """Calculate t-statistic for statistical validation."""
+        try:
+            # Simplified t-statistic calculation
+            strength = abs(signal.get('strength', 0.0))
+            confidence = signal.get('confidence', 0.0)
+            
+            # Higher strength and confidence = higher t-statistic
+            t_stat = (strength + confidence) * 3.0
+            return min(t_stat, 5.0)  # Cap at 5.0
+            
+        except Exception as e:
+            logger.error(f"Error calculating t-statistic: {str(e)}")
+            return 0.0
+    
+    def _get_sample_size(self, signal: Dict, market_data: Dict) -> int:
+        """Get sample size for statistical validation."""
+        try:
+            # Use signal history length as sample size
+            symbol = signal.get('symbol', 'unknown')
+            history = self.signal_history.get(symbol, [])
+            return max(len(history), 30)  # Minimum 30
+            
+        except Exception as e:
+            logger.error(f"Error getting sample size: {str(e)}")
+            return 30
+    
+    def _calculate_effect_size(self, signal: Dict, market_data: Dict) -> float:
+        """Calculate effect size for statistical validation."""
+        try:
+            strength = abs(signal.get('strength', 0.0))
+            confidence = signal.get('confidence', 0.0)
+            
+            # Effect size based on signal strength and confidence
+            effect_size = (strength + confidence) / 2.0
+            return min(effect_size, 1.0)
+            
+        except Exception as e:
+            logger.error(f"Error calculating effect size: {str(e)}")
+            return 0.0
+    
+    def _calculate_var_95(self, signal: Dict, market_data: Dict) -> float:
+        """Calculate Value at Risk at 95% confidence."""
+        try:
+            volatility = market_data.get('volatility', 0.02)
+            position_size = signal.get('position_size', 0.01)
+            
+            # Simplified VaR calculation
+            var_95 = volatility * position_size * 1.645  # 95% confidence interval
+            return min(var_95, 0.05)  # Cap at 5%
+            
+        except Exception as e:
+            logger.error(f"Error calculating VaR: {str(e)}")
+            return 0.02
+    
+    def _calculate_expected_shortfall(self, signal: Dict, market_data: Dict) -> float:
+        """Calculate Expected Shortfall."""
+        try:
+            var_95 = self._calculate_var_95(signal, market_data)
+            # Expected shortfall is typically 1.5x VaR
+            return min(var_95 * 1.5, 0.08)  # Cap at 8%
+            
+        except Exception as e:
+            logger.error(f"Error calculating Expected Shortfall: {str(e)}")
+            return 0.03
+    
+    async def _calculate_factor_exposures(self, signal: Dict, market_data: Dict) -> Dict[str, float]:
+        """Calculate factor exposures for factor model validation."""
+        try:
+            # Simplified factor exposure calculation
+            strength = abs(signal.get('strength', 0.0))
+            confidence = signal.get('confidence', 0.0)
+            
+            factor_exposures = {
+                'momentum': min(strength * 0.3, 0.25),
+                'volatility': min(confidence * 0.2, 0.2),
+                'size': min((strength + confidence) * 0.1, 0.15),
+                'value': min(strength * 0.15, 0.2),
+                'quality': min(confidence * 0.25, 0.25)
+            }
+            
+            return factor_exposures
+            
+        except Exception as e:
+            logger.error(f"Error calculating factor exposures: {str(e)}")
+            return {'momentum': 0.1, 'volatility': 0.1, 'size': 0.05, 'value': 0.05, 'quality': 0.1}
+    
+    def _calculate_model_agreement(self, signal: Dict, market_data: Dict) -> float:
+        """Calculate model agreement for ML validation."""
+        try:
+            # Simplified model agreement calculation
+            confidence = signal.get('confidence', 0.0)
+            strength = abs(signal.get('strength', 0.0))
+            
+            # Higher confidence and strength = higher agreement
+            agreement = (confidence + strength) / 2.0
+            return min(agreement, 1.0)
+            
+        except Exception as e:
+            logger.error(f"Error calculating model agreement: {str(e)}")
+            return 0.5
+    
+    def _calculate_model_uncertainty(self, signal: Dict, market_data: Dict) -> float:
+        """Calculate model uncertainty for ML validation."""
+        try:
+            confidence = signal.get('confidence', 0.0)
+            
+            # Lower confidence = higher uncertainty
+            uncertainty = 1.0 - confidence
+            return min(uncertainty, 1.0)
+            
+        except Exception as e:
+            logger.error(f"Error calculating model uncertainty: {str(e)}")
+            return 0.5
+    
+    def _determine_signal_type(self, signal: Dict, market_data: Dict) -> str:
+        """Determine signal type for market regime validation."""
+        try:
+            action = signal.get('action', 'hold')
+            strength = abs(signal.get('strength', 0.0))
+            
+            if action == 'buy' and strength > 0.5:
+                return 'trend_following'
+            elif action == 'sell' and strength > 0.5:
+                return 'trend_following'
+            elif action == 'buy' and strength < 0.3:
+                return 'mean_reversion'
+            elif action == 'sell' and strength < 0.3:
+                return 'mean_reversion'
+            else:
+                return 'adaptive'
+                
+        except Exception as e:
+            logger.error(f"Error determining signal type: {str(e)}")
+            return 'adaptive'

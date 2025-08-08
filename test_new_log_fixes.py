@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test script to verify log error fixes
+Test script to verify new log error fixes
 """
 
 import asyncio
@@ -52,9 +52,19 @@ class MockCacheService:
             return [0.01, -0.02, 0.03, -0.01, 0.02]
         return None
 
-async def test_momentum_mean_reversion_analysis():
-    """Test the momentum mean reversion analysis method"""
-    logger.info("Testing momentum mean reversion analysis...")
+class MockStatisticalArbitrageEngine:
+    """Mock engine that doesn't have the analyze_mean_reversion method"""
+    def __init__(self):
+        pass
+
+class MockImpliedVolatilityEngine:
+    """Mock engine that doesn't have the analyze_volatility_regime method"""
+    def __init__(self):
+        pass
+
+async def test_momentum_mean_reversion_with_invalid_signal():
+    """Test momentum mean reversion analysis with invalid signal parameter"""
+    logger.info("Testing momentum mean reversion analysis with invalid signal...")
     
     # Create mock services
     config = {
@@ -78,24 +88,21 @@ async def test_momentum_mean_reversion_analysis():
         'current_price': 50000
     }
     
-    signal = {
-        'action': 'buy',
-        'confidence': 0.8,
-        'strength': 0.6
-    }
+    # Test with invalid signal (string instead of dict)
+    invalid_signal = "invalid_signal"
     
     try:
-        result = await strategy._apply_momentum_mean_reversion_analysis('BTCUSDT', signal, market_data)
-        logger.info(f"✅ Momentum mean reversion analysis completed successfully")
+        result = await strategy._apply_momentum_mean_reversion_analysis('BTCUSDT', invalid_signal, market_data)
+        logger.info(f"✅ Momentum mean reversion analysis handled invalid signal gracefully")
         logger.info(f"Result: {result}")
         return True
     except Exception as e:
-        logger.error(f"❌ Error in momentum mean reversion analysis: {str(e)}")
+        logger.error(f"❌ Error in momentum mean reversion analysis with invalid signal: {str(e)}")
         return False
 
-async def test_volatility_regime_analysis():
-    """Test the volatility regime analysis method"""
-    logger.info("Testing volatility regime analysis...")
+async def test_momentum_mean_reversion_with_missing_engine():
+    """Test momentum mean reversion analysis with missing statistical arbitrage engine"""
+    logger.info("Testing momentum mean reversion analysis with missing engine...")
     
     # Create mock services
     config = {
@@ -111,6 +118,53 @@ async def test_volatility_regime_analysis():
         notification_service=MockNotificationService(),
         cache_service=MockCacheService()
     )
+    
+    # Add mock engine without the required method
+    strategy.statistical_arbitrage_engine = MockStatisticalArbitrageEngine()
+    
+    # Test data
+    market_data = {
+        'returns': [0.01, -0.02, 0.03, -0.01, 0.02, 0.01, -0.02, 0.03, -0.01, 0.02, 0.01, -0.02, 0.03, -0.01, 0.02],
+        'volume': [1000, 1200, 1100, 1300, 1400, 1200, 1100, 1300, 1400, 1200, 1100, 1300, 1400, 1200, 1100],
+        'current_price': 50000
+    }
+    
+    signal = {
+        'action': 'buy',
+        'confidence': 0.8,
+        'strength': 0.6
+    }
+    
+    try:
+        result = await strategy._apply_momentum_mean_reversion_analysis('BTCUSDT', signal, market_data)
+        logger.info(f"✅ Momentum mean reversion analysis handled missing engine gracefully")
+        logger.info(f"Result: {result}")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Error in momentum mean reversion analysis with missing engine: {str(e)}")
+        return False
+
+async def test_volatility_regime_with_missing_engine():
+    """Test volatility regime analysis with missing implied volatility engine"""
+    logger.info("Testing volatility regime analysis with missing engine...")
+    
+    # Create mock services
+    config = {
+        'risk_per_trade': 0.02,
+        'max_positions': 5,
+        'min_confidence': 0.7
+    }
+    
+    strategy = EnhancedTradingStrategyWithQuantitative(
+        config=config,
+        binance_service=MockBinanceService(),
+        indicator_service=MockIndicatorService(),
+        notification_service=MockNotificationService(),
+        cache_service=MockCacheService()
+    )
+    
+    # Add mock engine without the required method
+    strategy.volatility_engine = MockImpliedVolatilityEngine()
     
     # Test data
     market_data = {
@@ -126,16 +180,16 @@ async def test_volatility_regime_analysis():
     
     try:
         result = await strategy._apply_volatility_regime_analysis('BTCUSDT', signal, market_data)
-        logger.info(f"✅ Volatility regime analysis completed successfully")
+        logger.info(f"✅ Volatility regime analysis handled missing engine gracefully")
         logger.info(f"Result: {result}")
         return True
     except Exception as e:
-        logger.error(f"❌ Error in volatility regime analysis: {str(e)}")
+        logger.error(f"❌ Error in volatility regime analysis with missing engine: {str(e)}")
         return False
 
-async def test_correlation_analysis():
-    """Test the correlation analysis method"""
-    logger.info("Testing correlation analysis...")
+async def test_normal_operation():
+    """Test normal operation without any missing engines"""
+    logger.info("Testing normal operation...")
     
     # Create mock services
     config = {
@@ -155,7 +209,6 @@ async def test_correlation_analysis():
     # Test data
     market_data = {
         'returns': [0.01, -0.02, 0.03, -0.01, 0.02, 0.01, -0.02, 0.03, -0.01, 0.02, 0.01, -0.02, 0.03, -0.01, 0.02, 0.01, -0.02, 0.03, -0.01, 0.02, 0.01, -0.02, 0.03, -0.01, 0.02, 0.01, -0.02, 0.03, -0.01, 0.02, 0.01, -0.02, 0.03, -0.01, 0.02],
-        'benchmark_returns': [0.015, -0.025, 0.035, -0.015, 0.025, 0.015, -0.025, 0.035, -0.015, 0.025, 0.015, -0.025, 0.035, -0.015, 0.025, 0.015, -0.025, 0.035, -0.015, 0.025, 0.015, -0.025, 0.035, -0.015, 0.025, 0.015, -0.025, 0.035, -0.015, 0.025, 0.015, -0.025, 0.035, -0.015, 0.025],
         'current_price': 50000
     }
     
@@ -166,22 +219,28 @@ async def test_correlation_analysis():
     }
     
     try:
-        result = await strategy._apply_correlation_analysis('BTCUSDT', signal, market_data)
-        logger.info(f"✅ Correlation analysis completed successfully")
-        logger.info(f"Result: {result}")
+        # Test momentum mean reversion
+        result1 = await strategy._apply_momentum_mean_reversion_analysis('BTCUSDT', signal, market_data)
+        logger.info(f"✅ Momentum mean reversion analysis completed successfully")
+        
+        # Test volatility regime
+        result2 = await strategy._apply_volatility_regime_analysis('BTCUSDT', signal, market_data)
+        logger.info(f"✅ Volatility regime analysis completed successfully")
+        
         return True
     except Exception as e:
-        logger.error(f"❌ Error in correlation analysis: {str(e)}")
+        logger.error(f"❌ Error in normal operation: {str(e)}")
         return False
 
 async def main():
     """Main test function"""
-    logger.info("Starting log error fixes test...")
+    logger.info("Starting new log error fixes test...")
     
     tests = [
-        test_momentum_mean_reversion_analysis,
-        test_volatility_regime_analysis,
-        test_correlation_analysis
+        test_momentum_mean_reversion_with_invalid_signal,
+        test_momentum_mean_reversion_with_missing_engine,
+        test_volatility_regime_with_missing_engine,
+        test_normal_operation
     ]
     
     results = []
@@ -204,11 +263,11 @@ async def main():
     logger.info(f"Failed: {total - passed}/{total}")
     
     if passed == total:
-        logger.info("✅ All tests passed! Log errors have been fixed.")
+        logger.info("✅ All tests passed! New log errors have been fixed.")
     else:
         logger.error("❌ Some tests failed. Please check the errors above.")
     
     return passed == total
 
 if __name__ == "__main__":
-    asyncio.run(main()) 
+    asyncio.run(main())

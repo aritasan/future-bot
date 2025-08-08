@@ -1262,9 +1262,9 @@ class EnhancedTradingStrategyWithQuantitative:
             market_data = await self._get_comprehensive_market_data(symbol)
             validation = await self.quantitative_system.validate_signal(signals, market_data)
             
-            # if not validation.get('is_valid', False):
-            #     logger.info(f"Signal for {symbol} failed quantitative validation")
-            #     return
+            if not validation.get('is_valid', False):
+                logger.info(f"Signal for {symbol} failed quantitative validation")
+                return
             
             logger.info(f"Signal for {symbol} is valid")
             
@@ -3986,6 +3986,11 @@ class EnhancedTradingStrategyWithQuantitative:
         try:
             logger.info(f"Applying momentum mean reversion analysis for {symbol}")
             
+            # Validate signal parameter
+            if not isinstance(signal, dict):
+                logger.error(f"Invalid signal parameter for {symbol}: expected dict, got {type(signal)}")
+                return {'action': 'hold', 'confidence': 0.0, 'strength': 0.0}
+            
             # Get market data for analysis
             if not market_data or 'returns' not in market_data:
                 logger.warning(f"No returns data available for {symbol}")
@@ -4000,11 +4005,19 @@ class EnhancedTradingStrategyWithQuantitative:
             momentum_analysis = {}
             
             # Price momentum (12-period)
+            # Ensure returns is a pandas Series, not a list
+            if isinstance(returns, list):
+                returns = pd.Series(returns)
+            
             price_momentum = (returns.iloc[-1] - returns.iloc[-12]) / returns.iloc[-12] if len(returns) >= 12 else 0
             
             # Volume momentum
             if 'volume' in market_data:
                 volume_data = market_data['volume']
+                # Ensure volume_data is a pandas Series, not a list
+                if isinstance(volume_data, list):
+                    volume_data = pd.Series(volume_data)
+                
                 if len(volume_data) >= 12:
                     volume_momentum = (volume_data.iloc[-1] - volume_data.iloc[-12]) / volume_data.iloc[-12]
                 else:
@@ -4051,10 +4064,14 @@ class EnhancedTradingStrategyWithQuantitative:
             # 4. Statistical arbitrage analysis
             if hasattr(self, 'statistical_arbitrage_engine'):
                 try:
-                    arb_analysis = await self.statistical_arbitrage_engine.analyze_mean_reversion(
-                        symbol, returns, market_data
-                    )
-                    momentum_analysis['arbitrage'] = arb_analysis
+                    # Check if the method exists before calling it
+                    if hasattr(self.statistical_arbitrage_engine, 'analyze_mean_reversion'):
+                        arb_analysis = await self.statistical_arbitrage_engine.analyze_mean_reversion(
+                            symbol, returns, market_data
+                        )
+                        momentum_analysis['arbitrage'] = arb_analysis
+                    else:
+                        logger.warning(f"StatisticalArbitrageEngine does not have analyze_mean_reversion method")
                 except Exception as e:
                     logger.warning(f"Error in statistical arbitrage analysis: {str(e)}")
             
@@ -4122,6 +4139,10 @@ class EnhancedTradingStrategyWithQuantitative:
             volatility_analysis = {}
             
             # Rolling volatility (20-period)
+            # Ensure returns is a pandas Series, not a list
+            if isinstance(returns, list):
+                returns = pd.Series(returns)
+            
             rolling_vol = returns.rolling(window=20).std().iloc[-1]
             volatility_analysis['rolling_volatility'] = rolling_vol
             
@@ -4155,18 +4176,23 @@ class EnhancedTradingStrategyWithQuantitative:
             # 3. Use implied volatility if available
             if hasattr(self, 'volatility_engine'):
                 try:
-                    iv_analysis = await self.volatility_engine.analyze_volatility_regime(
-                        symbol, market_data
-                    )
-                    regime_analysis['implied_volatility'] = iv_analysis
-                    
-                    # Adjust regime based on implied volatility
-                    if iv_analysis.get('regime') != regime:
-                        # Weighted average of historical and implied volatility
-                        regime_analysis['final_regime'] = regime if regime_analysis['confidence'] > 0.7 else iv_analysis.get('regime', regime)
+                    # Check if the method exists before calling it
+                    if hasattr(self.volatility_engine, 'analyze_volatility_regime'):
+                        iv_analysis = await self.volatility_engine.analyze_volatility_regime(
+                            symbol, market_data
+                        )
+                        regime_analysis['implied_volatility'] = iv_analysis
+                        
+                        # Adjust regime based on implied volatility
+                        if iv_analysis.get('regime') != regime:
+                            # Weighted average of historical and implied volatility
+                            regime_analysis['final_regime'] = regime if regime_analysis['confidence'] > 0.7 else iv_analysis.get('regime', regime)
+                        else:
+                            regime_analysis['final_regime'] = regime
+                            regime_analysis['confidence'] = min(regime_analysis['confidence'] + 0.2, 1.0)
                     else:
+                        logger.warning(f"ImpliedVolatilityEngine does not have analyze_volatility_regime method")
                         regime_analysis['final_regime'] = regime
-                        regime_analysis['confidence'] = min(regime_analysis['confidence'] + 0.2, 1.0)
                         
                 except Exception as e:
                     logger.warning(f"Error in implied volatility analysis: {str(e)}")
@@ -4260,9 +4286,14 @@ class EnhancedTradingStrategyWithQuantitative:
                     benchmark_returns = market_data['benchmark_returns']
                 elif hasattr(self, 'cache_service') and self.cache_service:
                     # Get benchmark data from cache
-                    benchmark_data = await self.cache_service.get(f"{benchmark_symbol}_returns")
-                    if benchmark_data:
-                        benchmark_returns = pd.Series(benchmark_data)
+                    try:
+                        benchmark_data = await self.cache_service.get_market_data(benchmark_symbol, "returns")
+                        if benchmark_data:
+                            benchmark_returns = pd.Series(benchmark_data)
+                    except AttributeError:
+                        # Fallback if get method doesn't exist
+                        logger.warning(f"CacheService does not have get method for {benchmark_symbol}")
+                        benchmark_returns = None
                 
                 # If no benchmark data available, use market average
                 if benchmark_returns is None or len(benchmark_returns) < 30:
@@ -4279,6 +4310,12 @@ class EnhancedTradingStrategyWithQuantitative:
                 return signal
             
             # 2. Calculate correlation metrics
+            # Ensure returns and benchmark_returns are pandas Series
+            if isinstance(returns, list):
+                returns = pd.Series(returns)
+            if isinstance(benchmark_returns, list):
+                benchmark_returns = pd.Series(benchmark_returns)
+            
             # Align returns data
             min_length = min(len(returns), len(benchmark_returns))
             if min_length < 30:
@@ -4334,10 +4371,10 @@ class EnhancedTradingStrategyWithQuantitative:
                 for sector_symbol in symbols:
                     try:
                         if hasattr(self, 'cache_service') and self.cache_service:
-                            sector_data = await self.cache_service.get(f"{sector_symbol}_returns")
+                            sector_data = await self.cache_service.get_market_data(sector_symbol, "returns")
                             if sector_data and len(sector_data) >= min_length:
                                 sector_returns.append(pd.Series(sector_data).iloc[-min_length:])
-                    except Exception:
+                    except (AttributeError, Exception):
                         continue
                 
                 if sector_returns:

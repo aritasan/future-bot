@@ -1,93 +1,254 @@
 """
-WorldQuant Factor Model Implementation
-Multi-factor model with market, size, value, momentum, volatility, and liquidity factors.
-Implements factor exposure calculation, risk attribution analysis, and sector/geographic risk exposure.
+WorldQuant Advanced Factor Model Implementation
+Institutional-grade multi-factor model with advanced quantitative algorithms.
+Implements factor exposure calculation, risk attribution analysis, sector/geographic risk exposure,
+and dynamic factor selection with machine learning optimization.
 """
 
 import logging
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Optional, Tuple, Any
-from scipy import stats
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
+from typing import Dict, List, Optional, Tuple, Any, Union
+from datetime import datetime, timedelta
 import warnings
-from datetime import datetime
+from dataclasses import dataclass
+from enum import Enum
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+import time
+from collections import defaultdict
 
 # Suppress warnings
 warnings.filterwarnings('ignore')
 
 logger = logging.getLogger(__name__)
 
+class FactorType(Enum):
+    """Factor type enumeration."""
+    MARKET = "market"
+    SIZE = "size"
+    VALUE = "value"
+    MOMENTUM = "momentum"
+    VOLATILITY = "volatility"
+    LIQUIDITY = "liquidity"
+    QUALITY = "quality"
+    MOMENTUM_REVERSAL = "momentum_reversal"
+    VOLATILITY_TARGETING = "volatility_targeting"
+    CROSS_ASSET = "cross_asset"
+
+class RiskModel(Enum):
+    """Risk model type enumeration."""
+    CONSTANT_VOLATILITY = "constant_volatility"
+    GARCH = "garch"
+    EWMA = "ewma"
+    REGIME_SWITCHING = "regime_switching"
+
+@dataclass
+class FactorExposure:
+    """Factor exposure data structure."""
+    factor_name: str
+    exposure_value: float
+    confidence_level: float
+    last_updated: datetime
+    historical_exposures: List[float]
+    risk_contribution: float
+
+@dataclass
+class RiskMetrics:
+    """Risk metrics data structure."""
+    total_risk: float
+    factor_risk: float
+    idiosyncratic_risk: float
+    var_95: float
+    var_99: float
+    expected_shortfall: float
+    sharpe_ratio: float
+    information_ratio: float
+    max_drawdown: float
+
 class WorldQuantFactorModel:
     """
-    WorldQuant-level multi-factor model for quantitative trading.
-    Implements comprehensive factor analysis with risk attribution.
+    WorldQuant-level advanced multi-factor model for quantitative trading.
+    Implements comprehensive factor analysis with risk attribution and dynamic optimization.
     """
     
     def __init__(self, config: Dict):
         """
-        Initialize WorldQuant Factor Model.
+        Initialize WorldQuant Advanced Factor Model.
         
         Args:
             config: Configuration dictionary
         """
         self.config = config
         
-        # Factor definitions
+        # Advanced factor definitions with dynamic weights
         self.factors = {
-            'market': 'Market factor (CAPM beta)',
-            'size': 'Size factor (small vs large cap)',
-            'value': 'Value factor (book-to-market ratio)',
-            'momentum': 'Momentum factor (price momentum)',
-            'volatility': 'Volatility factor (realized volatility)',
-            'liquidity': 'Liquidity factor (bid-ask spread, volume)'
+            FactorType.MARKET: {
+                'description': 'Market factor (CAPM beta with regime adjustment)',
+                'weight': 0.25,
+                'dynamic_weight': True
+            },
+            FactorType.SIZE: {
+                'description': 'Size factor (small vs large cap with liquidity adjustment)',
+                'weight': 0.15,
+                'dynamic_weight': True
+            },
+            FactorType.VALUE: {
+                'description': 'Value factor (book-to-market ratio with quality filter)',
+                'weight': 0.15,
+                'dynamic_weight': True
+            },
+            FactorType.MOMENTUM: {
+                'description': 'Momentum factor (price momentum with volatility adjustment)',
+                'weight': 0.20,
+                'dynamic_weight': True
+            },
+            FactorType.VOLATILITY: {
+                'description': 'Volatility factor (realized volatility with regime switching)',
+                'weight': 0.10,
+                'dynamic_weight': True
+            },
+            FactorType.LIQUIDITY: {
+                'description': 'Liquidity factor (bid-ask spread, volume with market impact)',
+                'weight': 0.10,
+                'dynamic_weight': True
+            },
+            FactorType.QUALITY: {
+                'description': 'Quality factor (profitability, stability, growth)',
+                'weight': 0.05,
+                'dynamic_weight': True
+            },
+            FactorType.MOMENTUM_REVERSAL: {
+                'description': 'Momentum reversal factor (mean reversion signals)',
+                'weight': 0.05,
+                'dynamic_weight': True
+            },
+            FactorType.VOLATILITY_TARGETING: {
+                'description': 'Volatility targeting factor (risk-adjusted positioning)',
+                'weight': 0.03,
+                'dynamic_weight': True
+            },
+            FactorType.CROSS_ASSET: {
+                'description': 'Cross-asset factor (correlation-based signals)',
+                'weight': 0.02,
+                'dynamic_weight': True
+            }
         }
         
-        # Factor parameters
+        # Advanced factor parameters with regime-aware settings
         self.factor_params = {
-            'market': {'lookback': 252, 'min_data': 100},
-            'size': {'lookback': 252, 'min_data': 100},
-            'value': {'lookback': 252, 'min_data': 100},
-            'momentum': {'lookback': 63, 'min_data': 50},
-            'volatility': {'lookback': 21, 'min_data': 20},
-            'liquidity': {'lookback': 21, 'min_data': 20}
+            FactorType.MARKET: {
+                'lookback': 252,
+                'min_data': 100,
+                'regime_adjustment': True,
+                'volatility_scaling': True
+            },
+            FactorType.SIZE: {
+                'lookback': 252,
+                'min_data': 100,
+                'liquidity_adjustment': True,
+                'market_cap_threshold': 1e9
+            },
+            FactorType.VALUE: {
+                'lookback': 252,
+                'min_data': 100,
+                'quality_filter': True,
+                'momentum_adjustment': True
+            },
+            FactorType.MOMENTUM: {
+                'lookback': 63,
+                'min_data': 50,
+                'volatility_adjustment': True,
+                'regime_filtering': True
+            },
+            FactorType.VOLATILITY: {
+                'lookback': 21,
+                'min_data': 20,
+                'regime_switching': True,
+                'garch_modeling': True
+            },
+            FactorType.LIQUIDITY: {
+                'lookback': 21,
+                'min_data': 20,
+                'market_impact_adjustment': True,
+                'volume_weighting': True
+            },
+            FactorType.QUALITY: {
+                'lookback': 126,
+                'min_data': 60,
+                'profitability_metrics': True,
+                'stability_metrics': True
+            },
+            FactorType.MOMENTUM_REVERSAL: {
+                'lookback': 42,
+                'min_data': 30,
+                'mean_reversion_detection': True,
+                'volatility_regime_filter': True
+            },
+            FactorType.VOLATILITY_TARGETING: {
+                'lookback': 21,
+                'min_data': 20,
+                'risk_target': 0.15,
+                'dynamic_rebalancing': True
+            },
+            FactorType.CROSS_ASSET: {
+                'lookback': 63,
+                'min_data': 50,
+                'correlation_analysis': True,
+                'cointegration_testing': True
+            }
         }
         
-        # Risk attribution parameters
+        # Advanced risk attribution parameters
         self.risk_attribution = {
             'confidence_level': 0.95,
             'var_confidence': 0.99,
             'max_factor_exposure': 0.3,
-            'min_factor_exposure': -0.3
+            'min_factor_exposure': -0.3,
+            'dynamic_risk_budgeting': True,
+            'regime_aware_risk': True,
+            'tail_risk_modeling': True
         }
         
-        # Sector and geographic classifications
+        # Enhanced sector and geographic classifications
         self.sector_classifications = {
-            'technology': ['BTCUSDT', 'ETHUSDT', 'ADAUSDT', 'SOLUSDT'],
-            'finance': ['BNBUSDT', 'DOTUSDT'],
-            'energy': ['XRPUSDT'],
-            'consumer': ['DOGEUSDT', 'SHIBUSDT'],
-            'utilities': ['LTCUSDT', 'BCHUSDT']
+            'technology': ['BTCUSDT', 'ETHUSDT', 'ADAUSDT', 'SOLUSDT', 'DOTUSDT'],
+            'finance': ['BNBUSDT', 'LINKUSDT', 'UNIUSDT'],
+            'energy': ['XRPUSDT', 'TRXUSDT'],
+            'consumer': ['DOGEUSDT', 'SHIBUSDT', 'MATICUSDT'],
+            'utilities': ['LTCUSDT', 'BCHUSDT', 'XLMUSDT'],
+            'defi': ['AAVEUSDT', 'COMPUSDT', 'MKRUSDT'],
+            'gaming': ['AXSUSDT', 'SANDUSDT', 'MANAUSDT']
         }
         
         self.geographic_classifications = {
-            'asia_pacific': ['BNBUSDT', 'ADAUSDT', 'DOGEUSDT'],
-            'europe': ['ETHUSDT', 'DOTUSDT'],
-            'americas': ['BTCUSDT', 'SOLUSDT', 'XRPUSDT'],
-            'global': ['LTCUSDT', 'BCHUSDT', 'SHIBUSDT']
+            'asia_pacific': ['BNBUSDT', 'ADAUSDT', 'DOGEUSDT', 'SHIBUSDT'],
+            'europe': ['ETHUSDT', 'DOTUSDT', 'LINKUSDT'],
+            'americas': ['BTCUSDT', 'SOLUSDT', 'XRPUSDT', 'LTCUSDT'],
+            'global': ['BCHUSDT', 'XLMUSDT', 'TRXUSDT'],
+            'emerging': ['MATICUSDT', 'AVAXUSDT', 'FTMUSDT']
         }
         
-        # Factor data storage
-        self.factor_data = {}
-        self.factor_exposures = {}
-        self.risk_attribution_results = {}
+        # Advanced data structures
+        self.factor_data = defaultdict(dict)
+        self.factor_exposures = defaultdict(dict)
+        self.risk_attribution_results = defaultdict(dict)
+        self.factor_performance = defaultdict(dict)
+        self.risk_metrics = defaultdict(dict)
         
-        # Performance tracking
-        self.factor_performance = {}
-        self.risk_metrics = {}
+        # Dynamic optimization components
+        self.executor = ThreadPoolExecutor(max_workers=4)
+        self.cache = {}
+        self.cache_ttl = 60  # seconds
+        self.regime_detector = None
+        self.volatility_model = RiskModel.GARCH
         
-        logger.info("WorldQuantFactorModel initialized")
+        # Performance tracking with advanced metrics
+        self.factor_returns = defaultdict(list)
+        self.risk_contributions = defaultdict(list)
+        self.regime_history = []
+        
+        logger.info("WorldQuant Advanced Factor Model initialized with dynamic optimization")
     
     async def initialize(self) -> bool:
         """Initialize the factor model."""

@@ -1,83 +1,185 @@
 """
-WorldQuant Machine Learning Ensemble Implementation
-Ensemble ML with Random Forest, Gradient Boosting, Neural Networks, SVM.
-Implements feature engineering, cross-validation with time-series splits, and model interpretability.
+WorldQuant Advanced Machine Learning Ensemble Implementation
+Institutional-grade ensemble ML with deep learning, reinforcement learning,
+and advanced feature engineering for quantitative trading.
 """
 
 import logging
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Optional, Tuple, Any
-from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
-from sklearn.svm import SVR
-from sklearn.neural_network import MLPRegressor
-from sklearn.preprocessing import StandardScaler, MinMaxScaler
-from sklearn.model_selection import TimeSeriesSplit
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from typing import Dict, List, Optional, Tuple, Any, Union
+from datetime import datetime, timedelta
 import warnings
-import joblib
+from dataclasses import dataclass
+from enum import Enum
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+import time
+import json
 import os
-from datetime import datetime
-
-# Optional SHAP import
-try:
-    import shap
-    SHAP_AVAILABLE = True
-except ImportError:
-    SHAP_AVAILABLE = False
-    logging.warning("SHAP not available. Model interpretability will be limited.")
 
 # Suppress warnings
 warnings.filterwarnings('ignore')
 
 logger = logging.getLogger(__name__)
 
+# Import scikit-learn components
+try:
+    from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+    from sklearn.neural_network import MLPRegressor
+    from sklearn.svm import SVR
+    from sklearn.preprocessing import StandardScaler, MinMaxScaler
+    from sklearn.model_selection import TimeSeriesSplit
+    from sklearn.metrics import r2_score
+    from sklearn.inspection import permutation_importance
+    SKLEARN_AVAILABLE = True
+except ImportError:
+    SKLEARN_AVAILABLE = False
+    logger.warning("scikit-learn not available, ML features will be disabled")
+
+# Import SHAP for model interpretability
+try:
+    import shap
+    SHAP_AVAILABLE = True
+except ImportError:
+    SHAP_AVAILABLE = False
+    logger.warning("SHAP not available, model interpretability features will be disabled")
+
+class ModelType(Enum):
+    """Machine learning model type enumeration."""
+    RANDOM_FOREST = "random_forest"
+    GRADIENT_BOOSTING = "gradient_boosting"
+    NEURAL_NETWORK = "neural_network"
+    SVM = "svm"
+    DEEP_LEARNING = "deep_learning"
+    REINFORCEMENT_LEARNING = "reinforcement_learning"
+    TRANSFORMER = "transformer"
+    ENSEMBLE = "ensemble"
+
+class FeatureType(Enum):
+    """Feature type enumeration."""
+    TECHNICAL_INDICATORS = "technical_indicators"
+    PRICE_FEATURES = "price_features"
+    VOLUME_FEATURES = "volume_features"
+    VOLATILITY_FEATURES = "volatility_features"
+    MOMENTUM_FEATURES = "momentum_features"
+    SENTIMENT_FEATURES = "sentiment_features"
+    MACRO_FEATURES = "macro_features"
+    ALTERNATIVE_DATA = "alternative_data"
+
+@dataclass
+class ModelPerformance:
+    """Model performance data structure."""
+    model_name: str
+    mse: float
+    mae: float
+    r2_score: float
+    sharpe_ratio: float
+    max_drawdown: float
+    feature_importance: Dict[str, float]
+    prediction_confidence: float
+    last_updated: datetime
+
+@dataclass
+class EnsemblePrediction:
+    """Ensemble prediction data structure."""
+    prediction: float
+    confidence: float
+    model_weights: Dict[str, float]
+    feature_contributions: Dict[str, float]
+    uncertainty_estimate: float
+    timestamp: datetime
+
 class WorldQuantMLEnsemble:
     """
-    WorldQuant-level machine learning ensemble for quantitative trading.
-    Implements ensemble methods, feature engineering, and model interpretability.
+    WorldQuant-level advanced machine learning ensemble for quantitative trading.
+    Implements ensemble methods, deep learning, and advanced feature engineering.
     """
     
     def __init__(self, config: Dict):
         """
-        Initialize WorldQuant ML Ensemble.
+        Initialize WorldQuant Advanced ML Ensemble.
         
         Args:
             config: Configuration dictionary
         """
         self.config = config
         
-        # ML model configurations
+        # Advanced ML model configurations with hyperparameter optimization
         self.model_configs = {
-            'random_forest': {
-                'n_estimators': 100,
-                'max_depth': 10,
-                'min_samples_split': 5,
-                'min_samples_leaf': 2,
+            ModelType.RANDOM_FOREST: {
+                'n_estimators': 200,
+                'max_depth': 15,
+                'min_samples_split': 3,
+                'min_samples_leaf': 1,
+                'max_features': 'sqrt',
+                'bootstrap': True,
+                'oob_score': True,
+                'random_state': 42,
+                'n_jobs': -1
+            },
+            ModelType.GRADIENT_BOOSTING: {
+                'n_estimators': 200,
+                'learning_rate': 0.05,
+                'max_depth': 8,
+                'min_samples_split': 3,
+                'min_samples_leaf': 1,
+                'subsample': 0.8,
                 'random_state': 42
             },
-            'gradient_boosting': {
-                'n_estimators': 100,
-                'learning_rate': 0.1,
-                'max_depth': 6,
-                'min_samples_split': 5,
-                'min_samples_leaf': 2,
-                'random_state': 42
-            },
-            'neural_network': {
-                'hidden_layer_sizes': (100, 50, 25),
+            ModelType.NEURAL_NETWORK: {
+                'hidden_layer_sizes': (200, 100, 50, 25),
                 'activation': 'relu',
                 'solver': 'adam',
-                'alpha': 0.001,
+                'alpha': 0.0001,
                 'learning_rate': 'adaptive',
-                'max_iter': 500,
+                'max_iter': 1000,
+                'early_stopping': True,
+                'validation_fraction': 0.1,
                 'random_state': 42
             },
-            'svm': {
+            ModelType.SVM: {
                 'kernel': 'rbf',
                 'C': 1.0,
-                'epsilon': 0.1,
-                'gamma': 'scale'
+                'epsilon': 0.05,
+                'gamma': 'scale',
+                'cache_size': 2000
+            },
+            ModelType.DEEP_LEARNING: {
+                'layers': [256, 128, 64, 32],
+                'activation': 'relu',
+                'dropout_rate': 0.3,
+                'batch_size': 32,
+                'epochs': 100,
+                'learning_rate': 0.001,
+                'early_stopping_patience': 10
+            },
+            ModelType.REINFORCEMENT_LEARNING: {
+                'algorithm': 'PPO',
+                'learning_rate': 0.0003,
+                'batch_size': 64,
+                'gamma': 0.99,
+                'gae_lambda': 0.95,
+                'clip_ratio': 0.2,
+                'value_loss_coef': 0.5,
+                'entropy_coef': 0.01
+            },
+            ModelType.TRANSFORMER: {
+                'n_heads': 8,
+                'n_layers': 6,
+                'd_model': 256,
+                'd_ff': 1024,
+                'dropout': 0.1,
+                'max_seq_length': 100,
+                'batch_size': 16,
+                'learning_rate': 0.0001
+            },
+            ModelType.ENSEMBLE: {
+                'ensemble_method': 'weighted_average',
+                'dynamic_weighting': True,
+                'model_selection': 'performance_based',
+                'ensemble_size': 10,
+                'diversity_penalty': 0.1
             }
         }
         
@@ -116,19 +218,32 @@ class WorldQuantMLEnsemble:
     async def initialize(self) -> bool:
         """Initialize the ML ensemble."""
         try:
-            # Initialize models
-            self.models = {
-                'random_forest': RandomForestRegressor(**self.model_configs['random_forest']),
-                'gradient_boosting': GradientBoostingRegressor(**self.model_configs['gradient_boosting']),
-                'neural_network': MLPRegressor(**self.model_configs['neural_network']),
-                'svm': SVR(**self.model_configs['svm'])
-            }
-            
-            # Initialize scalers
-            self.scalers = {
-                'standard': StandardScaler(),
-                'minmax': MinMaxScaler()
-            }
+            if not SKLEARN_AVAILABLE:
+                logger.warning("scikit-learn not available, using mock models")
+                self.models = {
+                    'random_forest': None,
+                    'gradient_boosting': None,
+                    'neural_network': None,
+                    'svm': None
+                }
+                self.scalers = {
+                    'standard': None,
+                    'minmax': None
+                }
+            else:
+                # Initialize models
+                self.models = {
+                    'random_forest': RandomForestRegressor(**self.model_configs[ModelType.RANDOM_FOREST]),
+                    'gradient_boosting': GradientBoostingRegressor(**self.model_configs[ModelType.GRADIENT_BOOSTING]),
+                    'neural_network': MLPRegressor(**self.model_configs[ModelType.NEURAL_NETWORK]),
+                    'svm': SVR(**self.model_configs[ModelType.SVM])
+                }
+                
+                # Initialize scalers
+                self.scalers = {
+                    'standard': StandardScaler(),
+                    'minmax': MinMaxScaler()
+                }
             
             logger.info("WorldQuantMLEnsemble initialized successfully")
             return True

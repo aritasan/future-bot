@@ -1,65 +1,149 @@
 """
-WorldQuant Portfolio Optimizer Implementation
-Advanced portfolio optimization with mean-variance, risk parity, factor neutral portfolios, and cross-asset hedging.
+WorldQuant Advanced Portfolio Optimizer Implementation
+Institutional-grade portfolio optimization with dynamic risk management,
+regime-aware optimization, and machine learning-enhanced allocation strategies.
 """
 
 import logging
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Optional, Tuple, Any
-from scipy.optimize import minimize
-from scipy.stats import norm
-import warnings
+from typing import Dict, List, Optional, Tuple, Any, Union
 from datetime import datetime, timedelta
 import asyncio
 from collections import defaultdict, deque
 import json
-from .performance_tracker import WorldQuantPerformanceTracker
+import warnings
+from dataclasses import dataclass
+from enum import Enum
+from concurrent.futures import ThreadPoolExecutor
+import time
+from scipy.optimize import minimize
 
 # Suppress warnings
 warnings.filterwarnings('ignore')
 
 logger = logging.getLogger(__name__)
 
+class OptimizationMethod(Enum):
+    """Portfolio optimization method enumeration."""
+    MEAN_VARIANCE = "mean_variance"
+    RISK_PARITY = "risk_parity"
+    FACTOR_NEUTRAL = "factor_neutral"
+    BLACK_LITTERMAN = "black_litterman"
+    MAXIMUM_SHARPE = "maximum_sharpe"
+    MINIMUM_VARIANCE = "minimum_variance"
+    MAXIMUM_DIVERSIFICATION = "maximum_diversification"
+    REGIME_AWARE = "regime_aware"
+    MACHINE_LEARNING = "machine_learning"
+
+class RiskModel(Enum):
+    """Risk model type enumeration."""
+    CONSTANT_VOLATILITY = "constant_volatility"
+    GARCH = "garch"
+    EWMA = "ewma"
+    REGIME_SWITCHING = "regime_switching"
+    MACHINE_LEARNING = "machine_learning"
+
+@dataclass
+class PortfolioWeights:
+    """Portfolio weights data structure."""
+    weights: Dict[str, float]
+    method: OptimizationMethod
+    timestamp: datetime
+    risk_metrics: Dict[str, float]
+    performance_metrics: Dict[str, float]
+
+@dataclass
+class OptimizationResult:
+    """Optimization result data structure."""
+    weights: PortfolioWeights
+    objective_value: float
+    convergence: bool
+    iterations: int
+    execution_time: float
+    constraints_satisfied: bool
+
 class WorldQuantPortfolioOptimizer:
     """
-    WorldQuant-level portfolio optimizer with advanced optimization techniques.
+    WorldQuant-level advanced portfolio optimizer with institutional-grade algorithms.
     """
     
     def __init__(self, config: Dict):
         """
-        Initialize WorldQuant Portfolio Optimizer.
+        Initialize WorldQuant Advanced Portfolio Optimizer.
         
         Args:
             config: Configuration dictionary
         """
         self.config = config
         
-        # Optimization parameters
+        # Advanced optimization parameters with regime-aware settings
         self.optimization_params = {
-            'mean_variance': {
+            OptimizationMethod.MEAN_VARIANCE: {
                 'risk_free_rate': 0.02,
-                'target_return': 0.10,  # Reduced from 0.15
-                'max_volatility': 0.25,
-                'min_weight': 0.01,
-                'max_weight': 0.40  # Increased from 0.30
+                'target_return': 0.12,
+                'max_volatility': 0.20,
+                'min_weight': 0.005,
+                'max_weight': 0.35,
+                'regime_adjustment': True,
+                'dynamic_risk_budgeting': True
             },
-            'risk_parity': {
+            OptimizationMethod.RISK_PARITY: {
                 'target_risk_contribution': 0.1,
-                'min_weight': 0.01,
-                'max_weight': 0.40,  # Increased from 0.30
-                'risk_budget_method': 'equal'  # 'equal', 'volatility', 'custom'
+                'min_weight': 0.005,
+                'max_weight': 0.35,
+                'risk_budget_method': 'equal',
+                'regime_aware_risk': True,
+                'dynamic_rebalancing': True
             },
-            'factor_neutral': {
-                'factor_exposures': ['market', 'size', 'value', 'momentum', 'volatility', 'liquidity'],
-                'max_factor_exposure': 0.2,  # Increased from 0.1
-                'min_weight': 0.01,
-                'max_weight': 0.40  # Increased from 0.30
+            OptimizationMethod.FACTOR_NEUTRAL: {
+                'factor_exposures': ['market', 'size', 'value', 'momentum', 'volatility', 'liquidity', 'quality'],
+                'max_factor_exposure': 0.15,
+                'min_weight': 0.005,
+                'max_weight': 0.35,
+                'factor_timing': True,
+                'dynamic_factor_weights': True
             },
-            'cross_asset_hedging': {
-                'hedge_ratio_method': 'minimum_variance',  # 'minimum_variance', 'optimal_hedge'
+            OptimizationMethod.BLACK_LITTERMAN: {
+                'confidence_level': 0.8,
+                'tau': 0.05,
+                'min_weight': 0.005,
+                'max_weight': 0.35,
+                'view_optimization': True
+            },
+            OptimizationMethod.MAXIMUM_SHARPE: {
+                'risk_free_rate': 0.02,
+                'min_weight': 0.005,
+                'max_weight': 0.35,
+                'regime_filtering': True,
+                'volatility_targeting': True
+            },
+            OptimizationMethod.MINIMUM_VARIANCE: {
+                'min_weight': 0.005,
+                'max_weight': 0.35,
+                'regime_aware_constraints': True,
+                'tail_risk_management': True
+            },
+            OptimizationMethod.MAXIMUM_DIVERSIFICATION: {
+                'min_weight': 0.005,
+                'max_weight': 0.35,
                 'correlation_threshold': 0.7,
-                'hedge_cost_factor': 0.001
+                'diversification_penalty': 0.1
+            },
+            OptimizationMethod.REGIME_AWARE: {
+                'regime_detection': True,
+                'regime_specific_weights': True,
+                'regime_transition_smoothing': True,
+                'min_weight': 0.005,
+                'max_weight': 0.35
+            },
+            OptimizationMethod.MACHINE_LEARNING: {
+                'ml_model_type': 'ensemble',
+                'feature_engineering': True,
+                'hyperparameter_optimization': True,
+                'min_weight': 0.005,
+                'max_weight': 0.35,
+                'model_retraining_frequency': 30
             }
         }
         
@@ -73,7 +157,7 @@ class WorldQuantPortfolioOptimizer:
         }
         
         # Performance tracking - WorldQuant Standards
-        self.performance_tracker = WorldQuantPerformanceTracker()
+        self.performance_tracker = None  # Will be initialized if needed
         
         # Portfolio state tracking
         self.portfolio_state = {
@@ -94,11 +178,14 @@ class WorldQuantPortfolioOptimizer:
     async def initialize(self) -> bool:
         """Initialize the portfolio optimizer."""
         try:
-            # Initialize performance tracker
-            await self.performance_tracker.initialize()
-            
-            # Start real-time monitoring
-            await self.start_performance_monitoring()
+            # Initialize basic performance tracking
+            self.performance_metrics = {
+                'total_return': 0.0,
+                'volatility': 0.0,
+                'sharpe_ratio': 0.0,
+                'max_drawdown': 0.0,
+                'current_drawdown': 0.0
+            }
             
             logger.info("WorldQuantPortfolioOptimizer initialized successfully")
             return True
