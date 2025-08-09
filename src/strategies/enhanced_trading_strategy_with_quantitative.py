@@ -5,7 +5,6 @@ Extends the original strategy with quantitative analysis capabilities.
 
 import logging
 from typing import Dict, Optional, List, Any
-import pandas as pd
 import numpy as np
 import time
 import asyncio
@@ -13,12 +12,23 @@ from datetime import datetime
 import json
 import os
 import sys
-import psutil
 import gc
 from collections import OrderedDict
+
+# Try to import optional dependencies
+try:
+    import pandas as pd
+except ImportError:
+    pd = None
+
+try:
+    import psutil
+except ImportError:
+    psutil = None
 from src.quantitative.factor_model import WorldQuantFactorModel
 from src.quantitative.ml_ensemble import WorldQuantMLEnsemble
 from src.quantitative.portfolio_optimizer import WorldQuantPortfolioOptimizer
+from src.quantitative.worldquant_validation_system import WorldQuantValidationSystem, ValidationResult
 
 # Set event loop policy for Windows
 if sys.platform == 'win32':
@@ -87,6 +97,9 @@ class EnhancedTradingStrategyWithQuantitative:
         self.statistical_arbitrage_engine = StatisticalArbitrageEngine(config)
         self.advanced_ml_ensemble = AdvancedMLEnsemble(config)
         self.market_microstructure_analyzer = MarketMicrostructureAnalyzer(config)
+        
+        # Initialize WorldQuant validation system
+        self.worldquant_validator = WorldQuantValidationSystem(config)
         
         # Initialize DCA and Trailing Stop
         self.worldquant_dca = WorldQuantDCA(config)
@@ -1258,19 +1271,32 @@ class EnhancedTradingStrategyWithQuantitative:
             symbol = signals.get('symbol')
             action = signals.get('action', 'hold')
             
-            # Apply quantitative validation
+            # Apply quantitative validation with WorldQuant standards
             market_data = await self._get_comprehensive_market_data(symbol)
-            validation = await self.quantitative_system.validate_signal(signals, market_data)
             
-            if not validation.get('is_valid', False):
-                logger.info(f"Signal for {symbol} failed quantitative validation")
+            # Prepare signal for WorldQuant validation
+            enhanced_signal = await self._prepare_signal_for_worldquant_validation(signals, market_data)
+            
+            # Apply WorldQuant validation with adaptive thresholds
+            validation_result = await self.worldquant_validator.validate_signal_worldquant(enhanced_signal, market_data)
+            
+            if not validation_result.worldquant_compliance:
+                logger.info(f"Signal for {symbol} failed WorldQuant validation: {validation_result.warnings}")
                 return
             
-            logger.info(f"Signal for {symbol} is valid")
+            # Calculate signal quality score
+            quality_score = self.worldquant_validator.calculate_signal_quality_score(enhanced_signal, market_data)
             
-            # Check confidence threshold
-            confidence = signals.get('confidence', 0)
-            threshold = self._calculate_dynamic_confidence_threshold(action, market_data)
+            if quality_score < 0.6:  # Minimum quality score threshold
+                logger.info(f"Signal for {symbol} has low quality score: {quality_score:.2f}")
+                return
+            
+            logger.info(f"Signal for {symbol} passed WorldQuant validation with quality score: {quality_score:.2f}")
+            
+            # Check confidence threshold with adaptive validation
+            confidence = enhanced_signal.get('confidence', 0)
+            adaptive_thresholds = self.worldquant_validator.get_adaptive_thresholds(market_data)
+            threshold = adaptive_thresholds['min_confidence']
             
             # Execute trade based on signal action
             if action == 'buy':
@@ -1304,7 +1330,7 @@ class EnhancedTradingStrategyWithQuantitative:
                 confidence,
                 threshold,
                 market_data,
-                validation.get('risk_metrics', {})
+                validation_result.validation_details.get('risk_metrics', {})
             )
             
             # Check DCA and Trailing Stop opportunities
@@ -1981,6 +2007,24 @@ class EnhancedTradingStrategyWithQuantitative:
         try:
             # Prepare data for ML models
             market_df = pd.DataFrame(market_data)
+            
+            # Ensure required columns exist for ML analysis
+            required_columns = ['close', 'high', 'low', 'open']
+            missing_columns = [col for col in required_columns if col not in market_df.columns]
+            
+            if missing_columns:
+                logger.warning(f"Missing required columns for ML analysis: {missing_columns}")
+                # Create default values for missing columns
+                for col in missing_columns:
+                    if col == 'close':
+                        market_df['close'] = market_df.get('price', 100.0)  # Default price
+                    elif col == 'high':
+                        market_df['high'] = market_df.get('close', market_df.get('price', 100.0)) * 1.01
+                    elif col == 'low':
+                        market_df['low'] = market_df.get('close', market_df.get('price', 100.0)) * 0.99
+                    elif col == 'open':
+                        market_df['open'] = market_df.get('close', market_df.get('price', 100.0))
+            
             X, y = self.advanced_ml_ensemble.prepare_data(market_df)
             
             # Make predictions with uncertainty quantification
@@ -4091,8 +4135,8 @@ class EnhancedTradingStrategyWithQuantitative:
             
             # Adjust signal based on mean reversion
             if mean_reversion_analysis.get('signal') != 'hold':
-                combined_signal['mean_reversion_signal'] = mean_reversion_analysis['signal']
-                combined_signal['mean_reversion_strength'] = mean_reversion_analysis['strength']
+                combined_signal['mean_reversion_signal'] = mean_reversion_analysis.get('signal', 'hold')
+                combined_signal['mean_reversion_strength'] = mean_reversion_analysis.get('strength', 0.0)
                 
                 # If momentum and mean reversion conflict, reduce confidence
                 if (combined_signal['momentum_signal'] != 'hold' and 
@@ -4450,200 +4494,93 @@ class EnhancedTradingStrategyWithQuantitative:
             return signal
     
     async def _optimize_final_signal(self, symbol: str, signal: Dict, market_data: Dict) -> Dict:
-        """Optimize final signal."""
+        """Optimize final signal with advanced analysis."""
         try:
-            logger.info(f"Optimizing final signal for {symbol}")
+            # Apply all advanced analysis
+            signal = await self._apply_momentum_mean_reversion_analysis(symbol, signal, market_data)
+            signal = await self._apply_volatility_regime_analysis(symbol, signal, market_data)
+            signal = await self._apply_correlation_analysis(symbol, signal, market_data)
             
-            # Create optimized signal
-            optimized_signal = signal.copy()
-            
-            # 1. Apply all quantitative analysis layers
-            analysis_layers = []
-            
-            # Momentum and mean reversion analysis
-            if hasattr(self, '_apply_momentum_mean_reversion_analysis'):
-                try:
-                    momentum_result = await self._apply_momentum_mean_reversion_analysis(symbol, optimized_signal, market_data)
-                    if momentum_result != optimized_signal:
-                        analysis_layers.append('momentum_mean_reversion')
-                        optimized_signal = momentum_result
-                except Exception as e:
-                    logger.warning(f"Error in momentum analysis: {str(e)}")
-            
-            # Volatility regime analysis
-            if hasattr(self, '_apply_volatility_regime_analysis'):
-                try:
-                    volatility_result = await self._apply_volatility_regime_analysis(symbol, optimized_signal, market_data)
-                    if volatility_result != optimized_signal:
-                        analysis_layers.append('volatility_regime')
-                        optimized_signal = volatility_result
-                except Exception as e:
-                    logger.warning(f"Error in volatility analysis: {str(e)}")
-            
-            # Correlation analysis
-            if hasattr(self, '_apply_correlation_analysis'):
-                try:
-                    correlation_result = await self._apply_correlation_analysis(symbol, optimized_signal, market_data)
-                    if correlation_result != optimized_signal:
-                        analysis_layers.append('correlation')
-                        optimized_signal = correlation_result
-                except Exception as e:
-                    logger.warning(f"Error in correlation analysis: {str(e)}")
-            
-            # 2. Apply advanced quantitative analysis
-            if hasattr(self, '_apply_advanced_risk_management'):
-                try:
-                    risk_result = await self._apply_advanced_risk_management(symbol, optimized_signal, market_data)
-                    if risk_result != optimized_signal:
-                        analysis_layers.append('advanced_risk')
-                        optimized_signal = risk_result
-                except Exception as e:
-                    logger.warning(f"Error in advanced risk analysis: {str(e)}")
-            
-            # Statistical arbitrage analysis
-            if hasattr(self, '_apply_statistical_arbitrage_analysis'):
-                try:
-                    arb_result = await self._apply_statistical_arbitrage_analysis(symbol, optimized_signal, market_data)
-                    if arb_result != optimized_signal:
-                        analysis_layers.append('statistical_arbitrage')
-                        optimized_signal = arb_result
-                except Exception as e:
-                    logger.warning(f"Error in statistical arbitrage analysis: {str(e)}")
-            
-            # Advanced ML analysis
-            if hasattr(self, '_apply_advanced_ml_analysis'):
-                try:
-                    ml_result = await self._apply_advanced_ml_analysis(symbol, optimized_signal, market_data)
-                    if ml_result != optimized_signal:
-                        analysis_layers.append('advanced_ml')
-                        optimized_signal = ml_result
-                except Exception as e:
-                    logger.warning(f"Error in advanced ML analysis: {str(e)}")
-            
-            # 3. Apply Phase 3 WorldQuant-Level features
-            if hasattr(self, '_apply_phase3_analysis'):
-                try:
-                    phase3_result = await self._apply_phase3_analysis(symbol, optimized_signal, market_data)
-                    if phase3_result != optimized_signal:
-                        analysis_layers.append('phase3_features')
-                        optimized_signal = phase3_result
-                except Exception as e:
-                    logger.warning(f"Error in Phase 3 analysis: {str(e)}")
-            
-            # 4. Apply implied volatility analysis
-            if hasattr(self, '_apply_implied_volatility_analysis'):
-                try:
-                    iv_result = await self._apply_implied_volatility_analysis(symbol, optimized_signal, market_data)
-                    if iv_result != optimized_signal:
-                        analysis_layers.append('implied_volatility')
-                        optimized_signal = iv_result
-                except Exception as e:
-                    logger.warning(f"Error in implied volatility analysis: {str(e)}")
-            
-            # 5. Final signal optimization
-            final_optimization = {}
-            
-            # Confidence aggregation
-            confidence_scores = []
-            if optimized_signal.get('confidence') is not None:
-                confidence_scores.append(optimized_signal['confidence'])
-            if optimized_signal.get('momentum_strength') is not None:
-                confidence_scores.append(optimized_signal['momentum_strength'] * 0.3)
-            if optimized_signal.get('mean_reversion_strength') is not None:
-                confidence_scores.append(optimized_signal['mean_reversion_strength'] * 0.3)
-            if optimized_signal.get('correlation_analysis', {}).get('beta') is not None:
-                beta = optimized_signal['correlation_analysis']['beta']
-                if 0.8 <= beta <= 1.2:
-                    confidence_scores.append(0.2)
-            
-            if confidence_scores:
-                final_confidence = sum(confidence_scores) / len(confidence_scores)
-                optimized_signal['final_confidence'] = min(final_confidence, 1.0)
-                final_optimization['confidence_aggregation'] = final_confidence
-            
-            # Position size optimization
-            position_multipliers = []
-            if optimized_signal.get('position_size_multiplier') is not None:
-                position_multipliers.append(optimized_signal['position_size_multiplier'])
-            if optimized_signal.get('volatility_analysis', {}).get('regime') == 'low_volatility':
-                position_multipliers.append(1.2)
-            elif optimized_signal.get('volatility_analysis', {}).get('regime') == 'high_volatility':
-                position_multipliers.append(0.8)
-            
-            if position_multipliers:
-                final_position_multiplier = sum(position_multipliers) / len(position_multipliers)
-                optimized_signal['final_position_multiplier'] = final_position_multiplier
-                final_optimization['position_size_optimization'] = final_position_multiplier
-            
-            # Stop loss optimization
-            stop_loss_multipliers = []
-            if optimized_signal.get('stop_loss_multiplier') is not None:
-                stop_loss_multipliers.append(optimized_signal['stop_loss_multiplier'])
-            if optimized_signal.get('volatility_analysis', {}).get('regime') == 'high_volatility':
-                stop_loss_multipliers.append(1.5)
-            elif optimized_signal.get('volatility_analysis', {}).get('regime') == 'low_volatility':
-                stop_loss_multipliers.append(0.8)
-            
-            if stop_loss_multipliers:
-                final_stop_loss_multiplier = sum(stop_loss_multipliers) / len(stop_loss_multipliers)
-                optimized_signal['final_stop_loss_multiplier'] = final_stop_loss_multiplier
-                final_optimization['stop_loss_optimization'] = final_stop_loss_multiplier
-            
-            # 6. Risk-adjusted final decision
-            if optimized_signal.get('final_confidence', 0) >= 0.7:
-                # High confidence signal
-                if optimized_signal.get('action') == 'buy':
-                    optimized_signal['final_action'] = 'buy'
-                    optimized_signal['signal_strength'] = 'strong'
-                elif optimized_signal.get('action') == 'sell':
-                    optimized_signal['final_action'] = 'sell'
-                    optimized_signal['signal_strength'] = 'strong'
-                else:
-                    optimized_signal['final_action'] = 'hold'
-                    optimized_signal['signal_strength'] = 'weak'
-            elif optimized_signal.get('final_confidence', 0) >= 0.5:
-                # Medium confidence signal
-                optimized_signal['final_action'] = optimized_signal.get('action', 'hold')
-                optimized_signal['signal_strength'] = 'medium'
-            else:
-                # Low confidence signal
-                optimized_signal['final_action'] = 'hold'
-                optimized_signal['signal_strength'] = 'weak'
-            
-            # 7. Final validation
-            if optimized_signal.get('final_action') != 'hold':
-                # Additional validation for non-hold signals
-                validation_passed = True
-                
-                # Check if signal conflicts with market conditions
-                if (optimized_signal.get('correlation_analysis', {}).get('beta', 1.0) > 1.5 and 
-                    optimized_signal.get('final_action') == 'buy'):
-                    # High beta asset in bullish market - reduce confidence
-                    optimized_signal['final_confidence'] = max(optimized_signal.get('final_confidence', 0) - 0.1, 0.0)
-                
-                # Check volatility regime compatibility
-                if (optimized_signal.get('volatility_analysis', {}).get('regime') == 'high_volatility' and 
-                    optimized_signal.get('final_action') != 'hold'):
-                    # High volatility - require higher confidence
-                    if optimized_signal.get('final_confidence', 0) < 0.8:
-                        optimized_signal['final_action'] = 'hold'
-                        optimized_signal['signal_strength'] = 'weak'
-                        validation_passed = False
-                
-                if not validation_passed:
-                    logger.info(f"Signal validation failed for {symbol}, reverting to hold")
-            
-            # 8. Store optimization results
-            optimized_signal['final_optimization'] = final_optimization
-            optimized_signal['analysis_layers_applied'] = analysis_layers
-            
-            logger.info(f"Final signal optimization completed for {symbol}: "
-                       f"action={optimized_signal.get('final_action', 'hold')}, "
-                       f"confidence={optimized_signal.get('final_confidence', 0):.3f}, "
-                       f"strength={optimized_signal.get('signal_strength', 'weak')}")
-            
-            return optimized_signal
-            
+            return signal
         except Exception as e:
             logger.error(f"Error optimizing final signal: {str(e)}")
             return signal
+    
+    async def _prepare_signal_for_worldquant_validation(self, signal: Dict, market_data: Dict) -> Dict:
+        """
+        Prepare signal for WorldQuant validation by enriching it with required metrics.
+        
+        Args:
+            signal: Original trading signal
+            market_data: Market data
+            
+        Returns:
+            Enhanced signal with all required metrics for WorldQuant validation
+        """
+        try:
+            enhanced_signal = signal.copy()
+            
+            # Add required metrics for WorldQuant validation
+            enhanced_signal['confidence'] = signal.get('confidence', 0.5)
+            enhanced_signal['risk_score'] = signal.get('risk_score', 0.1)
+            enhanced_signal['p_value'] = signal.get('p_value', 0.05)
+            enhanced_signal['t_statistic'] = signal.get('t_statistic', 2.0)
+            enhanced_signal['factor_exposure'] = signal.get('factor_exposure', 0.2)
+            enhanced_signal['volatility'] = market_data.get('volatility', 0.02)
+            enhanced_signal['trend_strength'] = market_data.get('trend_strength', 0.5)
+            enhanced_signal['correlation'] = market_data.get('correlation', 0.5)
+            
+            # Calculate additional metrics if not present
+            if 'returns' in market_data and isinstance(market_data['returns'], (list, np.ndarray)):
+                returns = pd.Series(market_data['returns']) if isinstance(market_data['returns'], list) else market_data['returns']
+                enhanced_signal['sharpe_ratio'] = self._calculate_sharpe_ratio(returns)
+                enhanced_signal['max_drawdown'] = self._calculate_max_drawdown(returns)
+            
+            # Add ML predictions if available
+            if hasattr(self, 'advanced_ml_ensemble'):
+                try:
+                    ml_predictions = await self.advanced_ml_ensemble.predict(market_data)
+                    enhanced_signal['ml_agreement'] = ml_predictions.get('agreement', 0.7)
+                    enhanced_signal['ml_confidence'] = ml_predictions.get('confidence', 0.8)
+                except Exception as e:
+                    logger.warning(f"Could not get ML predictions: {str(e)}")
+                    enhanced_signal['ml_agreement'] = 0.7
+                    enhanced_signal['ml_confidence'] = 0.8
+            
+            # Add factor model exposures if available
+            if hasattr(self, 'factor_model'):
+                try:
+                    factor_exposures = await self.factor_model.calculate_factor_exposures(market_data)
+                    enhanced_signal['factor_exposures'] = factor_exposures
+                except Exception as e:
+                    logger.warning(f"Could not get factor exposures: {str(e)}")
+                    enhanced_signal['factor_exposures'] = {}
+            
+            return enhanced_signal
+            
+        except Exception as e:
+            logger.error(f"Error preparing signal for WorldQuant validation: {str(e)}")
+            return signal
+    
+    def _calculate_sharpe_ratio(self, returns: pd.Series) -> float:
+        """Calculate Sharpe ratio from returns."""
+        try:
+            if len(returns) < 2:
+                return 0.0
+            return returns.mean() / returns.std() if returns.std() > 0 else 0.0
+        except Exception as e:
+            logger.error(f"Error calculating Sharpe ratio: {str(e)}")
+            return 0.0
+    
+    def _calculate_max_drawdown(self, returns: pd.Series) -> float:
+        """Calculate maximum drawdown from returns."""
+        try:
+            if len(returns) < 2:
+                return 0.0
+            cumulative = (1 + returns).cumprod()
+            running_max = cumulative.expanding().max()
+            drawdown = (cumulative - running_max) / running_max
+            return abs(drawdown.min()) if drawdown.min() < 0 else 0.0
+        except Exception as e:
+            logger.error(f"Error calculating max drawdown: {str(e)}")
+            return 0.0

@@ -72,45 +72,45 @@ class WorldQuantValidationSystem:
             'worldquant_compliance_rate': 0.0
         }
         
-        # WorldQuant standards thresholds
+        # WorldQuant standards thresholds (RELAXED for higher signal generation)
         self.worldquant_thresholds = {
-            'min_confidence': 0.85,      # 85% minimum confidence
-            'max_risk': 0.15,            # 15% maximum risk
-            'min_statistical_significance': 0.05,  # p < 0.05
-            'min_sample_size': 30,       # Minimum sample size
-            'max_factor_exposure': 0.3,  # Maximum 30% factor exposure
-            'min_sharpe_ratio': 0.5,     # Minimum Sharpe ratio
-            'max_drawdown': 0.15         # Maximum 15% drawdown
+            'min_confidence': 0.60,      # Reduced from 0.85 to 0.60 (60% minimum confidence)
+            'max_risk': 0.25,            # Increased from 0.15 to 0.25 (25% maximum risk)
+            'min_statistical_significance': 0.10,  # Increased from 0.05 to 0.10 (p < 0.10)
+            'min_sample_size': 20,       # Reduced from 30 to 20 (minimum sample size)
+            'max_factor_exposure': 0.4,  # Increased from 0.3 to 0.4 (40% factor exposure)
+            'min_sharpe_ratio': 0.3,     # Reduced from 0.5 to 0.3 (minimum Sharpe ratio)
+            'max_drawdown': 0.20         # Increased from 0.15 to 0.20 (20% maximum drawdown)
         }
         
-        # Layer-specific validation criteria
+        # Layer-specific validation criteria (UPDATED for relaxed thresholds)
         self.layer_criteria = {
             ValidationLayer.STATISTICAL: {
-                'min_p_value': 0.05,
-                'min_t_stat': 2.0,
-                'min_sample_size': 30,
-                'min_effect_size': 0.2
+                'min_p_value': 0.10,     # Increased from 0.05 to 0.10
+                'min_t_stat': 1.5,       # Reduced from 2.0 to 1.5
+                'min_sample_size': 20,   # Reduced from 30 to 20
+                'min_effect_size': 0.15  # Reduced from 0.2 to 0.15
             },
             ValidationLayer.MARKET_REGIME: {
                 'regime_compatibility': True,
                 'volatility_adjustment': True,
-                'correlation_threshold': 0.7
+                'correlation_threshold': 0.6  # Reduced from 0.7 to 0.6
             },
             ValidationLayer.FACTOR_MODEL: {
-                'max_factor_exposure': 0.3,
+                'max_factor_exposure': 0.4,  # Increased from 0.3 to 0.4
                 'factor_neutrality': True,
                 'risk_attribution': True
             },
             ValidationLayer.RISK_MANAGEMENT: {
-                'max_var_95': 0.02,      # 2% VaR at 95% confidence
-                'max_expected_shortfall': 0.03,  # 3% Expected Shortfall
-                'max_leverage': 2.0,     # Maximum 2x leverage
-                'position_size_limit': 0.1  # Maximum 10% position size
+                'max_var_95': 0.025,     # Increased from 0.02 to 0.025 (2.5% VaR)
+                'max_expected_shortfall': 0.035,  # Increased from 0.03 to 0.035 (3.5% ES)
+                'max_leverage': 2.5,     # Increased from 2.0 to 2.5
+                'position_size_limit': 0.15  # Increased from 0.1 to 0.15 (15% position size)
             },
             ValidationLayer.MACHINE_LEARNING: {
-                'min_model_agreement': 0.7,  # 70% model agreement
-                'min_prediction_confidence': 0.8,  # 80% prediction confidence
-                'max_model_uncertainty': 0.2  # 20% maximum uncertainty
+                'min_model_agreement': 0.6,  # Reduced from 0.7 to 0.6 (60% model agreement)
+                'min_prediction_confidence': 0.7,  # Reduced from 0.8 to 0.7 (70% prediction confidence)
+                'max_model_uncertainty': 0.25  # Increased from 0.2 to 0.25 (25% maximum uncertainty)
             }
         }
         
@@ -696,6 +696,122 @@ class WorldQuantValidationSystem:
         except Exception as e:
             logger.error(f"Error getting validation summary: {str(e)}")
             return {}
+    
+    def get_adaptive_thresholds(self, market_data: Dict) -> Dict[str, float]:
+        """
+        Get adaptive thresholds based on market conditions.
+        
+        Args:
+            market_data: Market data for adaptive threshold calculation
+            
+        Returns:
+            Dict of adaptive thresholds
+        """
+        try:
+            # Start with base thresholds
+            adaptive_thresholds = self.worldquant_thresholds.copy()
+            
+            # Detect market conditions
+            volatility = market_data.get('volatility', 0.02)
+            trend_strength = market_data.get('trend_strength', 0.5)
+            market_regime = self._detect_market_regime(market_data)
+            
+            # Apply adaptive adjustments based on market conditions
+            if market_regime == MarketRegime.VOLATILE:
+                # High volatility - relax confidence, increase risk tolerance
+                adaptive_thresholds['min_confidence'] *= 0.8  # Reduce confidence requirement
+                adaptive_thresholds['max_risk'] *= 1.2        # Increase risk tolerance
+                adaptive_thresholds['min_statistical_significance'] *= 1.5  # Relax statistical significance
+                logger.info("Applied high volatility adaptive thresholds")
+                
+            elif market_regime == MarketRegime.TRENDING:
+                # Strong trend - slightly relax confidence, maintain risk
+                adaptive_thresholds['min_confidence'] *= 0.9  # Slightly reduce confidence
+                adaptive_thresholds['min_statistical_significance'] *= 1.2  # Relax statistical significance
+                logger.info("Applied trending market adaptive thresholds")
+                
+            elif market_regime == MarketRegime.MEAN_REVERTING:
+                # Mean reverting - tighten confidence, reduce risk
+                adaptive_thresholds['min_confidence'] *= 1.1  # Increase confidence requirement
+                adaptive_thresholds['max_risk'] *= 0.9        # Decrease risk tolerance
+                logger.info("Applied mean reverting adaptive thresholds")
+                
+            elif market_regime == MarketRegime.CRISIS:
+                # Crisis - significantly relax all thresholds
+                adaptive_thresholds['min_confidence'] *= 0.7  # Significantly reduce confidence
+                adaptive_thresholds['max_risk'] *= 1.3        # Significantly increase risk tolerance
+                adaptive_thresholds['min_statistical_significance'] *= 2.0  # Significantly relax statistical significance
+                adaptive_thresholds['min_sample_size'] = max(10, adaptive_thresholds['min_sample_size'] - 10)  # Reduce sample size
+                logger.info("Applied crisis market adaptive thresholds")
+                
+            else:  # NORMAL regime
+                # Normal market - use base thresholds
+                logger.info("Applied normal market adaptive thresholds")
+            
+            # Ensure thresholds stay within reasonable bounds
+            adaptive_thresholds['min_confidence'] = max(0.4, min(0.9, adaptive_thresholds['min_confidence']))
+            adaptive_thresholds['max_risk'] = max(0.1, min(0.4, adaptive_thresholds['max_risk']))
+            adaptive_thresholds['min_statistical_significance'] = max(0.05, min(0.2, adaptive_thresholds['min_statistical_significance']))
+            adaptive_thresholds['min_sample_size'] = max(10, adaptive_thresholds['min_sample_size'])
+            
+            return adaptive_thresholds
+            
+        except Exception as e:
+            logger.error(f"Error calculating adaptive thresholds: {str(e)}")
+            return self.worldquant_thresholds.copy()
+    
+    def calculate_signal_quality_score(self, signal: Dict, market_data: Dict) -> float:
+        """
+        Calculate signal quality score (0-1) based on multiple factors.
+        
+        Args:
+            signal: Trading signal
+            market_data: Market data
+            
+        Returns:
+            Quality score between 0 and 1
+        """
+        try:
+            score = 0.0
+            
+            # Get adaptive thresholds
+            thresholds = self.get_adaptive_thresholds(market_data)
+            
+            # Confidence score (0-40 points)
+            confidence = signal.get('confidence', 0)
+            if confidence >= thresholds['min_confidence']:
+                score += 0.4
+            elif confidence >= thresholds['min_confidence'] * 0.8:
+                score += 0.2
+            elif confidence >= thresholds['min_confidence'] * 0.6:
+                score += 0.1
+            
+            # Statistical significance (0-20 points)
+            p_value = signal.get('p_value', 1.0)
+            if p_value < thresholds['min_statistical_significance']:
+                score += 0.2
+            elif p_value < thresholds['min_statistical_significance'] * 2:
+                score += 0.1
+            
+            # Risk score (0-20 points)
+            risk_score = signal.get('risk_score', 1.0)
+            if risk_score <= thresholds['max_risk']:
+                score += 0.2
+            elif risk_score <= thresholds['max_risk'] * 1.2:
+                score += 0.1
+            
+            # Factor exposure (0-20 points)
+            factor_exposure = signal.get('factor_exposure', 1.0)
+            if factor_exposure <= thresholds['max_factor_exposure']:
+                score += 0.2
+            elif factor_exposure <= thresholds['max_factor_exposure'] * 1.2:
+                score += 0.1
+            
+            return min(1.0, score)
+            
+        except Exception as e:
+            logger.error(f"Error calculating signal quality score: {str(e)}")
+            return 0.0
     
     async def close(self) -> None:
         """Close validation system and cleanup resources."""

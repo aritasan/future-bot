@@ -8,7 +8,16 @@ import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Tuple, Any
 from scipy import stats
-from sklearn.utils import resample
+try:
+    from sklearn.utils import resample
+except ImportError:
+    # Fallback if sklearn is not available
+    def resample(data, n_samples=None, random_state=None):
+        if n_samples is None:
+            n_samples = len(data)
+        if random_state is not None:
+            np.random.seed(random_state)
+        return np.random.choice(data, size=n_samples, replace=True)
 import warnings
 
 # Suppress divide by zero warnings from scipy
@@ -22,13 +31,13 @@ class StatisticalValidator:
     Implements hypothesis testing, bootstrap confidence intervals, and walk-forward backtesting.
     """
     
-    def __init__(self, significance_level: float = 0.1, min_sample_size: int = 10):
+    def __init__(self, significance_level: float = 0.10, min_sample_size: int = 20):
         """
         Initialize statistical validator.
         
         Args:
-            significance_level: Significance level for hypothesis testing (default: 0.1 for short-term solution)
-            min_sample_size: Minimum sample size required for statistical tests (default: 10 for short-term solution)
+            significance_level: Significance level for hypothesis testing (default: 0.10 for relaxed validation)
+            min_sample_size: Minimum sample size required for statistical tests (default: 20 for relaxed validation)
         """
         self.significance_level = significance_level
         self.min_sample_size = min_sample_size
